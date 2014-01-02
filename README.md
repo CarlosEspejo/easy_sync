@@ -20,8 +20,6 @@ Now if you use **Ruby** plus **Rsync** you can easily have many cold snapshots t
     
     
 ### Todo
-* It should use the latest backup for Rsync's --link-dest option and create a new snapshot with the files that changed
-* Given a source and destination a initial snapshot should be created
-* On first run app should prompt for source path and destination path and create a yaml file
-* Support multiple source and destination configurations
-* Add ability to manage and modify configured backup paths
+* ~~Given a source and destination a snapshot should be created.~~
+* It should use the latest backup for Rsync's --link-dest option and create a new snapshot with the files that changed.
+* Support multiple source and destination configurations by using a yaml config file.
