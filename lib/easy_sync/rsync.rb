@@ -4,7 +4,7 @@ module EasySync
     attr_reader :source, :destination, :last_snapshot, :current
 
     def initialize(source, destination)
-      @source = source
+      @source = File.join(source, '.')
       @destination = destination
     end
 
@@ -17,7 +17,7 @@ module EasySync
     end
 
     def sync
-      IO.popen(["rsync", "-avP", "#{File.join(source, '/')}", "#{current_snapshot}"]).each_line do |l|
+      IO.popen(["rsync", "-avP", "--link-dest", "#{latest_snapshot}", "#{source}", "#{current_snapshot}"]).each_line do |l|
         puts l
       end
     end
