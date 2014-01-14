@@ -23,15 +23,22 @@ describe Rsync do
   end
 
   it "should sync files between source and destination" do
-    r = Rsync.new(source_directory, destination_directory)
-    r.sync
+    Rsync.new(source_directory, destination_directory).sync
 
-    Dir["#{source_directory}/*"].map{|f| File.basename f}.must_equal ["file1.txt", "file2.txt", "file3.txt", "file4.txt"]
+    Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].map{|f| File.basename f}.must_equal ["file1.txt", "file2.txt", "file3.txt", "file4.txt"]
+  end
+
+  it "should use exclude-from option" do
+    exclude_file = "#{destination_directory}/exclude.txt"
+    File.open(exclude_file, "w"){|f| f.puts "file4.txt"}
+
+    Rsync.new(source_directory, destination_directory, exclude_file).sync
+
+    Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].map{|f| File.basename f}.must_equal ["file1.txt", "file2.txt", "file3.txt"]
   end
 
   it "should create hard links to the files that didn't change in the new snapshot directory" do
-    r = Rsync.new(source_directory, destination_directory)
-    r.sync
+    Rsync.new(source_directory, destination_directory).sync
 
     snapshot_file = Dir["#{File.join(destination_directory, "2013-12-30")}/*"].first
     new_file = Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].first
@@ -64,7 +71,7 @@ describe Rsync do
   end
 
   def source_directory
-    @source_directory
+    "#{@source_directory}/"
   end
 
   def destination_directory

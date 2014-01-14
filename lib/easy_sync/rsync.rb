@@ -1,11 +1,12 @@
 module EasySync
 
   class Rsync
-    attr_reader :source, :destination, :last_snapshot, :current
+    attr_reader :source, :destination, :exclude_file, :last_snapshot, :current
 
-    def initialize(source, destination)
-      @source = File.join(source, '.')
+    def initialize(source, destination, exclude_file="")
+      @source = source
       @destination = destination
+      @exclude_file = exclude_file
     end
 
     def latest_snapshot
@@ -17,7 +18,7 @@ module EasySync
     end
 
     def sync
-      IO.popen(["rsync", "-avP", "--link-dest", "#{latest_snapshot}", "#{source}", "#{current_snapshot}"]).each_line do |l|
+      IO.popen(["rsync", "-avhiPH", "--exclude-from", "#{exclude_file}", "--link-dest", "#{latest_snapshot}", "#{source}", "#{current_snapshot}"]).each_line do |l|
         puts l
       end
     end

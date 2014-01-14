@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+
+require_relative '../lib/easy_sync'
+
+config = File.expand_path(ARGV[0], File.dirname(__FILE__))
+
+EasySync::SyncRunner.new(config_file: config).run
