@@ -5,8 +5,10 @@ describe SyncRunner do
     create_root_directory
   end
 
-  it "should raise exception if no config file passed" do
-    lambda{SyncRunner.new({})}.must_raise RuntimeError
+  it "should create template config if no config file passed" do
+    config = "#{temp_directory}/sample_sync.yml"
+    SyncRunner.new({config_file: config})
+    File.exist?("#{temp_directory}/sample_sync.yml").must_equal true
   end
 
   it "should use config file" do
