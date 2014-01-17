@@ -1,5 +1,0 @@
----
-- :sync_name: "Photo Backup"
-  :source: "/Users/carlos/Pictures/"
-  :destination: "/Volumes/drobo/photos"
-  :exclude_file: "/Users/carlos/exclude-list.txt"

@@ -2,6 +2,6 @@
 
 require_relative '../lib/easy_sync'
 
-config = File.expand_path(ARGV[0] || "sample_sync.yml", File.dirname(__FILE__))
+config = File.expand_path(ARGV[0] || "#{ENV["HOME"]}/easy_sync_config.yml", File.dirname(__FILE__))
 
 EasySync::SyncRunner.new(config_file: config).run
