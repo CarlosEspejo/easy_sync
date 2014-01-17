@@ -16,7 +16,7 @@ module EasySync
 
     def run
       config.each do |c|
-        puts "------------------ Running #{c[:sync_name]} ------------------\n\n\n"
+        puts "\n\n\n------------------ Running #{c[:sync_name]} ------------------\n\n\n"
         Rsync.new(c[:source], c[:destination], c[:exclude_file]).sync
       end
     end
@@ -25,9 +25,9 @@ module EasySync
     def generate_yaml
       File.open(config_file, 'w'){|f| f.puts [{
                                                 sync_name: "sample_sync",
-                                                source: "put real source path here", 
-                                                destination: "put real destination path here", 
-                                                exclude_file: "path to exclude file"}].to_yaml}
+                                                source: "/example/path",
+                                                destination: "/example/path",
+                                                exclude_file: "/example/path"}].to_yaml}
 
       puts "Generated sample config file: #{config_file}\n\n"
     end

@@ -22,6 +22,8 @@ Now if you use **Ruby** plus **Rsync** you can easily have many cold snapshots t
 ### Todo
 * ~~Given a source and destination a snapshot should be created.~~
 * ~~It should use the latest backup for Rsync's --link-dest option and create a new snapshot with the files that changed.~~
-* Add logging and a excluded list
+* Add logging
+* If source or destination doesn't exists don't run rsync
+* ~~excluded list~~
 * ~~Support multiple source and destination configurations by using a yaml config file.~~
 * ~~Convert to a gem and create a easy_sync binary~~
