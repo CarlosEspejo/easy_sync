@@ -63,7 +63,8 @@ def config_file_data
                           sync_name: "test_sync",
                           source: "#{source_directory}",
                           destination: "#{destination_directory}",
-                          exclude_file: ""
+                          exclude_file: "",
+                          log_directory: temp_directory
                           }
 end
 

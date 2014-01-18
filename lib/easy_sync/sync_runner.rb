@@ -1,5 +1,4 @@
 require 'yaml'
-require 'pry'
 
 module EasySync
 
@@ -12,12 +11,13 @@ module EasySync
       generate_yaml unless File.exist?(@config_file)
 
       @config = YAML.load_file @config_file
+      @mode = options[:mode]
     end
 
     def run
       config.each do |c|
         puts "\n\n\n------------------ Running #{c[:sync_name]} ------------------\n\n\n"
-        Rsync.new(c[:source], c[:destination], c[:exclude_file]).sync
+        Rsync.new(c).sync
       end
     end
 
