@@ -53,3 +53,7 @@ def copy_to_latest
     FileUtils.cp File.join(source_directory, file), File.join(destination_directory, "2013-12-30")
   end
 end
+
+def config_file
+  @config_file ||= "#{temp_directory}/sample_sync.yml"
+end
