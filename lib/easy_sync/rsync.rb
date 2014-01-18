@@ -18,6 +18,7 @@ module EasySync
     end
 
     def sync
+
       IO.popen(["rsync", "-avhiPH", "--exclude-from", "#{exclude_file}", "--link-dest", "#{latest_snapshot}", "#{source}", "#{current_snapshot}"]).each_line do |l|
         puts l
       end

@@ -54,6 +54,20 @@ def copy_to_latest
   end
 end
 
+def blank_config_file
+  @blank_config_file ||= "#{temp_directory}/sample_sync.yml"
+end
+
+def config_file_data
+  @config_file_data ||= {
+                          sync_name: "test_sync",
+                          source: "#{source_directory}",
+                          destination: "#{destination_directory}",
+                          exclude_file: ""
+                          }
+end
+
 def config_file
-  @config_file ||= "#{temp_directory}/sample_sync.yml"
+  File.open(blank_config_file, 'w'){|f| f.puts [config_file_data].to_yaml}
+  blank_config_file
 end
