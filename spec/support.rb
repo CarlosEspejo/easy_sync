@@ -60,15 +60,18 @@ end
 
 def config_file_data
   @config_file_data ||= {
-                          sync_name: "test_sync",
-                          source: "#{source_directory}",
-                          destination: "#{destination_directory}",
-                          exclude_file: "",
-                          log_directory: temp_directory
-                          }
+                          logger: :off,
+                          mappings: [
+                            {
+                              sync_name: "test_sync",
+                              source: "#{source_directory}",
+                              destination: "#{destination_directory}",
+                              exclude_file: ""
+                            }]
+                        }
 end
 
 def config_file
-  File.open(blank_config_file, 'w'){|f| f.puts [config_file_data].to_yaml}
+  File.open(blank_config_file, 'w'){|f| f.puts config_file_data.to_yaml}
   blank_config_file
 end

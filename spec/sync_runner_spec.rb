@@ -1,4 +1,4 @@
-require 'spec_helper'
+require_relative 'spec_helper'
 
 describe SyncRunner do
 
@@ -8,8 +8,8 @@ describe SyncRunner do
   end
 
   it "should use config file" do
-    File.open(blank_config_file, "w"){|f| f.puts [config_file_data].to_yaml}
-    SyncRunner.new(config_file: blank_config_file).config.size.must_equal 1
+    File.open(blank_config_file, "w"){|f| f.puts config_file_data.to_yaml}
+    SyncRunner.new(config_file: blank_config_file).config[:mappings].size.must_equal 1
   end
 
   it "should sync files between source and destination" do
@@ -30,8 +30,8 @@ describe SyncRunner do
     exclude_file = "#{destination_directory}/exclude.txt"
     File.open(exclude_file, "w"){|f| f.puts "file4.txt"}
 
-    config_file_data[:exclude_file] = exclude_file
-    File.open(blank_config_file, 'w'){|f| f.puts [config_file_data].to_yaml}
+    config_file_data[:mappings].first[:exclude_file] = exclude_file
+    File.open(blank_config_file, 'w'){|f| f.puts config_file_data.to_yaml}
 
     SyncRunner.new(config_file: config_file).run
 
