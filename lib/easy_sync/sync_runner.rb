@@ -31,7 +31,7 @@ module EasySync
                             destination: "/example/path",
                             exclude_file: "/example/path"
                           }]}
-        puts h.to_yaml
+        h.to_yaml
       end
 
        puts "Generated sample config file: #{config_file}\n\n"
