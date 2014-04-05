@@ -3,16 +3,11 @@ require 'yaml'
 module EasySync
 
   class SyncRunner
-    attr_reader :config_file, :config, :logger
+    attr_reader :config_file, :config, :log_setting, :test_config_path
 
-    def initialize(options)
-      @config_file = options.fetch(:config_file){raise "You must provide a path to a config file"}
-
-      generate_yaml unless File.exist?(@config_file)
-
-      @config = YAML.load_file @config_file
-
-      #@logger = logging(@config.fetch(:logger){:stdout})
+    def initialize(options={})
+      @config_file = options.fetch(:config_file){:not_provided}
+      handle_config
     end
 
     def run
@@ -22,29 +17,26 @@ module EasySync
     end
 
     private
-    def generate_yaml
-      File.open(config_file, 'w') do |f|
-        h = {:logger => :stdout,
-             :mappings => [{
-                            sync_name: "sample_sync",
-                            source: "/example/path",
-                            destination: "/example/path",
-                            exclude_file: "/example/path"
-                          }]}
-        h.to_yaml
-      end
 
-       puts "Generated sample config file: #{config_file}\n\n"
+    def handle_config
+      path = "#{ENV["HOME"]}/.easy_syncrc.yml"
+      generate_yaml(path) if config_file == :not_provided
+      @config = YAML.load_file path
     end
 
-    def logging(opt)
-      if opt == :off
-        SyncLogger.new('/dev/null')
-      elsif opt == :stdout
-        SyncLogger.new(STDOUT) if opt == :stdout
-      else
-        SyncLogger.new(opt)
+    def generate_yaml(path)
+      File.open(path, 'w') do |f|
+        h = {:rsync_log_setting => :on,
+             :mappings => [{
+                            sync_name: "sample_sync",
+                            source: "[/example/path]",
+                            destination: "[/example/path]",
+                            exclude_file: "[/example/path]"
+                          }]}
+        f.puts h.to_yaml
       end
+
+      STDERR.puts "Generated sample config file: #{path}\n\n"
     end
 
   end

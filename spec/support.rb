@@ -55,12 +55,12 @@ def copy_to_latest
 end
 
 def blank_config_file
-  @blank_config_file ||= "#{temp_directory}/sample_sync.yml"
+  @blank_config_file ||= "#{temp_directory}/.easy_syncrc.yml"
 end
 
 def config_file_data
   @config_file_data ||= {
-                          logger: :off,
+                          rsync_log_setting: :off,
                           mappings: [
                             {
                               sync_name: "test_sync",

@@ -19,6 +19,7 @@ class MiniTest::Spec
 
     # output is not needed for running test cases
     #$stdout = StringIO.new
+    ENV['HOME'] = temp_directory
   end
 
 

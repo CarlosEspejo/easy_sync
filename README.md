@@ -12,13 +12,19 @@ Now if you use **Ruby** plus **Rsync** you can easily have many cold snapshots t
 
 
 ### Installation
-    coming soon
-    
-    
+    gem install easy_sync
+
+
+### Requirements
+* rsync 2.5.6 and up
+
+
 ### Usage
-    coming soon
-    
-    
+Just run easy_sync to generate a template mapping file, configure
+your paths and next time you run **easy_sync** it will create the first
+backup. After first backup it will create incremental backups.
+
+
 ### Todo
 * ~~Given a source and destination a snapshot should be created.~~
 * ~~It should use the latest backup for Rsync's --link-dest option and create a new snapshot with the files that changed.~~
