@@ -1,7 +1,4 @@
 #!/usr/bin/env ruby
 
 require 'easy_sync'
-
-config = File.expand_path(ARGV[0] || "#{ENV["HOME"]}/.easy_syncrc.yml", File.dirname(__FILE__))
-
-EasySync::SyncRunner.new(config_file: config).run
+EasySync::SyncRunner.new.run

@@ -42,7 +42,7 @@ describe SyncRunner do
   end
 
   it "should apply log setting to all task" do
-    log_file = "#{temp_directory}/.easy_sync.log"
+    log_file = "#{temp_directory}/easy_sync.log"
     create_config_file
     s = SyncRunner.new
     s.config[:logging] = :on

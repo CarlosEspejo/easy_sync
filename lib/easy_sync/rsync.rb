@@ -29,7 +29,7 @@ module EasySync
                   "--link-dest", "#{latest_snapshot}"
                   ]
 
-      commands << ['--log-file', "#{ENV['HOME']}/.easy_sync.log" ] if logging == :on
+      commands << ['--log-file', "#{ENV['HOME']}/easy_sync.log" ] if logging == :on
       commands << ["#{source}", "#{current_snapshot}"]
       commands = commands.flatten
 

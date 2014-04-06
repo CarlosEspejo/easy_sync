@@ -15,7 +15,7 @@ describe Rsync do
   end
 
   it "should log to a file" do
-    log_file = "#{temp_directory}/.easy_sync.log"
+    log_file = "#{temp_directory}/easy_sync.log"
     task[:logging] = :on
 
     Rsync.new(task).sync
