@@ -20,7 +20,7 @@ Now if you use **Ruby** plus **Rsync** you can easily have many cold snapshots t
 
 
 ### Usage
-Just run easy_sync to generate a template mapping file, configure
+Just run **easy_sync** to generate a template mapping file, configure
 your paths and next time you run **easy_sync** it will create the first
 backup. After first backup it will create incremental backups.
 
