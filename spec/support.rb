@@ -54,14 +54,22 @@ def copy_to_latest
   end
 end
 
-def blank_config_file
-  @blank_config_file ||= "#{temp_directory}/.easy_syncrc.yml"
+def blank_config
+  @blank_config ||= {
+                          logging: :on,
+                          tasks: [{
+                              sync_name: "sample_sync",
+                              source: "[/example/path]",
+                              destination: "[/example/path]",
+                              exclude_file: "[/example/path]"
+                            }]
+                          }
 end
 
 def config_file_data
   @config_file_data ||= {
-                          rsync_log_setting: :off,
-                          mappings: [
+                          logging: :off,
+                          tasks: [
                             {
                               sync_name: "test_sync",
                               source: "#{source_directory}",
@@ -71,7 +79,11 @@ def config_file_data
                         }
 end
 
-def config_file
-  File.open(blank_config_file, 'w'){|f| f.puts config_file_data.to_yaml}
-  blank_config_file
+def create_config_file
+  File.open(default_config_path, 'w'){|f| f.puts config_file_data.to_yaml}
+  default_config_path
+end
+
+def default_config_path
+  "#{temp_directory}/.easy_syncrc.yml"
 end

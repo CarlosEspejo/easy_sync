@@ -3,15 +3,14 @@ require 'logger'
 module EasySync
 
   class Rsync
-    attr_reader :sync_name, :source, :destination, :exclude_file, :last_snapshot, :current, :logger
+    attr_reader :sync_name, :source, :destination, :exclude_file, :last_snapshot, :current, :logging
 
     def initialize(options)
       @sync_name = options[:sync_name]
       @source = options[:source]
       @destination = options[:destination]
       @exclude_file = options[:exclude_file]
-      #@logger = options.fetch(:logger){Logger.new(STDOUT)}
-      #@logger = Logger.new('/dev/null') if @logger == :off
+      @logging = options.fetch(:logging){:off}
     end
 
     def latest_snapshot
@@ -27,9 +26,12 @@ module EasySync
                   "rsync",
                   "-avhiPH",
                   "--exclude-from", "#{exclude_file}",
-                  "--link-dest", "#{latest_snapshot}",
-                  "#{source}", "#{current_snapshot}"
+                  "--link-dest", "#{latest_snapshot}"
                   ]
+
+      commands << ['--log-file', "#{ENV['HOME']}/.easy_sync.log" ] if logging == :on
+      commands << ["#{source}", "#{current_snapshot}"]
+      commands = commands.flatten
 
       name = "\n\n\n------------------ Running #{sync_name} ------------------\n\n\n"
       puts name

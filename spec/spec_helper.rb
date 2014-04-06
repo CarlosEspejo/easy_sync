@@ -17,15 +17,17 @@ class MiniTest::Spec
     create_source_files
     copy_to_latest
 
-    # output is not needed for running test cases
-    #$stdout = StringIO.new
+    # Silences output, comment out to debug test cases
+    $stdout = StringIO.new
+    $stderr = StringIO.new
     ENV['HOME'] = temp_directory
   end
 
 
   after do
     FileUtils.rm_r temp_directory
-    #$stdout = STDOUT
+    $stdout = STDOUT
+    $stderr = STDERR
   end
 
 end
