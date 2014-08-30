@@ -14,7 +14,7 @@ module EasySync
     end
 
     def latest_snapshot
-      @last_snapshot = Dir["#{destination}/*"].max_by{|s| File.mtime s}
+      @last_snapshot = Dir["#{destination}/*"].max_by{|s| File.atime s}
     end
 
     def current_snapshot
@@ -35,6 +35,7 @@ module EasySync
 
       name = "\n\n\n------------------ Running #{sync_name} ------------------\n\n\n"
       puts name
+      puts "latest snapshot #{@last_snapshot}"
 
       IO.popen(commands).each_line do |l|
         puts l
