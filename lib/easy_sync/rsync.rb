@@ -1,4 +1,5 @@
 require 'logger'
+require 'fileutils'
 
 module EasySync
 
@@ -21,6 +22,16 @@ module EasySync
       @current = File.join destination, Time.now.strftime("%Y-%m-%d")
     end
 
+    def remove_old_backups
+      backups = Dir["#{destination}/*"].sort_by{|s| File.atime s}
+
+      (backups - backups.last(3)).each do |r|
+        puts "Removing #{r}"
+        FileUtils.remove_dir(r, true)
+      end
+
+    end
+
     def sync
       commands = [
                   "rsync",
@@ -33,8 +44,10 @@ module EasySync
       commands << ["#{source}", "#{current_snapshot}"]
       commands = commands.flatten
 
-      name = "\n\n\n------------------ Running #{sync_name} ------------------\n\n\n"
-      puts name
+      puts "\n\n\n------------------ Running #{sync_name} ------------------\n\n\n"
+
+      remove_old_backups
+
       puts "latest snapshot #{@last_snapshot}"
 
       IO.popen(commands).each_line do |l|
