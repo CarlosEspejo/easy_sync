@@ -15,7 +15,7 @@ module EasySync
     end
 
     def latest_snapshot
-      @last_snapshot = Dir["#{destination}/*"].max_by{|s| File.atime s}
+      @last_snapshot = Dir["#{destination}/*"].max
     end
 
     def current_snapshot
@@ -23,7 +23,7 @@ module EasySync
     end
 
     def remove_old_backups
-      backups = Dir["#{destination}/*"].sort_by{|s| File.atime s}
+      backups = Dir["#{destination}/*"]
 
       (backups - backups.last(3)).each do |r|
         puts "Removing #{r}"
