@@ -25,7 +25,7 @@ module EasySync
     def remove_old_backups
       backups = Dir["#{destination}/*"]
 
-      (backups - backups.last(3)).each do |r|
+      (backups - backups.last(5)).each do |r|
         puts "Removing #{r}"
         FileUtils.remove_dir(r, true)
       end
