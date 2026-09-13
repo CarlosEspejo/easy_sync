@@ -4,12 +4,17 @@ require 'fileutils'
 
 module EasySync
   module Jbod
-    # Prevents two `easy_sync jbod sync` runs from overlapping: doubled NAS
+    # Prevents two `easy_sync sync` runs from overlapping: doubled NAS
     # load, and two processes racing to place folders on the same free space.
     # A PID file at +path+ is the lock; a stale one (its process no longer
     # running) is reclaimed automatically rather than blocking forever.
     class RunLock
       class AlreadyRunning < Error; end
+
+      # pid: the process holding the lock. started_at: the lock file's mtime,
+      # which is set once when it's written and never touched again for the
+      # life of the run, so it doubles as the run's start time.
+      Status = Struct.new(:pid, :started_at, keyword_init: true)
 
       def initialize(path)
         @path = path
@@ -30,6 +35,14 @@ module EasySync
         ensure
           File.delete(@path) if File.exist?(@path) && File.read(@path).strip == Process.pid.to_s
         end
+      end
+
+      # The run currently holding the lock, or nil if none is (a stale lock
+      # left by a dead process counts as none).
+      def status
+        pid = holder or return nil
+
+        Status.new(pid: pid, started_at: File.mtime(@path))
       end
 
       private

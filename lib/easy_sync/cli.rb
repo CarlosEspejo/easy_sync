@@ -14,7 +14,7 @@ module EasySync
       ]],
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
-        ['status', 'drives, their health, and folders'],
+        ['status', 'whether a sync is running, drives, their health, and folders'],
         ['dashboard', 'regenerate the HTML report']
       ]],
       ['Maintain', [
@@ -409,6 +409,7 @@ module EasySync
     end
 
     def status
+      print_run_status
       mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
       manifest.drives.each do |d|
@@ -432,6 +433,26 @@ module EasySync
                   "#{Jbod::Placement.format_bytes(f.size_bytes).rjust(10)}  last synced #{f.last_synced_at || 'never'} " \
                   "#{f.last_sync_status}"
       end
+    end
+
+    # A stale lock (its process no longer running) is reported as not running,
+    # the same way RunLock itself would reclaim it on the next `sync`.
+    def print_run_status
+      run = Jbod::RunLock.new(settings[:lock_path]).status
+      @out.puts(run ? "Sync running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
+                      "(#{format_elapsed(@clock.now - run.started_at)} ago)" \
+                    : 'No sync currently running.')
+      @out.puts
+    end
+
+    # "2h 34m", "45m", or "12s".
+    def format_elapsed(seconds)
+      hours, rem = seconds.to_i.divmod(3600)
+      minutes, secs = rem.divmod(60)
+      return "#{hours}h #{minutes}m" if hours.positive?
+      return "#{minutes}m #{secs}s" if minutes.positive?
+
+      "#{secs}s"
     end
 
     def history(folder)
