@@ -16,6 +16,7 @@ module EasySync
         history [FOLDER]                                   where has a folder lived?
         reassign FOLDER DRIVE_NAME [--note TEXT]           record a move you made by hand (moves no data)
         pending                                            deletion candidates and their expiry dates
+        clean [--dry-run]                                  remove excluded junk (#recycle, .DS_Store, ...) from the drives now
         plan [--largest-drive SIZE]                        split or whole? measured recommendation per share
         dashboard                                          regenerate the HTML report only
 
@@ -51,6 +52,7 @@ module EasySync
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
       when 'pending' then pending
+      when 'clean' then clean(@argv)
       when 'plan' then plan(@argv)
       when 'dashboard' then dashboard
       else
@@ -125,6 +127,27 @@ module EasySync
                                      out: log, dry_run: opts[:dry_run], purge: opts[:purge], clock: @clock).run
         ensure
           log.close
+        end
+      end
+    end
+
+    # Removes anything matching exclude_folders from the placed folders on
+    # every mounted drive, without waiting for the deletion grace period.
+    def clean(args)
+      dry_run = false
+      OptionParser.new { |o| o.on('--dry-run', 'List what would be removed') { dry_run = true } }.parse!(args)
+      Jbod::RunLock.new(settings[:lock_path]).acquire do
+        mounted = volume_info.mounted_drives(manifest.drives)
+        raise Error, 'no registered drive is mounted' if mounted.empty?
+
+        @out.puts "#{dry_run ? 'Would remove' : 'Removing'} entries matching #{settings[:exclude_folders].join(', ')} " \
+                  "from #{mounted.map(&:friendly_name).join(', ')}:"
+        result = Jbod::Cleaner.new(manifest, excludes: settings[:exclude_folders], out: @out).run(mounted, dry_run: dry_run)
+        if dry_run
+          @out.puts "#{result.would_remove.size} entr#{result.would_remove.size == 1 ? 'y' : 'ies'} would be removed."
+        else
+          @out.puts "Removed #{result.removed.size} entr#{result.removed.size == 1 ? 'y' : 'ies'}, " \
+                    "#{Jbod::Placement.format_bytes(result.bytes)} freed."
         end
       end
     end

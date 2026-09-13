@@ -219,6 +219,32 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'clean' do
+    it 'removes excluded junk from mounted drives and reports what it freed' do
+      vol = make_dirs(mount_root, 'backup-01-3tb').first
+      File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-01-3tb"}')
+      fake_shell.on('df', output: df_output(vol, capacity_kb: 3_000_000, used_kb: 1_000))
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.assign_folder('pro', 'S1')
+      m.close
+      write_file(File.join(vol, 'pro', '#recycle', 'junk.bin'), 'x' * 2048)
+      write_file(File.join(vol, 'pro', 'keep.mp4'))
+
+      expect(cli('clean', '--dry-run').run).to eq(0)
+      expect(File).to exist(File.join(vol, 'pro', '#recycle', 'junk.bin'))
+      expect(cli('clean').run).to eq(0)
+      expect(File).not_to exist(File.join(vol, 'pro', '#recycle'))
+      expect(File).to exist(File.join(vol, 'pro', 'keep.mp4'))
+      expect(out.string).to include('would remove pro/#recycle', 'Removed 1 entry, 2.0 KB freed')
+    end
+
+    it 'refuses when no registered drive is mounted' do
+      expect(cli('clean').run).to eq(1)
+      expect(err.string).to include('no registered drive is mounted')
+    end
+  end
+
   describe 'jbod sync' do
     def merge_jbod_config(**overrides)
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)

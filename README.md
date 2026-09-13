@@ -205,6 +205,12 @@ share follows the same rule; on expiry its manifest row is removed and a
 audit table and shown on the dashboard.
 
     easy_sync pending               # every candidate and when it expires
+    easy_sync clean                 # remove excluded junk from the drives now, no waiting
+
+Entries whose name matches `exclude_folders` (a `#recycle` copied before the
+exclusion existed, stray `.DS_Store` files) are never legitimately part of a
+backup, so `clean` removes them from every placed folder on every mounted drive
+immediately. `--dry-run` lists them first.
 
 Long runs
 ---------
@@ -250,6 +256,7 @@ Commands
 | `plan [--largest-drive 8tb]` | measure each share and recommend split or whole |
 | `status` | drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
+| `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER DRIVE [--note TEXT]` | record a move you made by hand (moves no data) |
 | `dashboard` | regenerate the HTML report only |
