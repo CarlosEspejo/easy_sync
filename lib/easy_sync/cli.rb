@@ -43,8 +43,6 @@ module EasySync
       "#{lines.join("\n")}\n"
     end
 
-    COMMANDS = %w[sync register-drive status history reassign pending plan dashboard].freeze
-
     def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV,
                    keep_awake: Jbod::KeepAwake.new, clock: Time)
       @argv = argv.dup

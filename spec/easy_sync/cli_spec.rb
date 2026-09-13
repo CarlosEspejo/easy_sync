@@ -26,7 +26,7 @@ RSpec.describe EasySync::CLI do
 
   def manifest = EasySync::Jbod::Manifest.open(manifest_path)
 
-  describe 'jbod register-drive' do
+  describe 'register-drive' do
     let(:vol) { make_dirs(mount_root, 'backup-04-8tb').first }
 
     before do
@@ -95,7 +95,7 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'jbod reassign / history / status' do
+  describe 'reassign / history / status' do
     before do
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
@@ -301,8 +301,8 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'jbod sync' do
-    def merge_jbod_config(**overrides)
+  describe 'sync' do
+    def merge_sync_config(**overrides)
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
       File.write(config_path, cfg.merge(overrides).to_yaml)
     end
@@ -315,7 +315,7 @@ RSpec.describe EasySync::CLI do
 
     it 'refuses a second concurrent run and leaves an already-running lock untouched' do
       lock_path = File.join(temp_dir, 'jbod.lock')
-      merge_jbod_config(lock_path: lock_path)
+      merge_sync_config(lock_path: lock_path)
       FileUtils.mkdir_p(File.dirname(lock_path))
       File.write(lock_path, Process.pid.to_s) # simulate a live concurrent run
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
@@ -326,7 +326,7 @@ RSpec.describe EasySync::CLI do
     end
 
     it 'keeps the Mac awake for the run unless told not to' do
-      merge_jbod_config(sources: [])
+      merge_sync_config(sources: [])
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
       allow(keep_awake).to receive(:start).and_return(true)
 
@@ -339,7 +339,7 @@ RSpec.describe EasySync::CLI do
     end
 
     it 'respects keep_awake: false in the config' do
-      merge_jbod_config(sources: [], keep_awake: false)
+      merge_sync_config(sources: [], keep_awake: false)
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
       cli('sync').run
       expect(keep_awake).not_to have_received(:start)
@@ -347,7 +347,7 @@ RSpec.describe EasySync::CLI do
 
     it 'releases the lock after a run so a later sync can proceed' do
       lock_path = File.join(temp_dir, 'jbod.lock')
-      merge_jbod_config(lock_path: lock_path, sources: [])
+      merge_sync_config(lock_path: lock_path, sources: [])
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
 
       cli('sync').run # fails fast (no sources configured), but the lock must still be released
@@ -355,7 +355,7 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'jbod pending' do
+  describe 'pending' do
     it 'lists candidates with their expiry' do
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
@@ -413,7 +413,7 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'jbod status with a locked drive' do
+  describe 'status with a locked drive' do
     it 'says the drive is locked instead of merely not mounted' do
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'jbod-test-2', capacity_bytes: 3 * TB)
@@ -428,7 +428,7 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'jbod plan' do
+  describe 'plan' do
     it 'prints measurements and a recommendation per share, and --apply writes it to the config' do
       nas = make_dirs(temp_dir, 'nas').first
       make_dirs(nas, 'A', 'B')

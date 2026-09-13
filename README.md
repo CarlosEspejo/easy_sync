@@ -301,6 +301,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `placement_history` | every `assigned`, `reassigned` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
 | `pending_deletions` | paths gone from the NAS, first seen and runs confirmed |
+| `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |
 | `deletions` | audit log of everything actually removed from a drive |
 
 Development

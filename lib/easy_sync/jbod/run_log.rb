@@ -43,10 +43,6 @@ module EasySync
         @file.print(*args) unless args.join.include?("\r")
       end
 
-      def write(*args) = print(*args)
-      def <<(text) = tap { print(text) }
-      def flush = @out.flush
-
       def close = @file.close
     end
   end
