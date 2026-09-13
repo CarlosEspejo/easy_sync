@@ -34,7 +34,7 @@ module EasySync
         locals = {
           drives: drives,
           folders: manifest.folders,
-          names: manifest.drives.to_h { |d| [d.serial_number, d.friendly_name] },
+          names: manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] },
           history: manifest.history(limit: 50),
           runs: manifest.sync_runs(limit: 30),
           generated_at: @clock.now,

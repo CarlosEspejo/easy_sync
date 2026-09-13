@@ -141,6 +141,34 @@ A sync run
 A folder that has outgrown its drive gets a distinct "drive full" status rather
 than a bare rsync error; reassign it to a roomier drive.
 
+Replacing or upgrading a drive
+------------------------------
+
+Register the new drive first, then hand the old one's folders over:
+
+    easy_sync register-drive /Volumes/backup-08-12tb
+    easy_sync replace-drive backup-04-8tb --to backup-08-12tb --copy
+    easy_sync sync
+
+**Upgrading, or replacing a drive that still reads** (the dashboard shows it
+amber): use `--copy`. With both drives mounted, the old one's contents are
+copied straight onto the new one over the local bus, which is far faster than
+re-pulling them from the NAS. Every folder is then recorded as living on the new
+drive, the old drive is retired, and the next sync just verifies each folder
+against the NAS. If the copy fails nothing in the manifest changes.
+
+**Replacing a dead drive:** leave `--copy` out. The folders are recorded on the
+new drive and the next sync copies them from the NAS. That is a long run, the
+same as the first sync for those folders.
+
+**No replacement yet, or one that's smaller:** leave `--to` out as well. The old
+drive's folders are forgotten, and the next sync places each one afresh across
+whatever is mounted, by the usual most-free-space rule.
+
+A retired drive keeps its row and its history, so `easy_sync history` still
+shows where every folder used to live, but it is never placed on or written to
+again, even if it turns up mounted. `status` lists retired drives at the end.
+
 Deletions have a grace period
 -----------------------------
 
@@ -198,6 +226,7 @@ Commands
 |---|---|
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
+| `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
 | `plan [--largest-drive 8tb]` | measure each share and recommend split or whole |
 | `status` | drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
@@ -226,7 +255,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 
 | table | holds |
 |---|---|
-| `drives` | serial (PK), name, capacity, added date, volume UUID, last seen usage, SMART status and detail |
+| `drives` | serial (PK), name, capacity, added date, volume UUID, last seen usage, SMART status and detail, retired date |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
 | `placement_history` | every `assigned`, `reassigned` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |

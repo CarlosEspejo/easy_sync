@@ -126,6 +126,99 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'replace-drive' do
+    let(:old_vol) { make_dirs(mount_root, 'backup-04-8tb').first }
+    let(:new_vol) { make_dirs(mount_root, 'backup-08-12tb').first }
+
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'OLD', friendly_name: 'backup-04-8tb', capacity_bytes: 8 * TB)
+      m.register_drive(serial_number: 'NEW', friendly_name: 'backup-08-12tb', capacity_bytes: 12 * TB)
+      m.register_drive(serial_number: 'GONE', friendly_name: 'backup-00', capacity_bytes: 1 * TB)
+      m.retire_drive('GONE')
+      m.assign_folder('movies/A', 'OLD')
+      m.assign_folder('movies/B', 'OLD')
+      m.assign_folder('photos', 'NEW')
+      m.close
+    end
+
+    it 'with --to: moves every folder to the new drive and retires the old one' do
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run).to eq(0)
+      m = manifest
+      expect(m.folders_on('NEW').map(&:folder_path)).to eq(['movies/A', 'movies/B', 'photos'])
+      expect(m.drive('OLD')).to be_retired
+      expect(m.drives.map(&:friendly_name)).to eq(['backup-08-12tb'])
+      expect(out.string).to include('Retired backup-04-8tb', '2 folders now recorded on backup-08-12tb', 'copy them there from the NAS')
+      expect(fake_shell.calls_to('rsync')).to be_empty
+    end
+
+    it 'without --to: forgets the folders so the next sync places them afresh' do
+      expect(cli('replace-drive', 'backup-04-8tb').run).to eq(0)
+      m = manifest
+      expect(m.folder('movies/A')).to be_nil
+      expect(m.folder('photos').drive_serial).to eq('NEW')
+      expect(m.drive('OLD')).to be_retired
+      expect(out.string).to include('2 folders forgotten', 'place them afresh')
+    end
+
+    it 'with --copy: rsyncs old to new over the local bus first, then records the move' do
+      %w[OLD NEW].zip([old_vol, new_vol]).each do |serial, vol|
+        File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
+      end
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == old_vol }, output: df_output(old_vol, capacity_kb: 8_000_000, used_kb: 5_000_000))
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == new_vol }, output: df_output(new_vol, capacity_kb: 12_000_000, used_kb: 10))
+      fake_shell.on('rsync', output: rsync_stats)
+
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb', '--copy').run).to eq(0)
+      copy = fake_shell.calls_to('rsync').first
+      expect(copy[0..1]).to eq(['rsync', '-a'])
+      expect(copy).to include('--exclude=.easy_sync', '--exclude=#recycle')
+      expect(copy.last(2)).to eq(["#{old_vol}/", "#{new_vol}/"])
+      expect(manifest.folders_on('NEW').size).to eq(3)
+      expect(out.string).to include('Copying backup-04-8tb -> backup-08-12tb', 'verify them against the NAS')
+    end
+
+    it 'with --copy: refuses when the new drive is too small, or the copy fails, leaving the manifest untouched' do
+      %w[OLD NEW].zip([old_vol, new_vol]).each do |serial, vol|
+        File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
+      end
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == old_vol }, output: df_output(old_vol, capacity_kb: 8_000_000, used_kb: 5_000_000))
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == new_vol }, output: df_output(new_vol, capacity_kb: 12_000_000, used_kb: 11_000_000))
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb', '--copy').run).to eq(1)
+      expect(err.string).to include('has 976.6 MB free but backup-04-8tb holds 4.8 GB')
+      expect(manifest.drive('OLD')).not_to be_retired
+
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == new_vol }, output: df_output(new_vol, capacity_kb: 12_000_000, used_kb: 10))
+      fake_shell.on('rsync', output: 'boom', status: 23)
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb', '--copy').run).to eq(1)
+      expect(err.string).to include('copy failed (rsync exit 23); nothing was changed')
+      expect(manifest.folders_on('OLD').size).to eq(2)
+    end
+
+    it 'rejects unknown, retired, identical and unmounted drives clearly' do
+      expect(cli('replace-drive', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+      expect(cli('replace-drive', 'backup-00').run).to eq(1)
+      expect(err.string).to include('already retired')
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-04-8tb').run).to eq(1)
+      expect(err.string).to include('same')
+      expect(cli('replace-drive', 'backup-04-8tb', '--copy').run).to eq(1)
+      expect(err.string).to include('--copy needs --to')
+      expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb', '--copy').run).to eq(1)
+      expect(err.string).to include('backup-04-8tb is not mounted (needed for --copy)')
+    end
+
+    it 'lists retired drives in status, and names them in history' do
+      cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run
+      out.truncate(0)
+      cli('status').run
+      expect(out.string).to include('backup-04-8tb', 'retired 20')
+      out.truncate(0)
+      cli('history', 'movies/A').run
+      expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')
+    end
+  end
+
   describe 'jbod sync' do
     def merge_jbod_config(**overrides)
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)

@@ -11,6 +11,7 @@ module EasySync
 
         sync [--dry-run] [--no-purge] [--no-keep-awake]   mirror the shares onto the drives
         register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]
+        replace-drive OLD_NAME [--to NEW_NAME] [--copy]      retire a drive; move its folders to NEW (or let the next sync re-place them)
         status                                             drives and folders, in the terminal
         history [FOLDER]                                   where has a folder lived?
         reassign FOLDER DRIVE_NAME [--note TEXT]           record a move you made by hand (moves no data)
@@ -43,6 +44,7 @@ module EasySync
       when nil, '-h', '--help', 'help' then @out.puts USAGE
       when 'sync' then sync(@argv)
       when 'register-drive' then register_drive(@argv)
+      when 'replace-drive' then replace_drive(@argv)
       when 'status' then status
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
@@ -201,6 +203,63 @@ module EasySync
       @out.puts "SMART: #{health.status} (#{health.detail})"
     end
 
+    # Retires OLD. With --to NEW every folder on OLD is recorded as living on
+    # NEW; without it the folders are forgotten so the next sync places them
+    # afresh across whatever is mounted. --copy first rsyncs OLD's contents to
+    # NEW over the local bus (both must be mounted), so a readable old drive
+    # never has to be re-pulled from the NAS.
+    def replace_drive(args)
+      opts = { copy: false }
+      OptionParser.new do |o|
+        o.on('--to NEW_NAME', 'Registered drive that takes over every folder of the old one') { |v| opts[:to] = v }
+        o.on('--copy', 'Copy the old drive onto the new one locally first (both mounted)') { opts[:copy] = true }
+        o.on('--note TEXT') { |v| opts[:note] = v }
+      end.parse!(args)
+      old_name = args.first or raise Error, "replace-drive needs the old drive's name\n\n#{USAGE}"
+      old = manifest.drive_by_name(old_name) or raise Error, "no drive named #{old_name}"
+      raise Error, "#{old_name} is already retired" if old.retired?
+
+      new_drive = nil
+      if opts[:to]
+        new_drive = manifest.drive_by_name(opts[:to]) or raise Error, "no drive named #{opts[:to]}; register it first"
+        raise Error, "#{opts[:to]} is retired" if new_drive.retired?
+        raise Error, 'old and new drive are the same' if new_drive.serial_number == old.serial_number
+      end
+      raise Error, '--copy needs --to NEW_NAME' if opts[:copy] && !new_drive
+
+      folders = manifest.folders_on(old.serial_number)
+      copy_drive(old, new_drive) if opts[:copy]
+
+      note = opts[:note] || (new_drive ? "#{old.friendly_name} replaced by #{new_drive.friendly_name}" : "#{old.friendly_name} retired")
+      manifest.move_all_folders(old.serial_number, new_drive&.serial_number, note: note)
+      manifest.retire_drive(old.serial_number)
+
+      @out.puts "Retired #{old.friendly_name}."
+      if new_drive
+        @out.puts "#{folders.size} folder#{'s' if folders.size != 1} now recorded on #{new_drive.friendly_name}."
+        @out.puts(opts[:copy] ? 'Run `easy_sync sync` to verify them against the NAS.' \
+                              : 'Run `easy_sync sync` to copy them there from the NAS.')
+      else
+        @out.puts "#{folders.size} folder#{'s' if folders.size != 1} forgotten; the next `easy_sync sync` will place " \
+                  'them afresh across the mounted drives and copy them from the NAS.'
+      end
+    end
+
+    # rsync OLD -> NEW over the local bus, excluding each drive's own .easy_sync folder.
+    def copy_drive(old, new_drive)
+      mounted = volume_info.mounted_drives([old, new_drive]).to_h { |m| [m.serial_number, m] }
+      src = mounted[old.serial_number] or raise Error, "#{old.friendly_name} is not mounted (needed for --copy)"
+      dst = mounted[new_drive.serial_number] or raise Error, "#{new_drive.friendly_name} is not mounted (needed for --copy)"
+      if src.used_bytes > dst.free_bytes
+        raise Error, "#{new_drive.friendly_name} has #{Jbod::Placement.format_bytes(dst.free_bytes)} free but " \
+                     "#{old.friendly_name} holds #{Jbod::Placement.format_bytes(src.used_bytes)}"
+      end
+      @out.puts "Copying #{old.friendly_name} -> #{new_drive.friendly_name} (#{Jbod::Placement.format_bytes(src.used_bytes)})..."
+      excludes = (settings[:exclude_folders] + [Jbod::DRIVE_DIR]).map { |e| "--exclude=#{e}" }
+      result = @shell.run(['rsync', '-a', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
+      raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
+    end
+
     # --serial wins outright. Otherwise try the hardware serial via smartctl
     # first (a real, stable serial that survives a reformat), falling back to
     # the APFS Volume UUID when smartctl can't reach the drive (no smartctl
@@ -231,8 +290,10 @@ module EasySync
         @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} #{usage}"
         @out.puts "  #{' ' * 16} SMART #{d.smart_status || 'unchecked'}#{d.smart_detail ? ": #{d.smart_detail}" : ''}"
       end
+      retired = manifest.drives(include_retired: true).select(&:retired?)
+      retired.each { |d| @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} retired #{d.retired_at}" }
       @out.puts "\nFolders:"
-      names = manifest.drives.to_h { |d| [d.serial_number, d.friendly_name] }
+      names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.friendly_name] }
       manifest.folders.each do |f|
         @out.puts "  #{f.folder_path.ljust(30)} #{names.fetch(f.drive_serial, f.drive_serial).ljust(16)} " \
                   "#{Jbod::Placement.format_bytes(f.size_bytes).rjust(10)}  last synced #{f.last_synced_at || 'never'} " \
@@ -241,7 +302,7 @@ module EasySync
     end
 
     def history(folder)
-      names = manifest.drives.to_h { |d| [d.serial_number, d.friendly_name] }
+      names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.friendly_name] }
       manifest.history(folder).each do |e|
         @out.puts "#{e.recorded_at}  #{e.event.ljust(10)} #{e.folder_path.ljust(30)} -> #{names.fetch(e.drive_serial, e.drive_serial)}  #{e.note}"
       end

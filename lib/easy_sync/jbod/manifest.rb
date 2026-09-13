@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 3
+      SCHEMA_VERSION = 4
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -59,8 +59,35 @@ module EasySync
         drive(serial_number)
       end
 
-      def drives
-        db.execute('SELECT * FROM drives ORDER BY friendly_name').map { |row| row_to_drive(row) }
+      # Active drives by default; a retired drive is never placed on or written to.
+      def drives(include_retired: false)
+        sql = 'SELECT * FROM drives'
+        sql += ' WHERE retired_at IS NULL' unless include_retired
+        db.execute("#{sql} ORDER BY friendly_name").map { |row| row_to_drive(row) }
+      end
+
+      # Marks a drive retired. Its row and history stay so old placements
+      # remain answerable; #drives no longer returns it.
+      def retire_drive(serial_number, at: now)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET retired_at = ? WHERE serial_number = ?', [at, serial_number])
+        drive(serial_number)
+      end
+
+      # Moves every folder on +from_serial+ to +to_serial+ (recording each), or
+      # when +to_serial+ is nil removes their rows so the next sync places them
+      # afresh. Returns the folder paths affected.
+      def move_all_folders(from_serial, to_serial, note:, at: now)
+        paths = folders_on(from_serial).map(&:folder_path)
+        paths.each do |path|   # each call is its own transaction; SQLite cannot nest them
+          if to_serial
+            reassign_folder(path, to_serial, note: note, at: at)
+          else
+            clear_pending(path)
+            remove_folder(path, note: note, at: at)
+          end
+        end
+        paths
       end
 
       def drive(serial_number)
@@ -320,7 +347,8 @@ module EasySync
               last_free_bytes INTEGER,
               smart_status    TEXT,
               smart_detail    TEXT,
-              smart_checked_at TEXT
+              smart_checked_at TEXT,
+              retired_at      TEXT
             );
 
             CREATE TABLE IF NOT EXISTS folders (
@@ -375,12 +403,13 @@ module EasySync
               deleted_at       TEXT NOT NULL
             );
           SQL
-          add_missing_columns('drives', smart_status: 'TEXT', smart_detail: 'TEXT', smart_checked_at: 'TEXT')
+          add_missing_columns('drives', smart_status: 'TEXT', smart_detail: 'TEXT', smart_checked_at: 'TEXT',
+                                        retired_at: 'TEXT')
           db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
         end
       end
 
-      # Schema v3 added the SMART columns; a v1/v2 database gets them here.
+      # Schema v3 added the SMART columns and v4 retired_at; older databases get them here.
       def add_missing_columns(table, columns)
         present = db.execute("PRAGMA table_info(#{table})").map { |r| r['name'] }
         columns.each do |name, type|

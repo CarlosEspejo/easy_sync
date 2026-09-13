@@ -194,6 +194,44 @@ RSpec.describe EasySync::Jbod::Manifest do
   end
 end
 
+RSpec.describe EasySync::Jbod::Manifest, 'retiring drives' do
+  let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
+  let(:manifest) { memory_manifest(clock: clock) }
+
+  before do
+    register_fleet(manifest)
+    manifest.assign_folder('movies/A', 'SN-backup-04-8tb')
+    manifest.assign_folder('movies/B', 'SN-backup-04-8tb')
+    manifest.assign_folder('photos', 'SN-backup-01-3tb')
+    manifest.reconcile_pending('movies/A', [['old.srt', 'file']])
+  end
+
+  it 'hides a retired drive from #drives unless asked, keeping its row' do
+    manifest.retire_drive('SN-backup-04-8tb')
+    expect(manifest.drives.map(&:friendly_name)).not_to include('backup-04-8tb')
+    expect(manifest.drives(include_retired: true).map(&:friendly_name)).to include('backup-04-8tb')
+    expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(retired_at: '2026-09-13T12:00:00Z')
+    expect(manifest.drive('SN-backup-04-8tb')).to be_retired
+  end
+
+  it 'moves every folder of a drive to another, recording each' do
+    moved = manifest.move_all_folders('SN-backup-04-8tb', 'SN-backup-07-8tb', note: 'replaced')
+    expect(moved).to eq(['movies/A', 'movies/B'])
+    expect(manifest.folders_on('SN-backup-04-8tb')).to be_empty
+    expect(manifest.folders_on('SN-backup-07-8tb').map(&:folder_path)).to eq(['movies/A', 'movies/B'])
+    expect(manifest.folder('photos').drive_serial).to eq('SN-backup-01-3tb')
+    expect(manifest.history('movies/A').first).to have_attributes(event: 'reassigned', drive_serial: 'SN-backup-07-8tb', note: 'replaced')
+  end
+
+  it 'forgets every folder of a drive when there is no replacement, so they are placed afresh' do
+    manifest.move_all_folders('SN-backup-04-8tb', nil, note: 'retired')
+    expect(manifest.folder('movies/A')).to be_nil
+    expect(manifest.folder('photos')).not_to be_nil
+    expect(manifest.pending_deletions).to be_empty
+    expect(manifest.history('movies/A').first).to have_attributes(event: 'removed', note: 'retired')
+  end
+end
+
 RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
   let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
   let(:manifest) { memory_manifest(clock: clock) }
@@ -278,7 +316,7 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
     db = SQLite3::Database.new(':memory:')
     db.execute('PRAGMA user_version = 1')
     m = described_class.new(db)
-    expect(m.schema_version).to eq(3)
+    expect(m.schema_version).to eq(4)
     expect(m.pending_deletions).to eq([])
   end
 
@@ -292,7 +330,8 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
       PRAGMA user_version = 2;
     SQL
     m = described_class.new(db, clock: clock)
-    expect(m.schema_version).to eq(3)
+    expect(m.schema_version).to eq(4)
+    expect(m.drive('S1')).not_to be_retired
     expect(m.drive('S1')).to have_attributes(friendly_name: 'backup-01-3tb', smart_status: nil)
     m.update_drive_health('S1', status: 'ok', detail: 'PASSED')
     expect(m.drive('S1')).to have_attributes(smart_status: 'ok', smart_detail: 'PASSED', smart_checked_at: '2026-09-13T12:00:00Z')
