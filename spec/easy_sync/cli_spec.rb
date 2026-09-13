@@ -497,9 +497,22 @@ RSpec.describe EasySync::CLI do
     expect(err.string).to include('Unknown command: bogus', 'Usage:')
   end
 
-  it 'prints usage when called with no arguments' do
+  it 'prints grouped, aligned usage, and a get-started hint while nothing is configured' do
+    File.delete(config_path)   # a brand-new user: no config at all yet
     expect(cli.run).to eq(0)
-    expect(out.string).to include('Usage: easy_sync')
+    expect(File).to exist(config_path)   # bare `easy_sync` is enough to create it
+    expect(err.string).to include('Generated sample config file')
+    expect(out.string).to include('Usage: easy_sync', 'Set up, once:', 'Back up:', 'Maintain:', 'Global options:', '--version')
+    table = out.string.split('Nothing is configured').first
+    rows = table.lines.select { |l| l.start_with?('  ') && l.index('  ', 2) }
+    expect(rows.size).to be > 12
+    expect(rows.map { |l| l.index(/\S/, l.index('  ', 2)) }.uniq.size).to eq(1)   # every description starts in the same column
+    expect(out.string).to include('Nothing is configured yet', 'easy_sync add-source /Volumes/<share>')
     expect(fake_shell.calls).to be_empty
+
+    EasySync::Config.load(config_path).first.tap { |c| c.add_source('/Volumes/x', split: true); c.save }
+    out.truncate(0); out.rewind
+    cli.run
+    expect(out.string).not_to include('Nothing is configured yet')
   end
 end

@@ -6,27 +6,43 @@ module EasySync
   # Command-line entry point. `easy_sync jbod <command>` (the 1.x spelling)
   # is accepted as an alias for `easy_sync <command>`.
   class CLI
-    USAGE = <<~TEXT
-      Usage: easy_sync [--config PATH] <command>
+    # [group, [[command, description], ...]] in the order a new user meets them.
+    COMMAND_GROUPS = [
+      ['Set up, once', [
+        ['add-source PATH [--split | --whole]', 'add a NAS share (mounted on this Mac); split/whole is inferred unless given'],
+        ['register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]', 'add a backup drive (mounted and unlocked)'],
+        ['plan [--largest-drive SIZE] [--apply]', 'measure each share and recommend split or whole; --apply writes it']
+      ]],
+      ['Back up', [
+        ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
+        ['status', 'drives, their health, and folders'],
+        ['dashboard', 'regenerate the HTML report']
+      ]],
+      ['Maintain', [
+        ['pending', 'deletion candidates and when each expires'],
+        ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
+        ['history [FOLDER]', 'where a folder has lived'],
+        ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
+        ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
+        ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
+        ['sources', 'list the configured shares']
+      ]]
+    ].freeze
 
-        add-source PATH [--split | --whole]                add a NAS share (mounted on this Mac) to back up
-        remove-source PATH                                 stop backing up a share (drives are left alone)
-        sources                                            list the configured shares
-        sync [--dry-run] [--no-purge] [--no-keep-awake]   mirror the shares onto the drives
-        register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]
-        replace-drive OLD_NAME [--to NEW_NAME] [--copy]      retire a drive; move its folders to NEW (or let the next sync re-place them)
-        status                                             drives and folders, in the terminal
-        history [FOLDER]                                   where has a folder lived?
-        reassign FOLDER DRIVE_NAME [--note TEXT]           record a move you made by hand (moves no data)
-        pending                                            deletion candidates and their expiry dates
-        clean [--dry-run]                                  remove excluded junk (#recycle, .DS_Store, ...) from the drives now
-        plan [--largest-drive SIZE] [--apply]              split or whole? measured recommendation per share (--apply writes it)
-        dashboard                                          regenerate the HTML report only
-
-      --config PATH overrides the config file (default ~/.easy_sync/config.yml);
-      the EASY_SYNC_CONFIG environment variable does the same.
-      --version (or `version`) prints the version.
-    TEXT
+    USAGE = begin
+      width = COMMAND_GROUPS.flat_map { |_, cmds| cmds.map { |c, _| c.length } }.max + 2
+      lines = ['Usage: easy_sync [--config PATH] <command> [options]', '']
+      COMMAND_GROUPS.each do |group, cmds|
+        lines << "#{group}:"
+        cmds.each { |c, d| lines << "  #{c.ljust(width)}#{d}" }
+        lines << ''
+      end
+      lines << 'Global options:'
+      lines << "  #{'--config PATH'.ljust(width)}use this config file (default ~/.easy_sync/config.yml; EASY_SYNC_CONFIG does the same)"
+      lines << "  #{'--version'.ljust(width)}print the version"
+      lines << "  #{'--help'.ljust(width)}this text"
+      "#{lines.join("\n")}\n"
+    end
 
     COMMANDS = %w[sync register-drive status history reassign pending plan dashboard].freeze
 
@@ -46,7 +62,9 @@ module EasySync
       command = @argv.shift
       command = @argv.shift if command == 'jbod'   # 1.x alias
       case command
-      when nil, '-h', '--help', 'help' then @out.puts USAGE
+      when nil, '-h', '--help', 'help'
+        @out.puts USAGE
+        @out.puts get_started_hint if nothing_configured?
       when '-v', '--version', 'version' then @out.puts "easy_sync #{VERSION}"
       when 'add-source' then add_source(@argv)
       when 'remove-source' then remove_source(@argv)
@@ -79,6 +97,22 @@ module EasySync
     end
 
     private
+
+    # Help must never fail, whatever state the config is in.
+    def nothing_configured?
+      config.source_entries.empty?
+    rescue StandardError
+      false
+    end
+
+    def get_started_hint
+      "Nothing is configured yet. To get started:\n" \
+        "  easy_sync add-source /Volumes/<share>            once per NAS share\n" \
+        "  easy_sync register-drive /Volumes/<drive>        once per backup drive\n" \
+        "  easy_sync plan --apply\n" \
+        "  easy_sync sync --dry-run\n" \
+        "  easy_sync sync\n"
+    end
 
     # Global options come before the command: `easy_sync --config x sync`.
     def parse_global_options!

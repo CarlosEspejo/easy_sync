@@ -35,10 +35,11 @@ Mount and unlock the drives yourself first; the tool never unlocks anything.
 Configuration
 -------------
 
-You don't need to edit anything: `add-source`, `remove-source` and
-`plan --apply` maintain `~/.easy_sync/config.yml` for you, and `sources` lists
-it. The file stays readable and commented if you want to change the other
-settings by hand:
+The first command you run, even a bare `easy_sync`, creates
+`~/.easy_sync/config.yml`. You don't need to edit it: `add-source`,
+`remove-source` and `plan --apply` maintain it for you, and `sources` lists it.
+The file stays readable and commented if you want to change the other settings
+by hand:
 
 ```yaml
 :sources:                               # each NAS share, as mounted on the Mac
