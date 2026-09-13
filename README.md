@@ -284,7 +284,7 @@ Commands
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
 | `plan [SHARE ...] [--largest-drive 8tb] [--apply]` | measure each share (or just those named) and recommend split or whole; `--apply` writes it |
-| `status` | drives, health and folders, in the terminal |
+| `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `history [FOLDER]` | where a folder has lived |

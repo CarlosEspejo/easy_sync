@@ -59,4 +59,26 @@ RSpec.describe EasySync::Jbod::RunLock do
     end
     expect(File.read(path)).to eq('424242')
   end
+
+  describe '#status' do
+    it 'is nil when no lock file exists' do
+      expect(lock.status).to be_nil
+    end
+
+    it 'reports the pid and the lock file mtime as the start time while a live process holds it' do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, Process.pid.to_s)
+
+      status = lock.status
+      expect(status.pid).to eq(Process.pid)
+      expect(status.started_at).to eq(File.mtime(path))
+    end
+
+    it 'is nil for a stale lock left by a process that is no longer running' do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, '999999')
+
+      expect(lock.status).to be_nil
+    end
+  end
 end

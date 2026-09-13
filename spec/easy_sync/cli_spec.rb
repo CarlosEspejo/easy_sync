@@ -20,8 +20,8 @@ RSpec.describe EasySync::CLI do
 
   let(:keep_awake) { instance_double(EasySync::Jbod::KeepAwake, start: false) }
 
-  def cli(*args)
-    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake)
+  def cli(*args, clock: Time)
+    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake, clock: clock)
   end
 
   def manifest = EasySync::Jbod::Manifest.open(manifest_path)
@@ -123,6 +123,22 @@ RSpec.describe EasySync::CLI do
       m.close
       expect(cli('status').run).to eq(0)
       expect(out.string).to include('backup-01-3tb', 'not mounted', 'Photos', 'SMART unchecked', 'SMART warning: PASSED · pending 3')
+    end
+
+    it 'says no sync is running when the lock file is absent' do
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('No sync currently running.')
+    end
+
+    it 'shows a running sync and how long it has been running' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, Process.pid.to_s)
+      started = Time.utc(2026, 9, 13, 10, 0, 0)
+      File.utime(started, started, lock_path)
+
+      expect(cli('status', clock: double('clock', now: started + (2 * 3600) + (34 * 60))).run).to eq(0)
+      expect(out.string).to include("Sync running: pid #{Process.pid}", '2h 34m ago')
     end
   end
 
