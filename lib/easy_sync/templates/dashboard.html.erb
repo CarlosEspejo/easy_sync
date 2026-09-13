@@ -179,7 +179,7 @@
     <%= folder_rows(attention, source_status, pending, names) %>
   </details>
   <%- end -%>
-  <%- by_share(folders).each do |share, fs| -%>
+  <%- by_share(folders, inventory).each do |share, fs| -%>
     <%- problems = problems_in(fs, source_status) -%>
     <%- unsynced = unsynced_in(fs, source_status) -%>
   <details class="share"<%= ' open' if fs.size <= 5 %>>
@@ -190,7 +190,7 @@
       <%- if inv[:unplaced].any? -%><span class="share-problems"><%= inv[:unplaced].size %> not backed up</span><%- end -%>
       <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
     </summary>
-    <%= folder_rows(fs, source_status, pending, names) %>
+    <%- if fs.empty? -%><p class="empty">Nothing from this share fits on the mounted drives yet.</p><%- else -%><%= folder_rows(fs, source_status, pending, names) %><%- end -%>
   </details>
   <%- end -%>
   <%- unless unplaced_all.empty? -%>

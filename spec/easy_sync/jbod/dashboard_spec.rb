@@ -73,11 +73,14 @@ RSpec.describe EasySync::Jbod::Dashboard do
       { folder_path: 'movies/A', size_bytes: 10 * GB, state: 'placed', detail: 'on backup-05-8tb' },
       { folder_path: 'movies/B', size_bytes: 30 * GB, state: 'unplaced', detail: 'no drive has room' },
       { folder_path: 'movies/C', size_bytes: 20 * GB, state: 'unplaced', detail: 'no drive has room' },
-      { folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: 'on backup-04-8tb' }
+      { folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: 'on backup-04-8tb' },
+      { folder_path: 'synology', size_bytes: 2 * TB, state: 'unplaced', detail: 'no drive has room' }
     ])
     html = dashboard.render
-    expect(html).to include('4 folders on the NAS, 2 backed up, 2 NOT backed up')
-    expect(html).to match(%r{<strong>2 folders\s+\(50\.0 GB\) on the NAS are not backed up</strong>})
+    expect(html).to match(/<span class="share-name">synology<\/span>\s*<span class="share-meta">0 of 1 folders on the NAS backed up · 0 B of 2\.0 TB/)
+    expect(html).to include('Nothing from this share fits on the mounted drives yet.')
+    expect(html).to include('5 folders on the NAS, 2 backed up, 3 NOT backed up')
+    expect(html).to match(%r{<strong>3 folders\s+\(2\.0 TB\) on the NAS are not backed up</strong>})
     expect(html).to include('1 of 3 folders on the NAS backed up · 10.0 GB of 60.0 GB')
     expect(html).to match(/<span class="share-name">Not backed up<\/span>[\s\S]*?movies\/B[\s\S]*?30\.0 GB[\s\S]*?no drive has room/)
   end

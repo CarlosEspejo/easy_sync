@@ -102,8 +102,12 @@ module EasySync
       # Groups folders by share (the first path segment): a whole-share source
       # like "photos" is its own group of one; a split share like "tv" groups
       # every "tv/<show>". Returns [[share, [folders...]], ...] in share order.
-      def by_share(folders)
-        folders.group_by { |f| f.folder_path.split('/').first }.sort_by(&:first)
+      # +inventory+ adds shares that have nothing placed yet (nothing fit), so
+      # they still get a summary line.
+      def by_share(folders, inventory = [])
+        groups = folders.group_by { |f| f.folder_path.split('/').first }
+        inventory.each { |e| groups[e.share] ||= [] }
+        groups.sort_by(&:first)
       end
 
       def total_size(folders) = folders.sum { |f| f.size_bytes.to_i }
