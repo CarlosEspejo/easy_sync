@@ -308,6 +308,15 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(report.unplaced).to eq(['tv/Big Show'])
     end
 
+    it 'flags folders missing from the NAS before the copy phase begins' do
+      make_shows('Show A')
+      manifest.assign_folder('tv/Vanished', 'SN-backup-04-8tb')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      expect(out.string.index('no longer on the NAS')).to be < out.string.index('------------------ ')
+    end
+
     it 'decides every placement before the first copy, so an interrupted copy phase still leaves the full plan' do
       make_shows('A', 'B')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])

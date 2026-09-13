@@ -104,10 +104,12 @@ module EasySync
                   "#{report.unplaced.size} not backed up (#{Placement.format_bytes(unplaced_bytes)}: no room), " \
                   "#{report.empty.size} empty on the NAS"
 
-        # Phase 2: copy.
-        plan.each { |folder, target| sync_folder(folder, target, report) }
-
+        # Folders that vanished from a mounted share are flagged now, before
+        # the copy phase, so an interrupted run still notices them.
         source_status = reconcile_manifest(folders, available, report)
+
+        # Phase 2: copy. Deletions come last.
+        plan.each { |folder, target| sync_folder(folder, target, report) }
         purge(mounted, report)
 
         if @dry_run
