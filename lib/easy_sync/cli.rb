@@ -21,6 +21,7 @@ module EasySync
 
       --config PATH overrides the config file (default ~/.easy_sync/config.yml);
       the EASY_SYNC_CONFIG environment variable does the same.
+      --version (or `version`) prints the version.
     TEXT
 
     COMMANDS = %w[sync register-drive status history reassign pending plan dashboard].freeze
@@ -42,6 +43,7 @@ module EasySync
       command = @argv.shift if command == 'jbod'   # 1.x alias
       case command
       when nil, '-h', '--help', 'help' then @out.puts USAGE
+      when '-v', '--version', 'version' then @out.puts "easy_sync #{VERSION}"
       when 'sync' then sync(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)

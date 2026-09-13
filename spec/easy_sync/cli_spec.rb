@@ -395,6 +395,14 @@ RSpec.describe EasySync::CLI do
     expect(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log')).size).to eq(1)
   end
 
+  it 'prints the version' do
+    %w[--version -v version].each do |arg|
+      out.truncate(0)
+      expect(cli(arg).run).to eq(0)
+      expect(out.string).to eq("easy_sync #{EasySync::VERSION}\n")
+    end
+  end
+
   it 'prints usage for unknown commands' do
     expect(cli('bogus').run).to eq(1)
     expect(err.string).to include('Unknown command: bogus', 'Usage:')
