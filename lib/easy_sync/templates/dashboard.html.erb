@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Backup status</title>
+<title>Easy Sync backup status</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -98,7 +98,7 @@
 </head>
 <body>
 <main>
-  <h1>Backup status</h1>
+  <h1>Easy Sync backup status</h1>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%= folders.size %> folders tracked<%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
