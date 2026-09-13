@@ -75,6 +75,10 @@ one drive, so each of its subfolders is placed independently and ends up at
 `/Volumes/<drive>/tv/<Show Name>`. Either way the manifest key is the path
 relative to the mount root: `photos`, `tv/Show Name`.
 
+Only folders are placed. A file sitting loose at the top level of a split share
+(say `/Volumes/tv/stray.mkv`) is never backed up; the run warns about it and the
+dashboard lists it until you move it into a folder on the NAS.
+
 **Sync** whenever you like:
 
     easy_sync jbod sync             # add --dry-run to see what rsync would do

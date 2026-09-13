@@ -24,7 +24,7 @@ module EasySync
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, keyword_init: true) do
+                          :purged, :would_purge, :pending, :loose_files, keyword_init: true) do
         def initialize(**)
           super
           (members - [:pending]).each { |m| self[m] ||= [] }
@@ -87,7 +87,8 @@ module EasySync
         purge(mounted, report)
 
         mounted = refresh_drives(report, quiet: true)
-        path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status)
+        path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status,
+                                                            loose_files: report.loose_files)
         @out.puts "\nDashboard written to #{path}"
         summarize(report)
         report
@@ -112,6 +113,13 @@ module EasySync
             subfolders(source.path).each do |name|
               folders << SourceFolder.new(key: File.join(source.name, name), path: File.join(source.path, name))
             end
+            loose = loose_files(source.path)
+            unless loose.empty?
+              report.loose_files.concat(loose.map { |f| File.join(source.name, f) })
+              warn(report, "#{source.path} has #{loose.size} loose file#{'s' if loose.size != 1} at the top level that " \
+                           "will NOT be backed up (only folders are placed): #{loose.first(5).join(', ')}" \
+                           "#{', ...' if loose.size > 5}. Move them into a folder on the NAS.")
+            end
           else
             folders << SourceFolder.new(key: source.name, path: source.path)
           end
@@ -122,6 +130,11 @@ module EasySync
       end
 
       private
+
+      def loose_files(path)
+        excluded = Array(settings[:exclude_folders])
+        Dir.children(path).sort.select { |n| File.file?(File.join(path, n)) && !excluded.include?(n) && !n.start_with?('.') }
+      end
 
       def subfolders(path)
         excluded = Array(settings[:exclude_folders])

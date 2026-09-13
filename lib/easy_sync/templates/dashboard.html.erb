@@ -81,8 +81,15 @@
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%= folders.size %> folders tracked · <%= pending.size %> pending deletion · warning above <%= percent(warn_threshold) %> full</p>
 
-<%- unless warnings.empty? -%>
+<%- unless warnings.empty? && loose_files.empty? -%>
   <div class="alerts">
+  <%- unless loose_files.empty? -%>
+    <div class="alert">
+      <strong><%= loose_files.size %> loose file<%= 's' if loose_files.size != 1 %></strong> at the top level of a split share
+      <%= loose_files.size == 1 ? 'is' : 'are' %> not backed up. Move them into a folder on the NAS:
+      <%= h loose_files.first(10).join(', ') %><%= ', ...' if loose_files.size > 10 %>
+    </div>
+  <%- end -%>
   <%- warnings.each do |d| -%>
     <div class="alert <%= d.level %>">
     <%- if d.level == :unknown -%>

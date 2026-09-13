@@ -25,7 +25,7 @@ module EasySync
       # +mounted+ is the list of MountedDrive structs from the current run;
       # drives not in it are rendered with their last known numbers.
       # +source_status+ maps folder_path => :present | :missing for folders seen on the NAS.
-      def render(mounted: [], source_status: {})
+      def render(mounted: [], source_status: {}, loose_files: [])
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         drives = manifest.drives.map { |d| drive_view(d, by_serial[d.serial_number]) }
         locals = {
@@ -37,6 +37,7 @@ module EasySync
           generated_at: @clock.now,
           warnings: drives.select { |d| d.level != :ok },
           source_status: source_status,
+          loose_files: loose_files,
           pending: manifest.pending_deletions,
           deletions: manifest.deletions(limit: 30)
         }

@@ -54,11 +54,21 @@ RSpec.describe EasySync::Jbod::Runner do
   describe '#source_folders' do
     it 'treats a whole share as one folder and each subfolder of a split share as its own' do
       make_dirs(tv, 'Show A', 'Show B', '#recycle', '@eaDir', '.hidden')
-      write_file(File.join(tv, 'stray.txt'))
       folders, available = runner.source_folders
       expect(folders.map(&:key)).to eq(['photos', 'tv/Show A', 'tv/Show B'])
       expect(folders.map(&:path)).to eq([photos, "#{tv}/Show A", "#{tv}/Show B"])
       expect(available).to eq(%w[photos tv])
+    end
+
+    it 'warns loudly about loose files at the top of a split share, which are never backed up' do
+      make_dirs(tv, 'Show A')
+      write_file(File.join(tv, 'Stray Episode.mkv'))
+      write_file(File.join(tv, '.DS_Store'))
+      report = described_class::Report.new
+      folders, = runner.source_folders(report)
+      expect(folders.map(&:key)).to eq(['photos', 'tv/Show A'])
+      expect(report.loose_files).to eq(['tv/Stray Episode.mkv'])
+      expect(report.warnings).to include(a_string_matching(/1 loose file at the top level that will NOT be backed up.*Stray Episode\.mkv/))
     end
 
     it 'skips a share that is not mounted and reports it' do
@@ -243,6 +253,15 @@ RSpec.describe EasySync::Jbod::Runner do
       html = File.read(dashboard_path)
       expect(html).to include('backup-04-8tb', 'photos', '88% full')
       expect(out.string).to include("Dashboard written to #{dashboard_path}")
+    end
+
+    it 'lists loose files on the dashboard' do
+      make_dirs(tv, 'Show A')
+      write_file(File.join(tv, 'Stray Episode.mkv'))
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      expect(File.read(dashboard_path)).to include('1 loose file', 'tv/Stray Episode.mkv')
     end
 
     it 'aborts before touching anything when no share is mounted' do
