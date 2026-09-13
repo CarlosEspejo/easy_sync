@@ -46,6 +46,7 @@ command, or set `EASY_SYNC_CONFIG`:
   :manifest_path: "~/.easy_sync/manifest.sqlite3"
   :dashboard_path: "~/.easy_sync/dashboard.html"
   :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent `jbod sync`
+  :keep_awake: true                       # caffeinate for the length of a sync (macOS)
   :purge: true                            # remove backed-up files once they have been gone from the NAS...
   :grace_days: 7                          # ...for at least this many days
   :grace_runs: 2                          # ...and confirmed missing on this many separate runs
@@ -144,9 +145,10 @@ audit table and shown on the dashboard.
 **The first sync is long.** A 30 TB library over gigabit Ethernet is three to
 four days. Runs are resumable per folder (a folder interrupted mid-copy is simply
 synced again next time, and nothing is ever deleted by the copy), so Ctrl-C is
-safe, but the Mac must not sleep. Run it under `caffeinate`:
-
-    caffeinate -i easy_sync jbod sync
+safe. The Mac must not sleep, so `jbod sync` keeps it awake itself: it starts
+`caffeinate -i -w <its own pid>`, which holds off idle sleep exactly as long as
+the sync runs and exits with it. Turn that off with `--no-keep-awake` or
+`:keep_awake: false`. The display may still lock; on a laptop keep the lid open.
 
     easy_sync jbod pending          # what is scheduled, and when
     easy_sync jbod sync --no-purge  # sync without deleting anything this time

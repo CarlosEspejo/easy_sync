@@ -17,7 +17,7 @@ module EasySync
   class CLI
     USAGE = <<~TEXT
       Usage: easy_sync [--config PATH] [snapshot]
-             easy_sync [--config PATH] jbod sync [--dry-run] [--no-purge]
+             easy_sync [--config PATH] jbod sync [--dry-run] [--no-purge] [--no-keep-awake]
              easy_sync jbod register-drive MOUNT_POINT --name NAME [--serial SERIAL]
              easy_sync jbod status
              easy_sync jbod history [FOLDER]
@@ -29,11 +29,13 @@ module EasySync
       the EASY_SYNC_CONFIG environment variable does the same.
     TEXT
 
-    def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV)
+    def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV,
+                   keep_awake: Jbod::KeepAwake.new)
       @argv = argv.dup
       @out = out
       @err = err
       @shell = shell
+      @keep_awake = keep_awake
       @config_path = config_path || env['EASY_SYNC_CONFIG'] || Config.default_path
     end
 
@@ -102,14 +104,16 @@ module EasySync
     end
 
     def jbod_sync(args)
-      opts = { dry_run: false, purge: nil }
+      opts = { dry_run: false, purge: nil, keep_awake: settings.fetch(:keep_awake, true) }
       OptionParser.new do |o|
         o.on('--dry-run', 'Show what rsync and the purge would do without changing anything') { opts[:dry_run] = true }
         o.on('--no-purge', 'Sync but do not delete expired files from the drives') { opts[:purge] = false }
+        o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
       end.parse!(args)
       version = Jbod::Mirror.check_version!(@shell)
       @out.puts "Using rsync #{version}#{' (dry run)' if opts[:dry_run]}"
       Jbod::RunLock.new(settings[:lock_path]).acquire do
+        @out.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
         Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out,
                                    dry_run: opts[:dry_run], purge: opts[:purge]).run
       end

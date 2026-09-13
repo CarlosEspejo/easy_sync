@@ -18,8 +18,10 @@ RSpec.describe EasySync::CLI do
                                       dashboard_path: File.join(temp_dir, 'dashboard.html') } }.to_yaml)
   end
 
+  let(:keep_awake) { instance_double(EasySync::Jbod::KeepAwake, start: false) }
+
   def cli(*args)
-    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell)
+    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake)
   end
 
   def manifest = EasySync::Jbod::Manifest.open(manifest_path)
@@ -146,6 +148,26 @@ RSpec.describe EasySync::CLI do
       expect(cli('jbod', 'sync').run).to eq(1)
       expect(err.string).to include('already running', "pid #{Process.pid}")
       expect(File.read(lock_path)).to eq(Process.pid.to_s)
+    end
+
+    it 'keeps the Mac awake for the run unless told not to' do
+      merge_jbod_config(sources: [])
+      fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+      allow(keep_awake).to receive(:start).and_return(true)
+
+      cli('jbod', 'sync').run
+      expect(keep_awake).to have_received(:start).once
+      expect(out.string).to include('Keeping the Mac awake for this run (caffeinate).')
+
+      cli('jbod', 'sync', '--no-keep-awake').run
+      expect(keep_awake).to have_received(:start).once   # not called again
+    end
+
+    it 'respects keep_awake: false in the config' do
+      merge_jbod_config(sources: [], keep_awake: false)
+      fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+      cli('jbod', 'sync').run
+      expect(keep_awake).not_to have_received(:start)
     end
 
     it 'releases the lock after a run so a later sync can proceed' do
