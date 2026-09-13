@@ -22,6 +22,14 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(fake_shell.calls.last.last(2)).to eq(["#{source}/", '/Volumes/backup-04-8tb/Photos/'])
   end
 
+  it 'creates the destination parent so split-share folders land under the share directory' do
+    fake_shell.on('rsync', output: rsync_stats)
+    dest = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'tv', 'Show A')
+    described_class.new(shell: fake_shell).sync(source, dest)
+    expect(Dir).to exist(File.dirname(dest))
+    expect(Dir).not_to exist(dest)
+  end
+
   it 'reports a failing exit status with nil stats' do
     fake_shell.on('rsync', output: "rsync: connection unexpectedly closed\n", status: 12)
     result = described_class.new(shell: fake_shell).sync(source, '/dest')

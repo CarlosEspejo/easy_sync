@@ -28,7 +28,13 @@ Running `easy_sync` once writes a sample config to `~/.easy_syncrc.yml`:
   :destination: "[/example/path]"
   :exclude_file: "[/example/path]"
 :jbod:                       # JBOD mode
-  :source_root: "/Volumes/nas"            # the NAS share, mounted on the Mac
+  :sources:                               # each Synology share, mounted on the Mac
+  - :path: "/Volumes/photos"
+    :split: false                         # the whole share is one unit
+  - :path: "/Volumes/tv"
+    :split: true                          # each subfolder (show) is placed on its own
+  - :path: "/Volumes/movies"
+    :split: true
   :mount_root: "/Volumes"                 # where the backup drives appear
   :manifest_path: "~/.easy_sync/manifest.sqlite3"
   :dashboard_path: "~/.easy_sync/dashboard.html"
@@ -59,15 +65,23 @@ or the drives come up in a different order, the data still goes to the right
 drive. A volume with no marker, or a marker for an unknown serial, is never
 written to.
 
+**Sources.** Each Synology share is mounted separately on the Mac, so each one is
+listed under `:sources:`. A share with `:split: false` is placed as one unit and
+ends up at `/Volumes/<drive>/photos`. A share with `:split: true` is too big for
+one drive, so each of its subfolders is placed independently and ends up at
+`/Volumes/<drive>/tv/<Show Name>`. Either way the manifest key is the path
+relative to the mount root: `photos`, `tv/Show Name`.
+
 **Sync** whenever you like:
 
     easy_sync jbod sync             # add --dry-run to see what rsync would do
 
 Each run:
 
-1. Refuses to start if the NAS share is not mounted or has no folders, so a
-   `--delete` mirror can never wipe the backups by accident.
-2. Lists the top-level folders on the NAS.
+1. Skips any share whose mount point is missing or empty (a stale mount point
+   left behind by macOS looks exactly like that), and refuses to start if none
+   is available, so a `--delete` mirror can never wipe the backups by accident.
+2. Lists the folders across the available shares.
 3. Folders already in the manifest are mirrored back to their assigned drive.
    There is no rebalancing, ever. If that drive is not mounted, the folder is
    skipped with a warning.

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'fileutils'
+
 module EasySync
   module Jbod
     # Mirrors one source folder onto one destination folder with rsync.
@@ -24,6 +26,7 @@ module EasySync
       def sync(source, destination)
         raise Error, "source folder #{source} does not exist" unless Dir.exist?(source)
 
+        FileUtils.mkdir_p(File.dirname(destination))
         result = @shell.run(command(source, destination))
         stats = self.class.parse_stats(result.output)
         Result.new(exit_status: result.status, output: result.output, **stats)

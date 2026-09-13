@@ -70,7 +70,7 @@
   .status::before { content: "●"; margin-right: 4px; color: var(--muted); }
   .status.ok::before { color: var(--good); }
   .status.failed::before { color: var(--critical); }
-  .status.skipped_unmounted::before, .status.missing::before { color: var(--warning); }
+  .status.skipped_unmounted::before, .status.skipped_source_unmounted::before, .status.missing::before { color: var(--warning); }
   .empty { color: var(--muted); padding: 14px; }
 </style>
 </head>
@@ -131,13 +131,17 @@
     <thead><tr><th>Folder</th><th>Drive</th><th class="num">Size</th><th>Last synced</th><th>Status</th><th>Assigned</th></tr></thead>
     <tbody>
   <%- folders.each do |f| -%>
-    <%- status = source_status[f.folder_path] == :missing ? 'missing' : (f.last_sync_status || 'never') -%>
+    <%- status = case source_status[f.folder_path]
+                 when :missing then 'missing'
+                 when :source_unavailable then 'skipped_source_unmounted'
+                 else f.last_sync_status || 'never'
+                 end -%>
       <tr>
         <td><%= h f.folder_path %></td>
         <td><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
         <td class="num"><%= bytes(f.size_bytes) %></td>
         <td><%= when_(f.last_synced_at) %></td>
-        <td><span class="status <%= status %>"><%= status == 'missing' ? 'missing on NAS' : status.tr('_', ' ') %></span></td>
+        <td><span class="status <%= status %>"><%= { 'missing' => 'missing on NAS', 'skipped_source_unmounted' => 'share not mounted', 'skipped_unmounted' => 'drive not mounted' }.fetch(status, status) %></span></td>
         <td><%= when_(f.assigned_at) %></td>
       </tr>
   <%- end -%>

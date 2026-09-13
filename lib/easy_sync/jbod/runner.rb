@@ -4,10 +4,24 @@ require 'time'
 
 module EasySync
   module Jbod
-    # One manual sync run: discover folders on the NAS, place new ones, mirror
-    # every folder to its assigned drive, then regenerate the dashboard.
+    # One manual sync run: discover folders on the NAS shares, place new ones,
+    # mirror every folder to its assigned drive, then regenerate the dashboard.
     class Runner
       class SourceUnavailable < Error; end
+
+      # A configured NAS share. +split+ means each subfolder is placed on its
+      # own; otherwise the whole share is one unit.
+      Source = Struct.new(:path, :split, keyword_init: true) do
+        def name = File.basename(path)
+
+        def self.from_config(entry)
+          entry.is_a?(Hash) ? new(path: entry[:path], split: entry.fetch(:split, false)) : new(path: entry.to_s, split: false)
+        end
+      end
+
+      # A folder as seen on the NAS. +key+ is its manifest folder_path
+      # ("photos" for a whole share, "tv/Show Name" for a split one).
+      SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :skipped, :unplaced, :missing_on_source, :warnings,
                           keyword_init: true) do
@@ -34,40 +48,37 @@ module EasySync
         @sizer = sizer || method(:du_bytes)
       end
 
+      def sources
+        Array(settings[:sources]).map { |e| Source.from_config(e) }
+      end
+
       def run
         report = Report.new
-        folders = source_folders
+        folders, available = source_folders(report)
         mounted = refresh_drives(report)
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         # Free space as placements are made during this run, so two new folders
         # are not both sent to the drive that was emptiest at the start.
         free_ledger = mounted.to_h { |m| [m.serial_number, m.free_bytes] }
 
-        folders.each do |name|
-          record = manifest.folder(name)
+        folders.each do |folder|
+          record = manifest.folder(folder.key)
           if record.nil?
-            target = place(name, mounted, free_ledger, report) or next
+            target = place(folder, mounted, free_ledger, report) or next
           else
             target = by_serial[record.drive_serial]
             if target.nil?
               drive = manifest.drive(record.drive_serial)
-              warn(report, "#{name}: its drive #{drive&.friendly_name || record.drive_serial} is not mounted, skipping")
-              manifest.mark_folder_status(name, 'skipped_unmounted')
-              report.skipped << name
+              warn(report, "#{folder.key}: its drive #{drive&.friendly_name || record.drive_serial} is not mounted, skipping")
+              manifest.mark_folder_status(folder.key, 'skipped_unmounted')
+              report.skipped << folder.key
               next
             end
           end
-          sync_folder(name, target, report)
+          sync_folder(folder, target, report)
         end
 
-        source_status = folders.to_h { |f| [f, :present] }
-        manifest.folders.each do |f|
-          next if source_status.key?(f.folder_path)
-
-          source_status[f.folder_path] = :missing
-          report.missing_on_source << f.folder_path
-          warn(report, "#{f.folder_path} is in the manifest but no longer on the NAS (still on #{drive_name(f.drive_serial)})")
-        end
+        source_status = reconcile_manifest(folders, available, report)
 
         mounted = refresh_drives(report, quiet: true)
         path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status)
@@ -76,21 +87,42 @@ module EasySync
         report
       end
 
-      # Top-level directories under the source root, excluding configured names.
-      def source_folders
-        root = settings[:source_root]
-        raise SourceUnavailable, "source root #{root} is not mounted" unless Dir.exist?(root)
+      # Folders found across the configured shares, plus the names of the shares
+      # that were actually available. A share whose mount point is missing or
+      # empty (a stale mount point left behind by macOS looks exactly like that)
+      # is treated as unavailable so a --delete mirror never runs against it.
+      def source_folders(report = Report.new)
+        raise SourceUnavailable, 'no sources configured (set :jbod: :sources: in the config)' if sources.empty?
 
-        excluded = Array(settings[:exclude_folders])
-        names = Dir.children(root).sort.select do |n|
-          File.directory?(File.join(root, n)) && !excluded.include?(n) && !n.start_with?('.')
+        folders = []
+        available = []
+        sources.each do |source|
+          unless Dir.exist?(source.path) && !Dir.empty?(source.path)
+            warn(report, "source #{source.path} is not mounted (or is empty), skipping")
+            next
+          end
+          available << source.name
+          if source.split
+            subfolders(source.path).each do |name|
+              folders << SourceFolder.new(key: File.join(source.name, name), path: File.join(source.path, name))
+            end
+          else
+            folders << SourceFolder.new(key: source.name, path: source.path)
+          end
         end
-        raise SourceUnavailable, "source root #{root} contains no folders; refusing to run a --delete mirror" if names.empty?
+        raise SourceUnavailable, 'none of the configured sources are mounted' if available.empty?
 
-        names
+        [folders, available]
       end
 
       private
+
+      def subfolders(path)
+        excluded = Array(settings[:exclude_folders])
+        Dir.children(path).sort.select do |n|
+          File.directory?(File.join(path, n)) && !excluded.include?(n) && !n.start_with?('.')
+        end
+      end
 
       def refresh_drives(report, quiet: false)
         mounted = @volume_info.mounted_drives(manifest.drives)
@@ -110,37 +142,57 @@ module EasySync
         mounted
       end
 
-      def place(name, mounted, free_ledger, report)
-        size = @sizer.call(File.join(settings[:source_root], name))
+      def place(folder, mounted, free_ledger, report)
+        size = @sizer.call(folder.path)
         candidates = mounted.map { |m| m.dup.tap { |c| c.free_bytes = free_ledger[c.serial_number] } }
         target = Placement.choose(candidates, size_bytes: size)
-        manifest.assign_folder(name, target.serial_number, size_bytes: size,
-                                                           note: "new folder, most free space (#{Placement.format_bytes(target.free_bytes)})")
-        @out.puts "Placing new folder #{name} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
-        report.placed << [name, target.friendly_name]
+        manifest.assign_folder(folder.key, target.serial_number, size_bytes: size,
+                                                                 note: "new folder, most free space (#{Placement.format_bytes(target.free_bytes)})")
+        @out.puts "Placing new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
+        report.placed << [folder.key, target.friendly_name]
         free_ledger[target.serial_number] -= size.to_i
         mounted.find { |m| m.serial_number == target.serial_number }
       rescue Placement::NoMountedDrives, Placement::DoesNotFit => e
-        warn(report, "cannot place #{name}: #{e.message}")
-        report.unplaced << name
+        warn(report, "cannot place #{folder.key}: #{e.message}")
+        report.unplaced << folder.key
         nil
       end
 
-      def sync_folder(name, target, report)
-        source = File.join(settings[:source_root], name)
-        destination = File.join(target.mount_point, name)
-        @out.puts "\n------------------ #{name} -> #{target.friendly_name} ------------------"
+      def sync_folder(folder, target, report)
+        destination = File.join(target.mount_point, folder.key)
+        @out.puts "\n------------------ #{folder.key} -> #{target.friendly_name} ------------------"
         started = @clock.now.utc.iso8601
-        result = @mirror.sync(source, destination)
-        manifest.record_sync(folder_path: name, drive_serial: target.serial_number, started_at: started,
+        result = @mirror.sync(folder.path, destination)
+        manifest.record_sync(folder_path: folder.key, drive_serial: target.serial_number, started_at: started,
                              finished_at: @clock.now.utc.iso8601, exit_status: result.exit_status,
                              bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
         if result.success?
-          report.synced << name
+          report.synced << folder.key
         else
-          warn(report, "rsync for #{name} exited with status #{result.exit_status}")
-          report.failed << name
+          warn(report, "rsync for #{folder.key} exited with status #{result.exit_status}")
+          report.failed << folder.key
         end
+      end
+
+      # Flags manifest folders that were not seen this run. A folder whose share
+      # was not mounted is only "unavailable", not missing.
+      def reconcile_manifest(folders, available, report)
+        status = folders.to_h { |f| [f.key, :present] }
+        manifest.folders.each do |f|
+          next if status.key?(f.folder_path)
+
+          share = f.folder_path.split('/').first
+          if available.include?(share)
+            status[f.folder_path] = :missing
+            report.missing_on_source << f.folder_path
+            warn(report, "#{f.folder_path} is in the manifest but no longer on the NAS (still on #{drive_name(f.drive_serial)})")
+          else
+            status[f.folder_path] = :source_unavailable
+            manifest.mark_folder_status(f.folder_path, 'skipped_source_unmounted')
+            report.skipped << f.folder_path
+          end
+        end
+        status
       end
 
       def du_bytes(path)

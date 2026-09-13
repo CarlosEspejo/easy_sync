@@ -12,7 +12,11 @@ module EasySync
     DEFAULT_FILENAME = '.easy_syncrc.yml'
 
     JBOD_DEFAULTS = {
-      source_root: '/Volumes/nas',
+      sources: [
+        { path: '/Volumes/photos', split: false },  # the whole share is one unit
+        { path: '/Volumes/tv', split: true },       # each show is placed on its own
+        { path: '/Volumes/movies', split: true }
+      ],
       mount_root: '/Volumes',
       manifest_path: "#{Dir.home}/.easy_sync/manifest.sqlite3",
       dashboard_path: "#{Dir.home}/.easy_sync/dashboard.html",

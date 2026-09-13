@@ -11,7 +11,7 @@ RSpec.describe EasySync::CLI do
     FileUtils.mkdir_p(mount_root)
     File.write(config_path, { logging: :off, tasks: [],
                               jbod: { mount_root: mount_root, manifest_path: manifest_path,
-                                      source_root: File.join(temp_dir, 'nas'),
+                                      sources: [File.join(temp_dir, 'nas')],
                                       dashboard_path: File.join(temp_dir, 'dashboard.html') } }.to_yaml)
   end
 
