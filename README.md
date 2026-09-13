@@ -239,6 +239,13 @@ enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
 the page and a warning on the terminal. Health is read on every sync and at
 registration, via `smartctl` on the physical disk, falling back to `diskutil`.
 
+The header says how many folders the NAS holds, how many are backed up and,
+in red, how many are **not**, because no mounted drive has room. That is the
+one number that matters, so it also raises an alert at the top and a "Not
+backed up" list under Folders, with each folder's size. Every run decides all
+placements before it copies anything, so this picture is complete even if the
+copy phase is interrupted.
+
 Folders are grouped by share so thousands of them stay readable: each drive tile
 shows one line per share with a count and total size, and the folders table has
 a collapsible section per share with a "Needs attention" list on top for

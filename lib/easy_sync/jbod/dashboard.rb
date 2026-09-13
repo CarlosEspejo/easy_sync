@@ -42,6 +42,7 @@ module EasySync
           source_status: source_status,
           loose_files: loose_files,
           pending: manifest.pending_deletions,
+          inventory: manifest.source_inventory,
           deletions: manifest.deletions(limit: 30)
         }
         scope = binding
@@ -71,6 +72,14 @@ module EasySync
                         'unknown' => 'SMART n/a' }.freeze
 
       def health_label(status) = HEALTH_LABELS.fetch(status, 'SMART n/a')
+
+      # Inventory rows for one share, by state.
+      def inventory_for(inventory, share)
+        rows = inventory.select { |e| e.share == share }
+        { total: rows.size, placed: rows.count { |e| e.state == 'placed' },
+          unplaced: rows.select { |e| e.state == 'unplaced' }, empty: rows.count { |e| e.state == 'empty' },
+          total_bytes: rows.sum { |e| e.size_bytes.to_i } }
+      end
 
       # -- template helpers ------------------------------------------------
 

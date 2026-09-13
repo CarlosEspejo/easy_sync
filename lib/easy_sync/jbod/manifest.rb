@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 4
+      SCHEMA_VERSION = 5
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -233,6 +233,24 @@ module EasySync
         db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row)) }
       end
 
+      # -- source inventory ----------------------------------------------
+
+      # Replaces the inventory with what this run saw. +rows+ are hashes with
+      # folder_path, size_bytes, state ('placed' | 'unplaced' | 'empty'), detail.
+      def replace_source_inventory(rows, at: now)
+        db.transaction do
+          db.execute('DELETE FROM source_inventory')
+          rows.each do |r|
+            db.execute('INSERT INTO source_inventory (folder_path, size_bytes, state, detail, seen_at) VALUES (?, ?, ?, ?, ?)',
+                       [r[:folder_path], r[:size_bytes], r[:state], r[:detail], at])
+          end
+        end
+      end
+
+      def source_inventory
+        db.execute('SELECT * FROM source_inventory ORDER BY folder_path').map { |row| SourceEntry.new(**symbolize(row)) }
+      end
+
       # -- pending deletions ----------------------------------------------
 
       # Replaces the candidate set for +folder_path+ with +missing+, an array of
@@ -410,6 +428,14 @@ module EasySync
               last_missing_at  TEXT NOT NULL,
               missing_runs     INTEGER NOT NULL DEFAULT 1,
               UNIQUE (folder_path, relative_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS source_inventory (
+              folder_path TEXT PRIMARY KEY,
+              size_bytes  INTEGER,
+              state       TEXT NOT NULL,
+              detail      TEXT,
+              seen_at     TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS deletions (

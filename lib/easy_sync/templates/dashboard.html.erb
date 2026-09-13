@@ -101,10 +101,18 @@
   <h1>Easy Sync Backup Status</h1>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
-    <%= folders.size %> folders tracked<%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
+    <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
+    <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> backed up<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
 
-<%- unless warnings.empty? && loose_files.empty? -%>
+<%- unless warnings.empty? && loose_files.empty? && unplaced_all.empty? -%>
   <div class="alerts">
+  <%- unless unplaced_all.empty? -%>
+    <div class="alert critical">
+      <strong><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %>
+      (<%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %>) on the NAS <%= unplaced_all.size == 1 ? 'is' : 'are' %> not backed up</strong>:
+      no mounted drive has room. Add or replace a drive, then sync again. The list is under Folders.
+    </div>
+  <%- end -%>
   <%- unless loose_files.empty? -%>
     <div class="alert">
       <strong><%= loose_files.size %> loose file<%= 's' if loose_files.size != 1 %></strong> at the top level of a split share
@@ -177,10 +185,28 @@
   <details class="share"<%= ' open' if fs.size <= 5 %>>
     <summary>
       <span class="share-name"><%= h share %></span>
-      <span class="share-meta"><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
+    <%- inv = inventory_for(inventory, share) -%>
+      <span class="share-meta"><%- if inv[:total].positive? -%><%= inv[:placed] %> of <%= inv[:total] %> folders on the NAS backed up · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
+      <%- if inv[:unplaced].any? -%><span class="share-problems"><%= inv[:unplaced].size %> not backed up</span><%- end -%>
       <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
     </summary>
     <%= folder_rows(fs, source_status, pending, names) %>
+  </details>
+  <%- end -%>
+  <%- unless unplaced_all.empty? -%>
+  <details class="share attention">
+    <summary>
+      <span class="share-name">Not backed up</span>
+      <span class="share-problems"><%= unplaced_all.size %> folders · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
+    </summary>
+    <table>
+      <thead><tr><th>Folder</th><th class="num">Size</th><th>Why</th><th>Seen</th></tr></thead>
+      <tbody>
+    <%- unplaced_all.each do |e| -%>
+        <tr><td><%= h e.folder_path %></td><td class="num"><%= bytes(e.size_bytes) %></td><td><%= h e.detail %></td><td><%= when_(e.seen_at) %></td></tr>
+    <%- end -%>
+      </tbody>
+    </table>
   </details>
   <%- end -%>
 <%- end -%>

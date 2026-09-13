@@ -43,6 +43,13 @@ module EasySync
     Deletion = Struct.new(:id, :folder_path, :relative_path, :kind, :drive_serial, :first_missing_at, :deleted_at,
                           keyword_init: true)
 
+    # One row per folder seen on the NAS at the last completed placement
+    # pass: placed (assigned to a drive, synced or queued), unplaced (no drive
+    # has room, or nothing is mounted) or empty (no real files).
+    SourceEntry = Struct.new(:folder_path, :size_bytes, :state, :detail, :seen_at, keyword_init: true) do
+      def share = folder_path.split('/').first
+    end
+
     # SMART health as last read from the drive. status is one of
     # 'ok' (self-assessment passed, no bad-sector counters), 'warning' (passed
     # but reallocated/pending/uncorrectable sectors or an NVMe critical flag:

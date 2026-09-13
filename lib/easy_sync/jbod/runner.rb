@@ -73,11 +73,20 @@ module EasySync
                     '(du over the network can take a while per folder)'
         end
 
+        # Phase 1: decide where everything goes, before any copying, so the
+        # full picture (including what does NOT fit) exists even if the long
+        # copy phase is interrupted.
+        plan = []
+        inventory = []
         folders.each do |folder|
           record = manifest.folder(folder.key)
           if record.nil?
-            target = place(folder, mounted, free_ledger, report) or next
+            target, size, state, detail = place(folder, mounted, free_ledger, report)
+            inventory << { folder_path: folder.key, size_bytes: size, state: state, detail: detail }
+            plan << [folder, target] if target
           else
+            inventory << { folder_path: folder.key, size_bytes: record.size_bytes, state: 'placed',
+                           detail: "on #{drive_name(record.drive_serial)}" }
             target = by_serial[record.drive_serial]
             if target.nil?
               drive = manifest.drive(record.drive_serial)
@@ -86,9 +95,17 @@ module EasySync
               report.skipped << folder.key
               next
             end
+            plan << [folder, target]
           end
-          sync_folder(folder, target, report)
         end
+        manifest.replace_source_inventory(inventory) unless @dry_run
+        unplaced_bytes = inventory.sum { |i| i[:state] == 'unplaced' ? i[:size_bytes].to_i : 0 }
+        @out.puts "\nPlan: #{plan.size} folder#{'s' if plan.size != 1} to sync (#{report.placed.size} newly placed), " \
+                  "#{report.unplaced.size} not backed up (#{Placement.format_bytes(unplaced_bytes)}: no room), " \
+                  "#{report.empty.size} empty on the NAS"
+
+        # Phase 2: copy.
+        plan.each { |folder, target| sync_folder(folder, target, report) }
 
         source_status = reconcile_manifest(folders, available, report)
         purge(mounted, report)
@@ -201,11 +218,12 @@ module EasySync
         end
       end
 
+      # Returns [target, size, state, detail]; target is nil when not placed.
       def place(folder, mounted, free_ledger, report)
         if empty_source?(folder.path)
           warn(report, "#{folder.key} has no files on the NAS (only excluded or hidden ones); not placing it")
           report.empty << folder.key
-          return nil
+          return [nil, 0, 'empty', 'no real files on the NAS']
         end
         @measured += 1
         @out.puts "  measuring #{folder.key} (new folder #{@measured})..."
@@ -221,12 +239,12 @@ module EasySync
         end
         report.placed << [folder.key, target.friendly_name]
         free_ledger[target.serial_number] -= size.to_i
-        mounted.find { |m| m.serial_number == target.serial_number }
+        [mounted.find { |m| m.serial_number == target.serial_number }, size, 'placed', "on #{target.friendly_name}"]
       rescue Placement::NoMountedDrives, Placement::DoesNotFit => e
-        hint = e.is_a?(Placement::DoesNotFit) && !folder.key.include?('/') ? ' (a whole share; set :split: true for it, see `jbod plan`)' : ''
+        hint = e.is_a?(Placement::DoesNotFit) && !folder.key.include?('/') ? ' (a whole share; set :split: true for it, see `easy_sync plan`)' : ''
         warn(report, "cannot place #{folder.key}: #{e.message}#{hint}")
         report.unplaced << folder.key
-        nil
+        [nil, size, 'unplaced', e.is_a?(Placement::NoMountedDrives) ? 'no drive mounted' : 'no drive has room']
       end
 
       def sync_folder(folder, target, report)

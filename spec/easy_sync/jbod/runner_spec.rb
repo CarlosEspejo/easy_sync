@@ -288,6 +288,37 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(out.string).to include('empty 2')
     end
 
+    it 'records an inventory of everything on the NAS: placed, unplaced and empty' do
+      make_shows('Big Show', 'Small Show')
+      make_dirs(tv, 'Empty Show')
+      sizes['photos'] = 100
+      sizes['Big Show'] = 5_000
+      sizes['Small Show'] = 200
+      manifest.assign_folder('photos', 'SN-backup-04-8tb', size_bytes: 100)
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1_000)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      report = runner.run
+      inv = manifest.source_inventory.to_h { |e| [e.folder_path, [e.state, e.size_bytes, e.detail]] }
+      expect(inv).to eq('photos' => ['placed', 100, 'on backup-04-8tb'],
+                        'tv/Big Show' => ['unplaced', 5_000, 'no drive has room'],
+                        'tv/Empty Show' => ['empty', 0, 'no real files on the NAS'],
+                        'tv/Small Show' => ['placed', 200, 'on backup-04-8tb'])
+      expect(out.string).to include('Plan: 2 folders to sync (1 newly placed), 1 not backed up (4.9 KB: no room), 1 empty on the NAS')
+      expect(report.unplaced).to eq(['tv/Big Show'])
+    end
+
+    it 'decides every placement before the first copy, so an interrupted copy phase still leaves the full plan' do
+      make_shows('A', 'B')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      last_placement = out.string.rindex('Placing new folder')
+      first_copy = out.string.index('------------------ ')
+      expect(last_placement).to be < first_copy
+      expect(out.string.index('Plan:')).to be < first_copy
+    end
+
     it 'leaves a folder unplaced when it fits nowhere, without touching the manifest' do
       sizes['photos'] = 9 * TB
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-07-8tb', free: 8 * TB)])
@@ -481,6 +512,7 @@ RSpec.describe EasySync::Jbod::Runner do
 
       expect(report.placed).to eq([['tv/Show A', 'backup-04-8tb']])           # decided, not recorded
       expect(manifest.folder('tv/Show A')).to be_nil
+      expect(manifest.source_inventory).to be_empty
       expect(manifest.sync_runs).to be_empty
       expect(manifest.pending_deletions).to be_empty
       expect(manifest.history('tv/Show A')).to be_empty

@@ -67,6 +67,21 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('61 folders on this drive')
   end
 
+  it 'shows how much of the NAS is not backed up, from the inventory' do
+    manifest.assign_folder('movies/A', 'SN-backup-05-8tb', size_bytes: 10 * GB)
+    manifest.replace_source_inventory([
+      { folder_path: 'movies/A', size_bytes: 10 * GB, state: 'placed', detail: 'on backup-05-8tb' },
+      { folder_path: 'movies/B', size_bytes: 30 * GB, state: 'unplaced', detail: 'no drive has room' },
+      { folder_path: 'movies/C', size_bytes: 20 * GB, state: 'unplaced', detail: 'no drive has room' },
+      { folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: 'on backup-04-8tb' }
+    ])
+    html = dashboard.render
+    expect(html).to include('4 folders on the NAS, 2 backed up, 2 NOT backed up')
+    expect(html).to match(%r{<strong>2 folders\s+\(50\.0 GB\) on the NAS are not backed up</strong>})
+    expect(html).to include('1 of 3 folders on the NAS backed up · 10.0 GB of 60.0 GB')
+    expect(html).to match(/<span class="share-name">Not backed up<\/span>[\s\S]*?movies\/B[\s\S]*?30\.0 GB[\s\S]*?no drive has room/)
+  end
+
   it 'escapes HTML in names' do
     manifest.assign_folder('<script>alert(1)</script>', 'SN-backup-01-3tb')
     html = dashboard.render

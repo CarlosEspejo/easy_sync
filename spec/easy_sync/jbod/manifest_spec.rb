@@ -194,6 +194,21 @@ RSpec.describe EasySync::Jbod::Manifest do
   end
 end
 
+RSpec.describe EasySync::Jbod::Manifest, 'source inventory' do
+  let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
+  let(:manifest) { memory_manifest(clock: clock) }
+
+  it 'replaces the inventory wholesale and reads it back with the share' do
+    manifest.replace_source_inventory([{ folder_path: 'movies/A', size_bytes: 10, state: 'placed', detail: 'on x' },
+                                       { folder_path: 'movies/B', size_bytes: 20, state: 'unplaced', detail: 'no drive has room' }])
+    manifest.replace_source_inventory([{ folder_path: 'tv/C', size_bytes: 0, state: 'empty', detail: 'no real files' }])
+    inv = manifest.source_inventory
+    expect(inv.map(&:folder_path)).to eq(['tv/C'])
+    expect(inv.first).to have_attributes(share: 'tv', state: 'empty', seen_at: '2026-09-13T12:00:00Z')
+    expect(manifest.schema_version).to eq(5)
+  end
+end
+
 RSpec.describe EasySync::Jbod::Manifest, 'retiring drives' do
   let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
   let(:manifest) { memory_manifest(clock: clock) }
@@ -316,8 +331,9 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
     db = SQLite3::Database.new(':memory:')
     db.execute('PRAGMA user_version = 1')
     m = described_class.new(db)
-    expect(m.schema_version).to eq(4)
+    expect(m.schema_version).to eq(5)
     expect(m.pending_deletions).to eq([])
+    expect(m.source_inventory).to eq([])
   end
 
   it 'migrates a version 2 drives table by adding the SMART columns without losing rows' do
@@ -330,7 +346,7 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
       PRAGMA user_version = 2;
     SQL
     m = described_class.new(db, clock: clock)
-    expect(m.schema_version).to eq(4)
+    expect(m.schema_version).to eq(5)
     expect(m.drive('S1')).not_to be_retired
     expect(m.drive('S1')).to have_attributes(friendly_name: 'backup-01-3tb', smart_status: nil)
     m.update_drive_health('S1', status: 'ok', detail: 'PASSED')
