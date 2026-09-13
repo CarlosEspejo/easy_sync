@@ -19,3 +19,6 @@ tmp
 *.sqlite3
 *.db
 spec/test_data*
+*.swp
+*.swo
+.DS_Store

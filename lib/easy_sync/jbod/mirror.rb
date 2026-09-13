@@ -14,9 +14,10 @@ module EasySync
       MAX_DELETE_LIMIT_STATUS = 25
       MIN_VERSION = [3, 0, 0].freeze
 
-      Result = Struct.new(:exit_status, :bytes_transferred, :total_size_bytes, :extraneous, :output,
+      Result = Struct.new(:exit_status, :bytes_transferred, :total_size_bytes, :extraneous, :disk_full, :output,
                           keyword_init: true) do
         def success? = exit_status.zero? || exit_status == MAX_DELETE_LIMIT_STATUS
+        def disk_full? = !!disk_full
       end
 
       def initialize(shell: Shell.new, extra_args: [])
@@ -51,7 +52,15 @@ module EasySync
         result = @shell.run(command(source, destination))
         stats = self.class.parse_stats(result.output)
         Result.new(exit_status: result.status, output: result.output,
-                   extraneous: self.class.parse_extraneous(result.output), **stats)
+                   extraneous: self.class.parse_extraneous(result.output),
+                   disk_full: self.class.disk_full?(result.output), **stats)
+      end
+
+      # True when rsync's own output says the destination ran out of space.
+      # Deliberately a text match rather than a specific exit status: rsync
+      # reports this the same way (exit 11) as other unrelated I/O errors.
+      def self.disk_full?(output)
+        output.match?(/No space left on device/i)
       end
 
       # Pulls the two numbers we keep out of `rsync --stats` output.

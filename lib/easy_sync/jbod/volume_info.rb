@@ -90,6 +90,68 @@ module EasySync
       rescue Errno::ENOENT
         nil
       end
+
+      # The hardware serial from smartctl, or nil when it can't be determined:
+      # smartctl isn't installed, the drive's USB bridge doesn't pass SMART
+      # through (common for external enclosures), or the volume's physical disk
+      # can't be resolved. Deliberately ignores the process exit status and
+      # looks only for a "Serial Number:" line in the output, because smartctl
+      # reports "not supported" failures with exit 0 for some device classes
+      # and a nonzero exit for others.
+      def smartctl_serial(mount_point)
+        disk = physical_disk_for(mount_point) or return nil
+        @shell.capture(['smartctl', '-a', "/dev/#{disk}"]).output[/^Serial Number:\s*(\S+)/m, 1]
+      rescue Errno::ENOENT
+        nil
+      end
+
+      # Resolves a mounted volume to the physical (or physical store) disk
+      # underneath it: mount point -> APFS container ("Part of Whole") ->
+      # container's physical store. Returns nil if any step can't be read.
+      def physical_disk_for(mount_point)
+        info = @shell.capture(['diskutil', 'info', mount_point])
+        return nil unless info.success?
+
+        container = info.output[/Part of Whole:\s*(disk\d+)/, 1] or return nil
+        container_info = @shell.capture(['diskutil', 'info', container])
+        return nil unless container_info.success?
+
+        container_info.output[/APFS Physical Store:\s*(disk\d+s\d+)/, 1] || container
+      end
+
+      # Best-effort FileVault lock state for a registered drive that isn't
+      # currently mounted, looked up by name in `diskutil apfs list` (a locked
+      # volume has no mount point but still appears there by name). Returns
+      # true (locked), false (present and unlocked, or not encrypted), or nil
+      # when the drive can't be found there at all (unplugged, or diskutil
+      # failed) - macOS only.
+      def locked?(friendly_name)
+        result = @shell.capture(['diskutil', 'apfs', 'list'])
+        return nil unless result.success?
+
+        match = apfs_volumes(result.output).find { |v| v[:name].casecmp?(friendly_name) }
+        match && match[:lock_state] == 'Locked'
+      rescue Errno::ENOENT
+        nil
+      end
+
+      # Parses `diskutil apfs list` into [{name:, lock_state:}, ...]. lock_state
+      # is "Locked", "Unlocked", or nil (not FileVault-encrypted). The Name and
+      # FileVault lines belong to the same volume block but are a few lines
+      # apart, so this pairs each Name with the next FileVault line after it.
+      def apfs_volumes(output)
+        volumes = []
+        name = nil
+        output.each_line do |line|
+          if (m = line.match(/^\s*Name:\s*(.+?)\s*\(Case-insensitive\)\s*$/))
+            name = m[1]
+          elsif name && (m = line.match(/^\s*FileVault:\s*(?:No|Yes \((Locked|Unlocked)\))/))
+            volumes << { name: name, lock_state: m[1] }
+            name = nil
+          end
+        end
+        volumes
+      end
     end
   end
 end

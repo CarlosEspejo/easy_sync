@@ -59,6 +59,22 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(fake_shell.calls).to be_empty
   end
 
+  it 'flags a full destination drive distinctly from other rsync failures' do
+    fake_shell.on('rsync', status: 11, output: <<~OUT)
+      rsync: [receiver] write failed on "/Volumes/backup-04-8tb/movies/Heat (1995)/movie.mkv": No space left on device (28)
+      rsync error: error in file IO (code 11) at receiver.c(392) [receiver=3.5.0]
+    OUT
+    result = described_class.new(shell: fake_shell).sync(source, '/dest')
+    expect(result).to be_disk_full
+    expect(result).not_to be_success
+  end
+
+  it 'does not call an ordinary failure disk-full' do
+    fake_shell.on('rsync', output: "rsync: connection unexpectedly closed\n", status: 12)
+    result = described_class.new(shell: fake_shell).sync(source, '/dest')
+    expect(result).not_to be_disk_full
+  end
+
   describe '.check_version!' do
     it 'accepts rsync 3.x' do
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\nCopyright (C) 1996-2026\n")

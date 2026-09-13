@@ -39,6 +39,7 @@ Running `easy_sync` once writes a sample config to `~/.easy_syncrc.yml`:
   :mount_root: "/Volumes"                 # where the backup drives appear
   :manifest_path: "~/.easy_sync/manifest.sqlite3"
   :dashboard_path: "~/.easy_sync/dashboard.html"
+  :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent `jbod sync`
   :warn_threshold: 0.85                   # flag drives fuller than this
   :purge: true                            # remove backed-up files once they have been gone from the NAS...
   :grace_days: 7                          # ...for at least this many days
@@ -55,11 +56,18 @@ unlock them yourself first; the tool never tries to unlock anything.
 **Register each drive once** while it is mounted:
 
     easy_sync jbod register-drive /Volumes/backup-04-8tb
-    easy_sync jbod register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # e.g. from smartctl
+    easy_sync jbod register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # override auto-detection
 
 This records the drive in the manifest (serial number, name, capacity) and writes
-a small marker file, `.easy_sync_drive.json`, at the root of the volume. Without
-`--serial` the APFS Volume UUID from `diskutil info` is used.
+a small marker file, `.easy_sync_drive.json`, at the root of the volume.
+
+Without `--serial`, the serial is auto-detected: `register-drive` first tries the
+hardware serial via `smartctl` (a real, stable serial that survives a reformat),
+resolving the volume to its physical disk itself rather than trusting `smartctl`'s
+own exit status, which is inconsistent across device classes. If that doesn't
+resolve — `smartctl` isn't installed, or, common for external USB enclosures, the
+bridge chip doesn't pass SMART through at all — it falls back to the APFS Volume
+UUID from `diskutil info`. Either way it prints which source it used.
 
 **Drives are identified by the marker, never by mount path.** On every run the
 mount root is scanned for markers and each registered drive is matched by the
@@ -91,12 +99,23 @@ Each run:
 2. Lists the folders across the available shares.
 3. Folders already in the manifest are mirrored back to their assigned drive.
    There is no rebalancing, ever. If that drive is not mounted, the folder is
-   skipped with a warning.
+   skipped with a warning — one that names the drive as locked, rather than just
+   "not mounted", whenever that's detectable (`diskutil apfs list` shows it as a
+   FileVault volume that's connected but not unlocked).
 4. A folder not yet in the manifest is measured with `du`, assigned to the
    mounted drive with the most free space (if it fits), recorded, then mirrored.
+   If a folder that's already assigned has since outgrown its drive's free
+   space, the sync fails with a distinct "drive full" status (rather than a
+   bare rsync error) on both the terminal and the dashboard; move it to a
+   roomier drive with `jbod reassign`.
 5. Files that rsync reports as gone from the NAS are noted (see below), and any
    that have been gone long enough are removed from the drives.
 6. Drive usage, every rsync run, and the dashboard are updated.
+
+Only one `jbod sync` runs at a time: a PID file at `lock_path` refuses a second
+concurrent run (with a clear message naming the running PID) rather than letting
+two syncs race the NAS or the manifest. A stale lock — its process no longer
+running — is reclaimed automatically.
 
 **Deletions have a grace period.** rsync itself never deletes anything: it runs
 with `--delete --max-delete=0`, which copies as usual but only *reports* files

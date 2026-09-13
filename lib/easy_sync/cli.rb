@@ -87,8 +87,10 @@ module EasySync
       end.parse!(args)
       version = Jbod::Mirror.check_version!(@shell)
       @out.puts "Using rsync #{version}#{' (dry run)' if opts[:dry_run]}"
-      Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out,
-                                 dry_run: opts[:dry_run], purge: opts[:purge]).run
+      Jbod::RunLock.new(settings[:lock_path]).acquire do
+        Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out,
+                                   dry_run: opts[:dry_run], purge: opts[:purge]).run
+      end
     end
 
     def pending
@@ -111,7 +113,7 @@ module EasySync
       opts = {}
       OptionParser.new do |o|
         o.on('--name NAME', 'Friendly name, e.g. backup-04-8tb (defaults to the volume name)') { |v| opts[:name] = v }
-        o.on('--serial SERIAL', 'Hardware serial (e.g. from smartctl). Defaults to the APFS Volume UUID') { |v| opts[:serial] = v }
+        o.on('--serial SERIAL', 'Serial to use, skipping auto-detection (default: smartctl, falling back to the APFS Volume UUID)') { |v| opts[:serial] = v }
       end.parse!(args)
       mount_point = args.first or raise Error, "register-drive needs a mount point\n\n#{USAGE}"
       raise Error, "#{mount_point} is not mounted" unless Dir.exist?(mount_point)
@@ -121,7 +123,9 @@ module EasySync
 
       name = opts[:name] || File.basename(mount_point)
       uuid = volume_info.volume_uuid(mount_point)
-      serial = opts[:serial] || uuid or raise Error, 'could not determine a Volume UUID; pass --serial'
+      serial, source = resolve_serial(opts[:serial], mount_point, uuid)
+      serial or raise Error, 'could not determine a serial via smartctl or diskutil; pass --serial'
+      @out.puts "Using #{source} as the serial number." unless opts[:serial]
       usage = volume_info.usage(mount_point)
 
       drive = manifest.register_drive(serial_number: serial, friendly_name: name,
@@ -130,6 +134,21 @@ module EasySync
       volume_info.write_marker(mount_point, serial_number: serial, friendly_name: name)
       @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}), " \
                 "#{Jbod::Placement.format_bytes(drive.capacity_bytes)} at #{mount_point}"
+    end
+
+    # --serial wins outright. Otherwise try the hardware serial via smartctl
+    # first (a real, stable serial that survives a reformat), falling back to
+    # the APFS Volume UUID smartctl can't reach the drive (no smartctl
+    # installed, needs elevated privileges, or - common for external USB
+    # enclosures - the bridge chip doesn't pass SMART through at all).
+    def resolve_serial(explicit, mount_point, uuid)
+      return [explicit, 'the --serial you gave'] if explicit
+
+      if (serial = volume_info.smartctl_serial(mount_point))
+        [serial, 'the smartctl hardware serial']
+      else
+        [uuid, 'the diskutil Volume UUID (smartctl serial unavailable)']
+      end
     end
 
     def status

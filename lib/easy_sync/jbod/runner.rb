@@ -23,7 +23,7 @@ module EasySync
       # ("photos" for a whole share, "tv/Show Name" for a split one).
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
-      Report = Struct.new(:placed, :synced, :failed, :skipped, :unplaced, :missing_on_source, :warnings,
+      Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
                           :purged, :would_purge, :pending, :loose_files, keyword_init: true) do
         def initialize(**)
           super
@@ -155,10 +155,22 @@ module EasySync
         unless quiet
           mounted_serials = mounted.map(&:serial_number)
           manifest.drives.reject { |d| mounted_serials.include?(d.serial_number) }.each do |d|
-            warn(report, "drive #{d.friendly_name} (#{d.serial_number}) is not mounted")
+            warn(report, unmounted_message(d))
           end
         end
         mounted
+      end
+
+      # Best-effort: says *why* a drive isn't mounted when it's detectably a
+      # locked FileVault volume rather than just absent, so "not mounted" isn't
+      # the only signal you get when you forgot to unlock a drive.
+      def unmounted_message(drive)
+        base = "drive #{drive.friendly_name} (#{drive.serial_number}) is not mounted"
+        case @volume_info.locked?(drive.friendly_name)
+        when true then "#{base}: it's connected but still locked. Unlock it in Finder or with " \
+                       "`diskutil apfs unlockVolume #{drive.friendly_name}` and sync again."
+        else base
+        end
       end
 
       def place(folder, mounted, free_ledger, report)
@@ -188,6 +200,12 @@ module EasySync
         if result.success?
           report.synced << folder.key
           note_missing(folder, result.extraneous || [])
+        elsif result.disk_full?
+          manifest.mark_folder_status(folder.key, 'drive_full')
+          warn(report, "#{folder.key} did not fully sync: #{target.friendly_name} is full " \
+                       "(#{Placement.format_bytes(target.free_bytes)} free before this run). " \
+                       "Move it to a drive with more room with `jbod reassign`.")
+          report.drive_full << folder.key
         else
           warn(report, "rsync for #{folder.key} exited with status #{result.exit_status}")
           report.failed << folder.key
@@ -261,7 +279,8 @@ module EasySync
 
       def summarize(report)
         @out.puts "Synced #{report.synced.size}, placed #{report.placed.size} new, failed #{report.failed.size}, " \
-                  "skipped #{report.skipped.size}, unplaced #{report.unplaced.size}, purged #{report.purged.size}, " \
+                  "drive full #{report.drive_full.size}, skipped #{report.skipped.size}, " \
+                  "unplaced #{report.unplaced.size}, purged #{report.purged.size}, " \
                   "#{report.pending.to_i} pending deletion#{'s' if report.pending.to_i != 1}, warnings #{report.warnings.size}"
       end
     end

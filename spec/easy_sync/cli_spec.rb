@@ -56,6 +56,21 @@ RSpec.describe EasySync::CLI do
       expect(cli('jbod', 'register-drive', File.join(mount_root, 'nope')).run).to eq(1)
       expect(err.string).to include('not mounted')
     end
+
+    it 'prefers the smartctl hardware serial over the diskutil Volume UUID when both resolve' do
+      # Real diskutil info carries both "Part of Whole" and "Volume UUID" in the
+      # same output - this fixture exercises both call sites against it.
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: <<~OUT)
+           Part of Whole:             disk3
+           Volume UUID:               ABCD-1234
+      OUT
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv == ['smartctl', '-a', '/dev/disk0s2'] }, output: "Serial Number: 0ba0284a20e0ec22\n")
+
+      expect(cli('jbod', 'register-drive', vol).run).to eq(0)
+      expect(manifest.drives.first).to have_attributes(serial_number: '0ba0284a20e0ec22', volume_uuid: 'ABCD-1234')
+      expect(out.string).to include('Using the smartctl hardware serial')
+    end
   end
 
   describe 'jbod reassign / history / status' do
@@ -87,10 +102,36 @@ RSpec.describe EasySync::CLI do
   end
 
   describe 'jbod sync' do
+    def merge_jbod_config(**overrides)
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      File.write(config_path, cfg.merge(jbod: cfg[:jbod].merge(overrides)).to_yaml)
+    end
+
     it 'refuses to run with an old rsync' do
       fake_shell.on('rsync', output: "rsync  version 2.6.9  protocol version 29\n")
       expect(cli('jbod', 'sync').run).to eq(1)
       expect(err.string).to include('too old')
+    end
+
+    it 'refuses a second concurrent run and leaves an already-running lock untouched' do
+      lock_path = File.join(temp_dir, 'jbod.lock')
+      merge_jbod_config(lock_path: lock_path)
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, Process.pid.to_s) # simulate a live concurrent run
+      fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+
+      expect(cli('jbod', 'sync').run).to eq(1)
+      expect(err.string).to include('already running', "pid #{Process.pid}")
+      expect(File.read(lock_path)).to eq(Process.pid.to_s)
+    end
+
+    it 'releases the lock after a run so a later sync can proceed' do
+      lock_path = File.join(temp_dir, 'jbod.lock')
+      merge_jbod_config(lock_path: lock_path, sources: [])
+      fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+
+      cli('jbod', 'sync').run # fails fast (no sources configured), but the lock must still be released
+      expect(File).not_to exist(lock_path)
     end
   end
 

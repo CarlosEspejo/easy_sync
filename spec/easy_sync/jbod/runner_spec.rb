@@ -41,6 +41,9 @@ RSpec.describe EasySync::Jbod::Runner do
     FileUtils.mkdir_p(mount_root)
     write_file(File.join(photos, '2024', 'IMG_0001.jpg'))
     drives
+    # Best-effort lock detection: unstubbed tests treat every unmounted drive as
+    # "can't tell" rather than expecting every test to know about it.
+    allow(volume_info).to receive(:locked?).and_return(nil)
   end
 
   describe '#sources' do
@@ -159,6 +162,32 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(manifest.folder('photos').last_sync_status).to eq('skipped_unmounted')
       expect(report.warnings).to include(a_string_matching(/photos: its drive backup-03-6tb is not mounted/))
       expect(report.warnings).to include(a_string_matching(/drive backup-01-3tb .* is not mounted/))
+    end
+
+    it 'names a detectably locked drive instead of a bare "not mounted"' do
+      allow(volume_info).to receive(:mounted_drives).and_return([])
+      allow(volume_info).to receive(:locked?).with('backup-01-3tb').and_return(true)
+
+      report = runner.run
+      expect(report.warnings).to include(a_string_matching(
+        /backup-01-3tb .*: it's connected but still locked.*diskutil apfs unlockVolume backup-01-3tb/
+      ))
+      expect(report.warnings).to include(a_string_matching(/backup-02-6tb.*is not mounted$/))
+    end
+
+    it 'reports drive-full separately from a generic rsync failure and leaves the folder resumable' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 500)])
+      full_result = EasySync::Jbod::Mirror::Result.new(exit_status: 11, total_size_bytes: nil, bytes_transferred: nil,
+                                                        extraneous: [], disk_full: true, output: 'No space left on device')
+      allow(mirror).to receive(:sync).and_return(full_result)
+
+      report = runner.run
+      expect(report.drive_full).to eq(['photos'])
+      expect(report.failed).to be_empty
+      expect(manifest.folder('photos').last_sync_status).to eq('drive_full')
+      expect(report.warnings).to include(a_string_matching(/photos did not fully sync: backup-04-8tb is full/))
+      expect(File.read(dashboard_path)).to include('drive full')
     end
 
     it 'marks folders of an unmounted share as skipped rather than missing' do
