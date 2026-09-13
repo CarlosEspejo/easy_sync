@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 TB = 1024**4
+GB = 1024**3
 
 module ManifestHelpers
   def memory_manifest(clock: Time)

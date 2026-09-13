@@ -73,8 +73,17 @@ module EasySync
 
     def tasks = data.fetch(:tasks, [])
 
+    PATH_KEYS = %i[manifest_path dashboard_path lock_path mount_root].freeze
+
+    # Merged JBOD settings with `~` expanded in every path, so a config copied
+    # from the README ("~/.easy_sync/...") never creates a literal "~" directory.
     def jbod
-      JBOD_DEFAULTS.merge(data.fetch(:jbod, {}))
+      merged = JBOD_DEFAULTS.merge(data.fetch(:jbod, {}))
+      PATH_KEYS.each { |k| merged[k] = File.expand_path(merged[k]) if merged[k].is_a?(String) }
+      merged[:sources] = Array(merged[:sources]).map do |e|
+        e.is_a?(Hash) ? e.merge(path: File.expand_path(e[:path].to_s)) : File.expand_path(e.to_s)
+      end
+      merged
     end
   end
 end

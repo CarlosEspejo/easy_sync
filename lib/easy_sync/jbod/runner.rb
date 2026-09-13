@@ -205,7 +205,8 @@ module EasySync
         free_ledger[target.serial_number] -= size.to_i
         mounted.find { |m| m.serial_number == target.serial_number }
       rescue Placement::NoMountedDrives, Placement::DoesNotFit => e
-        warn(report, "cannot place #{folder.key}: #{e.message}")
+        hint = e.is_a?(Placement::DoesNotFit) && !folder.key.include?('/') ? ' (a whole share; set :split: true for it, see `jbod plan`)' : ''
+        warn(report, "cannot place #{folder.key}: #{e.message}#{hint}")
         report.unplaced << folder.key
         nil
       end

@@ -254,6 +254,23 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'jbod plan' do
+    it 'prints measurements, a recommendation per share, and a pasteable sources block' do
+      nas = make_dirs(temp_dir, 'nas').first
+      make_dirs(nas, 'A', 'B')
+      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{9 * 1024 * 1024 * 1024}\t#{p}\n" }.join })
+      expect(cli('jbod', 'plan', '--largest-drive', '8tb').run).to eq(0)
+      expect(out.string).to include('Judging against the largest drive: 8.0 TB', '18.0 TB in 2 folders, largest A (9.0 TB)',
+                                    'recommend split: true', 'bigger than any drive', 'CHANGE the config',
+                                    ":path: \"#{nas}\"\n    :split: true")
+    end
+
+    it 'rejects a size it cannot parse' do
+      expect(cli('jbod', 'plan', '--largest-drive', 'huge').run).to eq(1)
+      expect(err.string).to include('cannot parse size')
+    end
+  end
+
   it 'prints usage for unknown commands' do
     expect(cli('bogus').run).to eq(1)
     expect(err.string).to include('Unknown command: bogus', 'Usage:')

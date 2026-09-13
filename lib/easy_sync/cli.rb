@@ -23,6 +23,7 @@ module EasySync
              easy_sync jbod history [FOLDER]
              easy_sync jbod reassign FOLDER DRIVE_NAME [--note TEXT]
              easy_sync jbod pending
+             easy_sync jbod plan [--largest-drive SIZE]
              easy_sync jbod dashboard
 
       --config PATH overrides the config file (default ~/.easy_syncrc.yml);
@@ -98,6 +99,7 @@ module EasySync
       when 'history' then history(args.first)
       when 'reassign' then reassign(args)
       when 'pending' then pending
+      when 'plan' then plan(args)
       when 'dashboard' then dashboard
       else raise Error, "unknown jbod command #{sub.inspect}\n\n#{USAGE}"
       end
@@ -133,6 +135,43 @@ module EasySync
                 : "expires #{p.expires_at(settings[:grace_days]).strftime('%Y-%m-%d')}, seen missing #{p.missing_runs}x"
         @out.puts "  #{label.ljust(50)} since #{p.first_missing_at}  #{state}"
       end
+    end
+
+    # Measures every configured share and says whether to split it.
+    def plan(args)
+      opts = {}
+      OptionParser.new do |o|
+        o.on('--largest-drive SIZE', 'Capacity of the biggest drive you will register, e.g. 8tb (default: from the manifest)') do |v|
+          opts[:largest] = parse_size(v)
+        end
+      end.parse!(args)
+      largest = opts[:largest] || manifest.drives.map(&:capacity_bytes).max
+      @out.puts(largest ? "Judging against the largest drive: #{Jbod::Placement.format_bytes(largest)}" \
+                        : 'No drives registered yet; pass --largest-drive 8tb for recommendations')
+      rows = Jbod::Planner.new(settings, shell: @shell, largest_drive_bytes: largest).rows
+      rows.each do |r|
+        @out.puts "\n#{r.source.path}"
+        unless r.mounted
+          @out.puts "  #{r.reason}"
+          next
+        end
+        @out.puts "  #{Jbod::Placement.format_bytes(r.size_bytes)} in #{r.subfolders} folder#{'s' if r.subfolders != 1}" \
+                  "#{r.largest_name ? ", largest #{r.largest_name} (#{Jbod::Placement.format_bytes(r.largest_subfolder)})" : ''}" \
+                  "#{r.loose_files.positive? ? ", #{r.loose_files} loose file#{'s' if r.loose_files != 1}" : ''}"
+        @out.puts "  currently split: #{r.source.split}"
+        @out.puts "  recommend split: #{r.recommend_split.nil? ? '?' : r.recommend_split}  (#{r.reason})"
+        @out.puts '  -> CHANGE the config to match' if r.mismatch?
+      end
+      @out.puts "\nPaste into :jbod: :sources: :"
+      rows.each do |r|
+        split = r.recommend_split.nil? ? r.source.split : r.recommend_split
+        @out.puts "  - :path: \"#{r.source.path}\"\n    :split: #{split}"
+      end
+    end
+
+    def parse_size(text)
+      m = text.to_s.strip.match(/\A([\d.]+)\s*(tb|gb|mb|kb|b)?\z/i) or raise Error, "cannot parse size #{text.inspect} (try 8tb)"
+      (m[1].to_f * { nil => 1, 'b' => 1, 'kb' => 1024, 'mb' => 1024**2, 'gb' => 1024**3, 'tb' => 1024**4 }[m[2]&.downcase]).to_i
     end
 
     def register_drive(args)

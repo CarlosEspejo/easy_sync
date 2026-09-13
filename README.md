@@ -89,6 +89,16 @@ one drive, so each of its subfolders is placed independently and ends up at
 `/Volumes/<drive>/tv/<Show Name>`. Either way the manifest key is the path
 relative to the mount root: `photos`, `tv/Show Name`.
 
+**Not sure whether to split a share?** `easy_sync jbod plan` measures every
+configured share (one `du` per share, seconds even for thousands of folders)
+and prints a recommendation against the largest drive in the fleet, or against
+`--largest-drive 8tb` before any drive is registered: a share bigger than the
+largest drive must be split; one over half that size should be, because a whole
+share can never move and will jam its drive as it grows; a small share is
+simplest whole; a share with loose files at its top level must stay whole. It
+ends with a `:sources:` block ready to paste, and flags any share whose current
+setting disagrees. It reads only.
+
 Only folders are placed. A file sitting loose at the top level of a split share
 (say `/Volumes/tv/stray.mkv`) is never backed up; the run warns about it and the
 dashboard lists it until you move it into a folder on the NAS.
@@ -163,6 +173,7 @@ matter of browsing `/Volumes/<drive>/<folder>`.
     easy_sync jbod history [FOLDER]                # where has this folder lived?
     easy_sync jbod reassign FOLDER DRIVE_NAME      # record a move you made by hand (moves no data)
     easy_sync jbod pending                         # deletion candidates and their expiry dates
+    easy_sync jbod plan [--largest-drive 8tb]      # split or whole? measured recommendation per share
     easy_sync jbod dashboard                       # regenerate the HTML report only
 
 ### Dashboard
