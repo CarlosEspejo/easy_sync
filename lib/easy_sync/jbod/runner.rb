@@ -81,7 +81,7 @@ module EasySync
             if target.nil?
               drive = manifest.drive(record.drive_serial)
               warn(report, "#{folder.key}: its drive #{drive&.friendly_name || record.drive_serial} is not mounted, skipping")
-              manifest.mark_folder_status(folder.key, 'skipped_unmounted')
+              manifest.mark_folder_status(folder.key, 'skipped_unmounted') unless @dry_run
               report.skipped << folder.key
               next
             end
@@ -92,11 +92,15 @@ module EasySync
         source_status = reconcile_manifest(folders, available, report)
         purge(mounted, report)
 
-        mounted = refresh_drives(report, quiet: true)
-        copy_state_to_drives(mounted, report)
-        path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status,
-                                                            loose_files: report.loose_files)
-        @out.puts "\nDashboard written to #{path}"
+        if @dry_run
+          @out.puts "\nDRY RUN: nothing was copied, recorded, or deleted, and the dashboard was left as it was."
+        else
+          mounted = refresh_drives(report, quiet: true)
+          copy_state_to_drives(mounted, report)
+          path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status,
+                                                              loose_files: report.loose_files)
+          @out.puts "\nDashboard written to #{path}"
+        end
         summarize(report)
         report
       end
@@ -153,8 +157,10 @@ module EasySync
       def refresh_drives(report, quiet: false)
         mounted = @volume_info.mounted_drives(manifest.drives)
         mounted.each do |m|
-          manifest.update_drive_usage(m.serial_number, used_bytes: m.used_bytes, free_bytes: m.free_bytes,
-                                                       capacity_bytes: m.capacity_bytes)
+          unless @dry_run
+            manifest.update_drive_usage(m.serial_number, used_bytes: m.used_bytes, free_bytes: m.free_bytes,
+                                                         capacity_bytes: m.capacity_bytes)
+          end
           if m.mount_point != File.join(settings[:mount_root], m.friendly_name) && !quiet
             warn(report, "#{m.friendly_name} is mounted at #{m.mount_point} (matched by serial, not by name)")
           end
@@ -173,7 +179,7 @@ module EasySync
       # drive that is starting to fail is the one thing worth shouting about.
       def check_health(mounted_drive, report)
         health = @volume_info.smart_health(mounted_drive.mount_point) or return
-        manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail)
+        manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail) unless @dry_run
         return if %w[ok unknown].include?(health.status)
 
         report.unhealthy << [mounted_drive.friendly_name, health.status]
@@ -200,9 +206,13 @@ module EasySync
         size = @sizer.call(folder.path)
         candidates = mounted.map { |m| m.dup.tap { |c| c.free_bytes = free_ledger[c.serial_number] } }
         target = Placement.choose(candidates, size_bytes: size)
-        manifest.assign_folder(folder.key, target.serial_number, size_bytes: size,
-                                                                 note: "new folder, most free space (#{Placement.format_bytes(target.free_bytes)})")
-        @out.puts "Placing new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
+        if @dry_run
+          @out.puts "Would place new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
+        else
+          manifest.assign_folder(folder.key, target.serial_number, size_bytes: size,
+                                                                   note: "new folder, most free space (#{Placement.format_bytes(target.free_bytes)})")
+          @out.puts "Placing new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
+        end
         report.placed << [folder.key, target.friendly_name]
         free_ledger[target.serial_number] -= size.to_i
         mounted.find { |m| m.serial_number == target.serial_number }
@@ -218,18 +228,22 @@ module EasySync
         @out.puts "\n------------------ #{folder.key} -> #{target.friendly_name} ------------------"
         started = @clock.now.utc.iso8601
         result = @mirror.sync(folder.path, destination)
-        manifest.record_sync(folder_path: folder.key, drive_serial: target.serial_number, started_at: started,
-                             finished_at: @clock.now.utc.iso8601, exit_status: result.exit_status,
-                             bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
+        unless @dry_run
+          manifest.record_sync(folder_path: folder.key, drive_serial: target.serial_number, started_at: started,
+                               finished_at: @clock.now.utc.iso8601, exit_status: result.exit_status,
+                               bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
+        end
         if result.success?
           report.synced << folder.key
           if result.extraneous.nil?
             warn(report, "#{folder.key}: the deletion probe failed, so nothing was recorded as missing this run")
+          elsif @dry_run
+            @out.puts "  #{folder.key}: #{result.extraneous.size} file#{'s' if result.extraneous.size != 1} gone from the NAS would be recorded" unless result.extraneous.empty?
           else
             note_missing(folder, result.extraneous)
           end
         elsif result.disk_full?
-          manifest.mark_folder_status(folder.key, 'drive_full')
+          manifest.mark_folder_status(folder.key, 'drive_full') unless @dry_run
           warn(report, "#{folder.key} did not fully sync: #{target.friendly_name} is full " \
                        "(#{Placement.format_bytes(target.free_bytes)} free before this run). " \
                        "Move it to a drive with more room with `jbod reassign`.")
@@ -256,7 +270,7 @@ module EasySync
                          "it will be deleted from the drive #{settings[:grace_days]} days after it first went missing")
           else
             status[f.folder_path] = :source_unavailable
-            manifest.mark_folder_status(f.folder_path, 'skipped_source_unmounted')
+            manifest.mark_folder_status(f.folder_path, 'skipped_source_unmounted') unless @dry_run
             report.skipped << f.folder_path
           end
         end

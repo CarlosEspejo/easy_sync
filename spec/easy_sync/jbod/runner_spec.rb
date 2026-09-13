@@ -440,6 +440,28 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(manifest.pending_deletions.first.missing_runs).to eq(3)
     end
 
+    it 'in dry-run mode writes nothing at all to the manifest and leaves the dashboard alone' do
+      make_dirs(tv, 'Show A')
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['gone.jpg', 'file']]))
+      before = manifest.db.execute('SELECT * FROM folders').to_s + manifest.db.execute('SELECT * FROM drives').to_s
+
+      report = build_runner(settings, dry_run: true).run
+
+      expect(report.placed).to eq([['tv/Show A', 'backup-04-8tb']])           # decided, not recorded
+      expect(manifest.folder('tv/Show A')).to be_nil
+      expect(manifest.sync_runs).to be_empty
+      expect(manifest.pending_deletions).to be_empty
+      expect(manifest.history('tv/Show A')).to be_empty
+      expect(manifest.folder('photos')).to have_attributes(last_sync_status: nil, last_synced_at: nil)
+      expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(last_used_bytes: nil, smart_status: nil)
+      expect(manifest.db.execute('SELECT * FROM folders').to_s + manifest.db.execute('SELECT * FROM drives').to_s).to eq(before)
+      expect(File).not_to exist(dashboard_path)
+      expect(volume_info).not_to have_received(:copy_state)
+      expect(out.string).to include('Would place new folder tv/Show A', 'DRY RUN: nothing was copied, recorded, or deleted')
+    end
+
     it 'in dry-run mode touches neither the drives nor the pending table' do
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')

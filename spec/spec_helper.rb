@@ -4,6 +4,7 @@ require 'easy_sync'
 require 'tmpdir'
 require 'fileutils'
 require 'stringio'
+require 'timeout'
 
 Dir[File.join(__dir__, 'support', '**', '*.rb')].sort.each { |f| require f }
 
