@@ -144,30 +144,46 @@ than a bare rsync error; reassign it to a roomier drive.
 Replacing or upgrading a drive
 ------------------------------
 
-Register the new drive first, then hand the old one's folders over:
+Three situations, one command each. In every case the new drive is registered
+first, and the sync afterwards does the copying.
+
+**1. Upgrading a drive, or replacing one that is failing but still reads**
+(the dashboard shows it amber). Both drives mounted:
 
     easy_sync register-drive /Volumes/backup-08-12tb
     easy_sync replace-drive backup-04-8tb --to backup-08-12tb --copy
     easy_sync sync
 
-**Upgrading, or replacing a drive that still reads** (the dashboard shows it
-amber): use `--copy`. With both drives mounted, the old one's contents are
-copied straight onto the new one over the local bus, which is far faster than
-re-pulling them from the NAS. Every folder is then recorded as living on the new
-drive, the old drive is retired, and the next sync just verifies each folder
-against the NAS. If the copy fails nothing in the manifest changes.
+`--copy` copies the old drive's contents straight onto the new one over the
+local bus, far faster than pulling them from the NAS again. Every folder is then
+recorded as living on the new drive and the old drive is retired. The sync only
+verifies each folder against the NAS. If the copy fails, nothing is changed.
 
-**Replacing a dead drive:** leave `--copy` out. The folders are recorded on the
-new drive and the next sync copies them from the NAS. That is a long run, the
-same as the first sync for those folders.
+**2. Replacing a drive that is dead** (nothing to copy from):
 
-**No replacement yet, or one that's smaller:** leave `--to` out as well. The old
-drive's folders are forgotten, and the next sync places each one afresh across
-whatever is mounted, by the usual most-free-space rule.
+    easy_sync register-drive /Volumes/backup-08-12tb
+    easy_sync replace-drive backup-04-8tb --to backup-08-12tb
+    easy_sync sync
 
-A retired drive keeps its row and its history, so `easy_sync history` still
-shows where every folder used to live, but it is never placed on or written to
-again, even if it turns up mounted. `status` lists retired drives at the end.
+The folders are recorded on the new drive and the sync copies every one of them
+from the NAS. That takes as long as the first sync did for those folders.
+
+**3. Retiring a drive with no replacement, or a smaller one:**
+
+    easy_sync replace-drive backup-04-8tb
+    easy_sync sync
+
+The old drive's folders are forgotten. The sync places each one afresh across
+whatever drives are mounted, by the usual most-free-space rule, and copies it
+from the NAS.
+
+Afterwards, in all three cases:
+
+    easy_sync status                 # the retired drive is listed at the end
+    easy_sync history "tv/Show Name" # still shows the drive it used to live on
+
+A retired drive is never placed on or written to again, even if it turns up
+mounted.
 
 Deletions have a grace period
 -----------------------------
