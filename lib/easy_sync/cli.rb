@@ -301,7 +301,8 @@ module EasySync
         @out.puts(changes.empty? ? "\nConfig already matches the recommendations." \
                                  : "\nUpdated #{changes.size} source#{'s' if changes.size != 1} in #{config.path}.")
       elsif changes.any?
-        @out.puts "\nRun `easy_sync plan --apply` to write these recommendations to the config."
+        suggestion = (['easy_sync plan'] + Array(only) + ['--apply']).join(' ')
+        @out.puts "\nRun `#{suggestion}` to write these recommendations to the config."
       end
     end
 

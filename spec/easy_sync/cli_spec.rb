@@ -471,6 +471,26 @@ RSpec.describe EasySync::CLI do
       expect(out.string).not_to include(pro)
     end
 
+    it 'suggests re-running with the same filter, and --apply with a filter only touches that share' do
+      pro = make_dirs(temp_dir, 'pro').first
+      movies = make_dirs(temp_dir, 'movies').first
+      make_dirs(pro, 'Course 1')
+      make_dirs(movies, 'Film 1')
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      # both start mismatched against the recommendation for a tiny 1 KB folder (whole)
+      File.write(config_path, cfg.merge(sources: [{ path: pro, split: true }, { path: movies, split: true }]).to_yaml)
+      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "1\t#{p}\n" }.join })
+
+      expect(cli('plan', 'pro', '--largest-drive', '8tb').run).to eq(0)
+      expect(out.string).to include('Run `easy_sync plan pro --apply`')
+      expect(out.string).not_to include('easy_sync plan --apply`')
+
+      expect(cli('plan', 'pro', '--largest-drive', '8tb', '--apply').run).to eq(0)
+      entries = EasySync::Config.load(config_path).first.source_entries
+      expect(entries.find { |e| e[:path] == pro }[:split]).to eq(false)
+      expect(entries.find { |e| e[:path] == movies }[:split]).to eq(true)   # untouched
+    end
+
     it 'fails clearly when no configured source matches the given name' do
       expect(cli('plan', 'nonexistent-share', '--largest-drive', '8tb').run).to eq(1)
       expect(err.string).to include('no configured source matches nonexistent-share')
