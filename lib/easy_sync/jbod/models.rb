@@ -5,7 +5,8 @@ require 'time'
 module EasySync
   module Jbod
     Drive = Struct.new(:serial_number, :friendly_name, :capacity_bytes, :added_date, :volume_uuid,
-                       :last_seen_at, :last_used_bytes, :last_free_bytes, keyword_init: true) do
+                       :last_seen_at, :last_used_bytes, :last_free_bytes,
+                       :smart_status, :smart_detail, :smart_checked_at, keyword_init: true) do
       def used_fraction
         return nil if last_used_bytes.nil? || capacity_bytes.to_i.zero?
 
@@ -39,6 +40,13 @@ module EasySync
 
     Deletion = Struct.new(:id, :folder_path, :relative_path, :kind, :drive_serial, :first_missing_at, :deleted_at,
                           keyword_init: true)
+
+    # SMART health as last read from the drive. status is one of
+    # 'ok' (self-assessment passed, no bad-sector counters), 'warning' (passed
+    # but reallocated/pending/uncorrectable sectors or an NVMe critical flag:
+    # the drive is starting to fail), 'failing' (self-assessment FAILED), or
+    # 'unknown' (SMART not exposed by the enclosure, smartctl missing, etc.).
+    Health = Struct.new(:status, :detail, :source, keyword_init: true)
 
     # A registered drive that is currently mounted, with live usage numbers.
     MountedDrive = Struct.new(:drive, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,

@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 2
+      SCHEMA_VERSION = 3
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -63,6 +63,13 @@ module EasySync
                  capacity_bytes = COALESCE(?, capacity_bytes)
            WHERE serial_number = ?
         SQL
+        drive(serial_number)
+      end
+
+      def update_drive_health(serial_number, status:, detail:, checked_at: now)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET smart_status = ?, smart_detail = ?, smart_checked_at = ? WHERE serial_number = ?',
+                   [status, detail, checked_at, serial_number])
         drive(serial_number)
       end
 
@@ -292,7 +299,10 @@ module EasySync
               volume_uuid     TEXT,
               last_seen_at    TEXT,
               last_used_bytes INTEGER,
-              last_free_bytes INTEGER
+              last_free_bytes INTEGER,
+              smart_status    TEXT,
+              smart_detail    TEXT,
+              smart_checked_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS folders (
@@ -347,7 +357,16 @@ module EasySync
               deleted_at       TEXT NOT NULL
             );
           SQL
+          add_missing_columns('drives', smart_status: 'TEXT', smart_detail: 'TEXT', smart_checked_at: 'TEXT')
           db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
+        end
+      end
+
+      # Schema v3 added the SMART columns; a v1/v2 database gets them here.
+      def add_missing_columns(table, columns)
+        present = db.execute("PRAGMA table_info(#{table})").map { |r| r['name'] }
+        columns.each do |name, type|
+          db.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{type}") unless present.include?(name.to_s)
         end
       end
     end

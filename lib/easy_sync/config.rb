@@ -21,7 +21,6 @@ module EasySync
       manifest_path: "#{Dir.home}/.easy_sync/manifest.sqlite3",
       dashboard_path: "#{Dir.home}/.easy_sync/dashboard.html",
       lock_path: "#{Dir.home}/.easy_sync/jbod.lock",  # refuses a second concurrent `jbod sync`
-      warn_threshold: 0.85,
       purge: true,          # remove files from the backup once they have been gone from the NAS long enough
       grace_days: 7,        # ...at least this many days
       grace_runs: 2,        # ...and confirmed missing on at least this many separate runs

@@ -11,13 +11,16 @@ module EasySync
       TEMPLATE = File.expand_path('../templates/dashboard.html.erb', __dir__)
 
       DriveView = Struct.new(:drive, :mounted, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,
-                             :used_fraction, :level, :folders, keyword_init: true)
+                             :used_fraction, :level, :health, :folders, keyword_init: true)
 
-      attr_reader :manifest, :warn_threshold, :grace_days
+      # Tile colour comes from SMART health only. Fullness is shown as a number;
+      # a JBOD drive at 97% is healthy by design and must not look like a problem.
+      HEALTH_LEVELS = { 'ok' => :ok, 'warning' => :warning, 'failing' => :critical }.freeze
 
-      def initialize(manifest, warn_threshold: 0.85, grace_days: 7, clock: Time)
+      attr_reader :manifest, :grace_days
+
+      def initialize(manifest, grace_days: 7, clock: Time)
         @manifest = manifest
-        @warn_threshold = warn_threshold
         @grace_days = grace_days
         @clock = clock
       end
@@ -35,7 +38,7 @@ module EasySync
           history: manifest.history(limit: 50),
           runs: manifest.sync_runs(limit: 30),
           generated_at: @clock.now,
-          warnings: drives.select { |d| d.level != :ok },
+          warnings: drives.select { |d| %i[warning critical].include?(d.level) },
           source_status: source_status,
           loose_files: loose_files,
           pending: manifest.pending_deletions,
@@ -59,17 +62,15 @@ module EasySync
         fraction = used && capacity.to_i.positive? ? used.to_f / capacity : nil
         DriveView.new(drive: drive, mounted: !mounted.nil?, mount_point: mounted&.mount_point,
                       capacity_bytes: capacity, used_bytes: used, free_bytes: free,
-                      used_fraction: fraction, level: level_for(fraction),
+                      used_fraction: fraction, level: HEALTH_LEVELS.fetch(drive.smart_status, :unknown),
+                      health: drive.smart_status || 'unknown',
                       folders: manifest.folders_on(drive.serial_number))
       end
 
-      def level_for(fraction)
-        return :unknown if fraction.nil?
-        return :critical if fraction >= 0.95
-        return :warning if fraction >= warn_threshold
+      HEALTH_LABELS = { 'ok' => 'SMART ok', 'warning' => 'SMART: starting to fail', 'failing' => 'SMART: FAILING',
+                        'unknown' => 'SMART n/a' }.freeze
 
-        :ok
-      end
+      def health_label(status) = HEALTH_LABELS.fetch(status, 'SMART n/a')
 
       # -- template helpers ------------------------------------------------
 

@@ -105,6 +105,71 @@ module EasySync
         nil
       end
 
+      # SMART health for the drive under +mount_point+. Tries smartctl on the
+      # physical disk (plainly, then through a SAT USB bridge), and when that
+      # yields nothing falls back to the one-word SMART Status that
+      # `diskutil info` reports. Never raises: an enclosure that hides SMART
+      # is reported as 'unknown' with the reason, not as an error.
+      def smart_health(mount_point)
+        disk = physical_disk_for(mount_point)
+        if disk
+          [[], ['-d', 'sat']].each do |extra|
+            out = @shell.capture(['smartctl', *extra, '-a', "/dev/#{disk}"]).output
+            health = self.class.parse_smartctl(out)
+            return health if health
+          end
+        end
+        diskutil_health(mount_point)
+      rescue Errno::ENOENT
+        diskutil_health(mount_point)
+      end
+
+      # Parses `smartctl -a` for both ATA and NVMe drives. Returns nil when the
+      # output carries no self-assessment line (device not supported, needs
+      # sudo, wrong -d type...), so the caller can try the next source.
+      def self.parse_smartctl(out)
+        verdict = out[/overall-health self-assessment test result:\s*(\w+)/, 1] or return nil
+        counters = {}
+        out.scan(/^\s*\d+\s+(Reallocated_Sector_Ct|Current_Pending_Sector|Offline_Uncorrectable|Reallocated_Event_Count)\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\d+)/) do |name, raw|
+          counters[name] = raw.to_i
+        end
+        critical = out[/^Critical Warning:\s*(0x[0-9a-fA-F]+)/, 1]
+        media_errors = out[/^Media and Data Integrity Errors:\s*(\d+)/, 1]&.to_i
+        pct_used = out[/^Percentage Used:\s*(\d+)%/, 1]
+        temp = out[/^\s*\d+\s+Temperature_Celsius\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\d+)/, 1] ||
+               out[/^Temperature:\s*(\d+)\s*Celsius/, 1]
+
+        bad = counters.values_at('Reallocated_Sector_Ct', 'Current_Pending_Sector', 'Offline_Uncorrectable').compact.sum
+        bad += media_errors.to_i
+        bad += 1 if critical && critical.hex != 0
+
+        status = if verdict.casecmp?('PASSED') then bad.positive? ? 'warning' : 'ok'
+                 else 'failing'
+                 end
+        parts = [verdict.upcase]
+        parts << "reallocated #{counters['Reallocated_Sector_Ct']}" if counters.key?('Reallocated_Sector_Ct')
+        parts << "pending #{counters['Current_Pending_Sector']}" if counters.key?('Current_Pending_Sector')
+        parts << "uncorrectable #{counters['Offline_Uncorrectable']}" if counters.key?('Offline_Uncorrectable')
+        parts << "critical warning #{critical}" if critical && critical.hex != 0
+        parts << "media errors #{media_errors}" if media_errors
+        parts << "#{pct_used}% of rated life used" if pct_used
+        parts << "#{temp}°C" if temp
+        Health.new(status: status, detail: parts.join(' · '), source: 'smartctl')
+      end
+
+      def diskutil_health(mount_point)
+        result = @shell.capture(['diskutil', 'info', mount_point])
+        word = result.success? ? result.output[/SMART Status:\s*(.+)$/, 1]&.strip : nil
+        case word
+        when 'Verified' then Health.new(status: 'ok', detail: 'diskutil reports Verified (no counters available)', source: 'diskutil')
+        when 'Failing' then Health.new(status: 'failing', detail: 'diskutil reports Failing', source: 'diskutil')
+        else Health.new(status: 'unknown', detail: 'SMART not exposed by this enclosure (smartctl and diskutil both blind)',
+                        source: 'none')
+        end
+      rescue Errno::ENOENT
+        Health.new(status: 'unknown', detail: 'diskutil/smartctl not available on this system', source: 'none')
+      end
+
       # Resolves a mounted volume to the physical (or physical store) disk
       # underneath it: mount point -> APFS container ("Part of Whole") ->
       # container's physical store. Returns nil if any step can't be read.

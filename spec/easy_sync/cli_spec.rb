@@ -39,7 +39,24 @@ RSpec.describe EasySync::CLI do
                                        capacity_bytes: 8_000_000 * 1024, volume_uuid: 'ABCD-1234',
                                        last_used_bytes: 1_000 * 1024)
       expect(JSON.parse(File.read(File.join(vol, EasySync::Jbod::MARKER_FILE)))['serial_number']).to eq('ABCD-1234')
-      expect(out.string).to include('Registered backup-04-8tb (ABCD-1234)')
+      expect(out.string).to include('Registered backup-04-8tb (ABCD-1234)', 'SMART: unknown')
+      expect(drive.smart_status).to eq('unknown')
+    end
+
+    it 'records SMART health at registration when the enclosure exposes it' do
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\nVolume UUID: ABCD-1234\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: <<~OUT)
+        Serial Number:    WD-WX12345
+        SMART overall-health self-assessment test result: PASSED
+        ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+          5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
+        194 Temperature_Celsius     0x0022   036   049   000    Old_age   Always       -       36
+      OUT
+      cli('jbod', 'register-drive', vol).run
+      expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', smart_status: 'ok',
+                                                       smart_detail: 'PASSED · reallocated 0 · 36°C')
+      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)')
     end
 
     it 'prefers an explicit --serial and --name' do
@@ -68,7 +85,7 @@ RSpec.describe EasySync::CLI do
            Volume UUID:               ABCD-1234
       OUT
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
-      fake_shell.on(->(argv) { argv == ['smartctl', '-a', '/dev/disk0s2'] }, output: "Serial Number: 0ba0284a20e0ec22\n")
+      fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: "Serial Number: 0ba0284a20e0ec22\n")
 
       expect(cli('jbod', 'register-drive', vol).run).to eq(0)
       expect(manifest.drives.first).to have_attributes(serial_number: '0ba0284a20e0ec22', volume_uuid: 'ABCD-1234')
@@ -98,9 +115,12 @@ RSpec.describe EasySync::CLI do
       expect(err.string).to include('no drive named backup-99')
     end
 
-    it 'prints status' do
+    it 'prints status, including SMART health' do
+      m = manifest
+      m.update_drive_health('S2', status: 'warning', detail: 'PASSED · pending 3')
+      m.close
       expect(cli('jbod', 'status').run).to eq(0)
-      expect(out.string).to include('backup-01-3tb', 'not mounted', 'Photos')
+      expect(out.string).to include('backup-01-3tb', 'not mounted', 'Photos', 'SMART unchecked', 'SMART warning: PASSED · pending 3')
     end
   end
 

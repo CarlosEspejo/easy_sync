@@ -46,7 +46,6 @@ command, or set `EASY_SYNC_CONFIG`:
   :manifest_path: "~/.easy_sync/manifest.sqlite3"
   :dashboard_path: "~/.easy_sync/dashboard.html"
   :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent `jbod sync`
-  :warn_threshold: 0.85                   # flag drives fuller than this
   :purge: true                            # remove backed-up files once they have been gone from the NAS...
   :grace_days: 7                          # ...for at least this many days
   :grace_runs: 2                          # ...and confirmed missing on this many separate runs
@@ -157,6 +156,17 @@ matter of browsing `/Volumes/<drive>/<folder>`.
     easy_sync jbod dashboard                       # regenerate the HTML report only
 
 ### Dashboard
+
+Drive tiles are coloured by **SMART health, never by fullness**: a JBOD drive
+sitting at 97% is doing its job. On every sync (and at registration) each
+mounted drive's health is read with `smartctl -a` on its physical disk (plainly,
+then through a SAT USB bridge), falling back to the one-word SMART Status from
+`diskutil info`. Green means the self-assessment passed with no bad-sector
+counters; amber means it passed but reallocated, pending or uncorrectable
+sectors (or an NVMe critical flag) are non-zero, i.e. the drive is starting to
+fail; red means the self-assessment itself failed; grey means the enclosure
+doesn't expose SMART at all. Amber and red drives also get an alert at the top
+of the page and a warning on the terminal, with the counters.
 
 The HTML report groups everything by share so a library of several hundred
 movie and show folders stays readable: each drive tile shows one line per share

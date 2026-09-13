@@ -153,9 +153,12 @@ module EasySync
       drive = manifest.register_drive(serial_number: serial, friendly_name: name,
                                       capacity_bytes: usage.capacity_bytes, volume_uuid: uuid)
       manifest.update_drive_usage(serial, used_bytes: usage.used_bytes, free_bytes: usage.free_bytes)
+      health = volume_info.smart_health(mount_point)
+      manifest.update_drive_health(serial, status: health.status, detail: health.detail)
       volume_info.write_marker(mount_point, serial_number: serial, friendly_name: name)
       @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}), " \
                 "#{Jbod::Placement.format_bytes(drive.capacity_bytes)} at #{mount_point}"
+      @out.puts "SMART: #{health.status} (#{health.detail})"
     end
 
     # --serial wins outright. Otherwise try the hardware serial via smartctl
@@ -186,6 +189,7 @@ module EasySync
                   "not mounted (last seen #{d.last_seen_at || 'never'})"
                 end
         @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} #{usage}"
+        @out.puts "  #{' ' * 16} SMART #{d.smart_status || 'unchecked'}#{d.smart_detail ? ": #{d.smart_detail}" : ''}"
       end
       @out.puts "\nFolders:"
       names = manifest.drives.to_h { |d| [d.serial_number, d.friendly_name] }
@@ -216,7 +220,7 @@ module EasySync
 
     def dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
-      path = Jbod::Dashboard.new(manifest, warn_threshold: settings[:warn_threshold], grace_days: settings[:grace_days])
+      path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days])
                             .write(settings[:dashboard_path], mounted: mounted)
       @out.puts "Dashboard written to #{path}"
     end

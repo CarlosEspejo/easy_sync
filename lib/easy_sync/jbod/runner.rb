@@ -24,7 +24,7 @@ module EasySync
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, :loose_files, keyword_init: true) do
+                          :purged, :would_purge, :pending, :loose_files, :unhealthy, keyword_init: true) do
         def initialize(**)
           super
           (members - [:pending]).each { |m| self[m] ||= [] }
@@ -46,8 +46,7 @@ module EasySync
         @purge = purge.nil? ? settings.fetch(:purge, true) : purge
         @volume_info = volume_info || VolumeInfo.new(mount_root: settings[:mount_root], shell: shell)
         @mirror = mirror || Mirror.new(shell: shell, extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
-        @dashboard = dashboard || Dashboard.new(manifest, warn_threshold: settings[:warn_threshold],
-                                                          grace_days: settings[:grace_days], clock: clock)
+        @dashboard = dashboard || Dashboard.new(manifest, grace_days: settings[:grace_days], clock: clock)
         @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
                                                  clock: clock, out: out)
         @sizer = sizer || method(:du_bytes)
@@ -157,6 +156,7 @@ module EasySync
           if m.mount_point != File.join(settings[:mount_root], m.friendly_name) && !quiet
             warn(report, "#{m.friendly_name} is mounted at #{m.mount_point} (matched by serial, not by name)")
           end
+          check_health(m, report) unless quiet
         end
         unless quiet
           mounted_serials = mounted.map(&:serial_number)
@@ -165,6 +165,19 @@ module EasySync
           end
         end
         mounted
+      end
+
+      # Reads SMART once per run for each mounted drive and records it. A
+      # drive that is starting to fail is the one thing worth shouting about.
+      def check_health(mounted_drive, report)
+        health = @volume_info.smart_health(mounted_drive.mount_point) or return
+        manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail)
+        return if %w[ok unknown].include?(health.status)
+
+        report.unhealthy << [mounted_drive.friendly_name, health.status]
+        verb = health.status == 'failing' ? 'is FAILING' : 'is starting to fail'
+        warn(report, "drive #{mounted_drive.friendly_name} #{verb}: SMART says #{health.detail}. " \
+                     'Plan to replace it and move its folders with `jbod reassign`.')
       end
 
       # Best-effort: says *why* a drive isn't mounted when it's detectably a

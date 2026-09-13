@@ -168,6 +168,85 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
     end
   end
 
+  describe '.parse_smartctl' do
+    ata = <<~OUT
+      === START OF INFORMATION SECTION ===
+      Serial Number:    WD-WX11D3456789
+      SMART overall-health self-assessment test result: PASSED
+      ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+        5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
+      194 Temperature_Celsius     0x0022   036   049   000    Old_age   Always       -       36 (Min/Max 20/45)
+      197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
+      198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
+    OUT
+
+    it 'reads a healthy ATA drive' do
+      h = described_class.parse_smartctl(ata)
+      expect(h).to have_attributes(status: 'ok', source: 'smartctl',
+                                   detail: 'PASSED · reallocated 0 · pending 0 · uncorrectable 0 · 36°C')
+    end
+
+    it 'flags an ATA drive that passes but is growing bad sectors as starting to fail' do
+      out = ata.sub(/Reallocated_Sector_Ct.*-\s+0$/) { |l| l.sub(/0$/, '12') }.sub(/Current_Pending_Sector.*-\s+0$/) { |l| l.sub(/0$/, '3') }
+      h = described_class.parse_smartctl(out)
+      expect(h.status).to eq('warning')
+      expect(h.detail).to include('reallocated 12', 'pending 3')
+    end
+
+    it 'reports a failed self-assessment as failing' do
+      expect(described_class.parse_smartctl(ata.sub('PASSED', 'FAILED!')).status).to eq('failing')
+    end
+
+    it 'reads a real NVMe report' do
+      nvme = <<~OUT
+        SMART overall-health self-assessment test result: PASSED
+        Critical Warning:                   0x00
+        Temperature:                        49 Celsius
+        Available Spare:                    100%
+        Percentage Used:                    6%
+        Media and Data Integrity Errors:    0
+      OUT
+      expect(described_class.parse_smartctl(nvme)).to have_attributes(
+        status: 'ok', detail: 'PASSED · media errors 0 · 6% of rated life used · 49°C'
+      )
+      expect(described_class.parse_smartctl(nvme.sub('0x00', '0x04')).status).to eq('warning')
+    end
+
+    it 'returns nil when there is no self-assessment line (unsupported device, needs sudo)' do
+      expect(described_class.parse_smartctl("Smartctl open device: /dev/disk7 failed: Operation not supported by device\n")).to be_nil
+    end
+  end
+
+  describe '#smart_health' do
+    before do
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', '/Volumes/x'] }, output: "Part of Whole: disk7\nSMART Status: Not Supported\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk7'] }, output: "APFS Physical Store: disk7s2\n")
+    end
+
+    it 'tries smartctl plainly, then through a SAT bridge, then falls back to diskutil' do
+      fake_shell.on('smartctl', output: "Smartctl open device failed: Operation not supported by device\n", status: 2)
+      h = info.smart_health('/Volumes/x')
+      expect(h).to have_attributes(status: 'unknown', source: 'none')
+      expect(h.detail).to include('not exposed by this enclosure')
+      expect(fake_shell.calls_to('smartctl')).to eq([['smartctl', '-a', '/dev/disk7s2'], ['smartctl', '-d', 'sat', '-a', '/dev/disk7s2']])
+    end
+
+    it 'uses the SAT bridge answer when the plain call is refused' do
+      fake_shell.on(->(argv) { argv == ['smartctl', '-a', '/dev/disk7s2'] }, output: 'Operation not supported', status: 2)
+      fake_shell.on(->(argv) { argv == ['smartctl', '-d', 'sat', '-a', '/dev/disk7s2'] },
+                    output: "SMART overall-health self-assessment test result: PASSED\n")
+      expect(info.smart_health('/Volumes/x')).to have_attributes(status: 'ok', detail: 'PASSED', source: 'smartctl')
+    end
+
+    it 'trusts diskutil when smartctl is blind but macOS reports Verified or Failing' do
+      fake_shell.on('smartctl', output: '', status: 2)
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', '/Volumes/x'] }, output: "Part of Whole: disk7\nSMART Status: Verified\n")
+      expect(info.smart_health('/Volumes/x')).to have_attributes(status: 'ok', source: 'diskutil')
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', '/Volumes/x'] }, output: "Part of Whole: disk7\nSMART Status: Failing\n")
+      expect(info.smart_health('/Volumes/x')).to have_attributes(status: 'failing', source: 'diskutil')
+    end
+  end
+
   describe '#locked?' do
     # Fixture matches real `diskutil apfs list` output: Name: and FileVault:
     # lines for one volume are a few lines apart, not adjacent.

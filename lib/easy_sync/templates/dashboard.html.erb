@@ -48,10 +48,15 @@
   .tile .sub { color: var(--ink-2); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); margin: 10px 0 8px; overflow: hidden; }
   .meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
-  .tile.warning .meter { background: var(--warning-track); }
-  .tile.warning .meter > span { background: var(--warning); }
-  .tile.critical .meter { background: var(--critical-track); }
-  .tile.critical .meter > span { background: var(--critical); }
+  .tile.warning { border-color: var(--warning); box-shadow: inset 4px 0 0 var(--warning); }
+  .tile.critical { border-color: var(--critical); box-shadow: inset 4px 0 0 var(--critical); }
+  .tile .health { font-size: 12px; margin-top: 8px; color: var(--ink-2); }
+  .tile .health::before { content: "●"; margin-right: 4px; }
+  .tile .health.ok::before { color: var(--good); }
+  .tile .health.warning::before { color: var(--warning); }
+  .tile .health.failing::before { color: var(--critical); }
+  .tile .health.unknown::before { color: var(--muted); }
+  .tile .health small { color: var(--muted); display: block; margin-left: 12px; }
   .badge { font-size: 12px; font-weight: 500; color: var(--ink-2); white-space: nowrap; }
   .badge::before { content: "●"; margin-right: 4px; }
   .badge.ok::before { color: var(--good); }
@@ -96,7 +101,7 @@
   <h1>Backup status</h1>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
-    <%= folders.size %> folders tracked · <%= pending.size %> pending deletion · warning above <%= percent(warn_threshold) %> full</p>
+    <%= folders.size %> folders tracked · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
 
 <%- unless warnings.empty? && loose_files.empty? -%>
   <div class="alerts">
@@ -109,12 +114,9 @@
   <%- end -%>
   <%- warnings.each do |d| -%>
     <div class="alert <%= d.level %>">
-    <%- if d.level == :unknown -%>
-      <strong><%= h d.drive.friendly_name %></strong> has never been seen mounted, so its usage is unknown.
-    <%- else -%>
-      <strong><%= h d.drive.friendly_name %></strong> is <%= percent(d.used_fraction) %> full
-      (<%= bytes(d.free_bytes) %> free)<%= d.mounted ? '' : ', as of ' + when_(d.drive.last_seen_at) %>.
-    <%- end -%>
+      <strong><%= h d.drive.friendly_name %></strong> <%= d.level == :critical ? 'is FAILING' : 'is starting to fail' %>:
+      SMART says <%= h d.drive.smart_detail %> (checked <%= when_(d.drive.smart_checked_at) %>).
+      Plan to replace it and move its folders with <code>jbod reassign</code>.
     </div>
   <%- end -%>
   </div>
@@ -128,12 +130,13 @@
   <%- drives.each do |d| -%>
     <div class="tile <%= d.level %><%= d.mounted ? '' : ' unmounted' %>">
       <div class="name"><span><%= h d.drive.friendly_name %></span>
-        <span class="badge <%= d.level %>"><%= d.mounted ? 'mounted' : 'not mounted' %></span></div>
+        <span class="badge <%= d.mounted ? 'ok' : 'unknown' %>"><%= d.mounted ? 'mounted' : 'not mounted' %></span></div>
       <div class="serial"><%= h d.drive.serial_number %></div>
       <div class="value"><%= percent(d.used_fraction) %> <span class="sub" style="font-size:14px;font-weight:400">used</span></div>
       <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
       <div class="sub"><%= bytes(d.used_bytes) %> used · <%= bytes(d.free_bytes) %> free · <%= bytes(d.capacity_bytes) %> total</div>
       <div class="sub" style="color:var(--muted)"><%= d.mounted ? "at #{h d.mount_point}" : "last seen #{when_(d.drive.last_seen_at)}" %></div>
+      <div class="health <%= d.health %>"><%= health_label(d.health) %><%- if d.drive.smart_detail -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>

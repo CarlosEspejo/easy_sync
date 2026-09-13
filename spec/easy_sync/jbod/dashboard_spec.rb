@@ -4,7 +4,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
   let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
   let(:manifest) { memory_manifest(clock: clock) }
   let(:drives) { register_fleet(manifest).to_h { |d| [d.friendly_name, d] } }
-  let(:dashboard) { described_class.new(manifest, warn_threshold: 0.85, clock: clock) }
+  let(:dashboard) { described_class.new(manifest, clock: clock) }
 
   before do
     drives
@@ -22,23 +22,31 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('7 drives, 1 mounted', '1 folders tracked')
   end
 
-  it 'flags drives over the warning threshold and marks critical above 95%' do
+  it 'colours tiles by SMART health and never by fullness' do
+    manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · reallocated 0 · 36°C')
+    manifest.update_drive_health('SN-backup-05-8tb', status: 'warning', detail: 'PASSED · reallocated 12 · pending 3')
+    manifest.update_drive_health('SN-backup-06-8tb', status: 'failing', detail: 'FAILED')
     html = dashboard.render(mounted: [
-      mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB),
-      mounted(drives['backup-05-8tb'], free: 100, used: 8 * TB - 100),
-      mounted(drives['backup-06-8tb'], free: 4 * TB, used: 4 * TB)
+      mounted(drives['backup-04-8tb'], free: 100, used: 8 * TB - 100),   # 100% full, healthy
+      mounted(drives['backup-05-8tb'], free: 4 * TB, used: 4 * TB),
+      mounted(drives['backup-06-8tb'], free: 7 * TB, used: 1 * TB),
+      mounted(drives['backup-07-8tb'], free: 4 * TB, used: 4 * TB)       # never checked
     ])
-    expect(html).to match(/class="tile warning"[\s\S]*?backup-04-8tb/)
-    expect(html).to match(/class="tile critical"[\s\S]*?backup-05-8tb/)
-    expect(html).to match(/class="tile ok"[\s\S]*?backup-06-8tb/)
-    expect(html).to include('<strong>backup-04-8tb</strong> is 88% full')
+    expect(html).to match(/class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?100% used[\s\S]*?SMART ok/)
+    expect(html).to match(/class="tile warning"[\s\S]*?backup-05-8tb[\s\S]*?SMART: starting to fail/)
+    expect(html).to match(/class="tile critical"[\s\S]*?backup-06-8tb[\s\S]*?SMART: FAILING/)
+    expect(html).to match(/class="tile unknown"[\s\S]*?backup-07-8tb[\s\S]*?SMART n\/a/)
+    expect(html).to include('<strong>backup-05-8tb</strong> is starting to fail', 'reallocated 12 · pending 3')
+    expect(html).to include('<strong>backup-06-8tb</strong> is FAILING')
+    expect(html).not_to include('is 100% full')
+    expect(html).to include('drive colours show SMART health, not fullness')
   end
 
-  it 'shows last-known numbers for drives that are not mounted' do
+  it 'shows last-known numbers for drives that are not mounted, without alarm' do
     html = dashboard.render(mounted: [])
     expect(html).to include('not mounted')
     expect(html).to match(/backup-01-3tb[\s\S]*?33% used[\s\S]*?1\.0 TB used · 2\.0 TB free · 3\.0 TB total/)
-    expect(html).to include('has never been seen mounted')
+    expect(html).not_to include('class="alert')
   end
 
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do
