@@ -1,44 +1,21 @@
-require 'yaml'
+# frozen_string_literal: true
 
 module EasySync
-
+  # Runs every snapshot task from the config file.
   class SyncRunner
     attr_reader :config
 
-    def initialize()
-      handle_config
+    def initialize(config_path: Config.default_path, shell: Shell.new, out: $stdout, err: $stderr)
+      @config, generated = Config.load(config_path)
+      err.puts "Generated sample config file: #{config_path}\n\n" if generated
+      @shell = shell
+      @out = out
     end
 
     def run
-      config[:tasks].each do |c|
-        c[:logging] = config[:logging]
-        Rsync.new(c).sync
+      config.tasks.each do |task|
+        Rsync.new(task.merge(logging: config.logging), shell: @shell, out: @out).sync
       end
     end
-
-    private
-
-    def handle_config
-      path = "#{ENV["HOME"]}/.easy_syncrc.yml"
-      generate_yaml(path) unless File.exist? path
-      @config = YAML.load_file path
-    end
-
-    def generate_yaml(path)
-      File.open(path, 'w') do |f|
-        h = {:logging => :on,
-             :tasks => [{
-                            sync_name: "sample_sync",
-                            source: "[/example/path]",
-                            destination: "[/example/path]",
-                            exclude_file: "[/example/path]"
-                          }]}
-        f.puts h.to_yaml
-      end
-
-      $stderr.puts "Generated sample config file: #{path}\n\n"
-    end
-
   end
-
 end

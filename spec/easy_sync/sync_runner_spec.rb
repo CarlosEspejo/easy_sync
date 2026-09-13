@@ -1,54 +1,36 @@
-require 'spec_helper'
+# frozen_string_literal: true
 
-describe SyncRunner do
+RSpec.describe EasySync::SyncRunner do
+  let(:config_path) { File.join(temp_dir, '.easy_syncrc.yml') }
+  let(:out) { StringIO.new }
+  let(:err) { StringIO.new }
 
-  it "should create template config if no config file passed" do
-    SyncRunner.new
-    config = YAML.load_file default_config_path
-    config.must_equal blank_config
+  def write_config(data)
+    File.write(config_path, data.to_yaml)
   end
 
-  it "should use default config file" do
-    File.open(default_config_path, "w"){|f| f.puts config_file_data.merge({logging: :off}).to_yaml}
-    SyncRunner.new.config[:logging].must_equal :off
+  it 'generates a sample config when none exists' do
+    described_class.new(config_path: config_path, shell: fake_shell, out: out, err: err)
+    expect(YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true))
+      .to eq(EasySync::Config.sample)
+    expect(err.string).to include("Generated sample config file: #{config_path}")
   end
 
-  it "should sync files between source and destination" do
-    create_config_file
-    SyncRunner.new.run
-    Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].map{|f| File.basename f}.must_equal ["file1.txt", "file2.txt", "file3.txt", "file4.txt"]
+  it 'reads the logging setting' do
+    write_config(logging: :off, tasks: [])
+    expect(described_class.new(config_path: config_path, shell: fake_shell, out: out, err: err).config.logging).to eq(:off)
   end
 
-  it "should create hard links to the files that didn't change in the new snapshot directory" do
-    create_config_file
-    SyncRunner.new.run
-
-    snapshot_file = Dir["#{File.join(destination_directory, "2013-12-30")}/*"].first
-    new_file = Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].first
-
-    File.stat(snapshot_file).ino.must_equal File.stat(new_file).ino
+  it 'runs every task, applying the global logging setting' do
+    fake_shell.on('rsync')
+    write_config(logging: :on, tasks: [
+                   { sync_name: 'one', source: '/a/', destination: File.join(temp_dir, 'a'), exclude_file: '' },
+                   { sync_name: 'two', source: '/b/', destination: File.join(temp_dir, 'b'), exclude_file: '' }
+                 ])
+    described_class.new(config_path: config_path, shell: fake_shell, out: out, err: err).run
+    calls = fake_shell.calls_to('rsync')
+    expect(calls.size).to eq(2)
+    expect(calls).to all(include('--log-file'))
+    expect(calls.map { |c| c[-2] }).to eq(['/a/', '/b/'])
   end
-
-  it "should use exclude-from option" do
-    exclude_file = "#{destination_directory}/exclude.txt"
-    File.open(exclude_file, "w"){|f| f.puts "file4.txt"}
-
-    config_file_data[:tasks].first[:exclude_file] = exclude_file
-    File.open(default_config_path, 'w'){|f| f.puts config_file_data.to_yaml}
-
-    SyncRunner.new.run
-
-    Dir["#{File.join(destination_directory, Time.now.strftime("%Y-%m-%d"))}/*"].map{|f| File.basename f}.must_equal ["file1.txt", "file2.txt", "file3.txt"]
-  end
-
-  it "should apply log setting to all task" do
-    log_file = "#{temp_directory}/easy_sync.log"
-    create_config_file
-    s = SyncRunner.new
-    s.config[:logging] = :on
-    s.run
-
-    File.exist?(log_file).must_equal true
-  end
-
 end

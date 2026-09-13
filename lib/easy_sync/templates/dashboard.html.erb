@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backup status</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --hairline: #e1e0d9; --ring: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --track: #cde2fb;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --warning-track: #fdebc2; --critical-track: #f6cfcf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
+      --accent: #3987e5; --track: #184f95;
+      --warning-track: #4a3708; --critical-track: #4a1717;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5; --track: #184f95;
+    --warning-track: #4a3708; --critical-track: #4a1717;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding-block: 32px; padding-inline: 20px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  .meta { color: var(--muted); margin: 0 0 20px; }
+  .alerts { display: grid; gap: 8px; margin: 0 0 20px; }
+  .alert { border: 1px solid var(--ring); border-left: 4px solid var(--warning); background: var(--surface);
+           border-radius: 6px; padding: 10px 14px; }
+  .alert.critical { border-left-color: var(--critical); }
+  .alert.unknown { border-left-color: var(--muted); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 14px 16px; }
+  .tile.unmounted { opacity: 0.7; }
+  .tile .name { font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .tile .serial { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .tile .value { font-size: 26px; font-weight: 600; margin: 8px 0 2px; }
+  .tile .sub { color: var(--ink-2); }
+  .meter { height: 8px; border-radius: 4px; background: var(--track); margin: 10px 0 8px; overflow: hidden; }
+  .meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .tile.warning .meter { background: var(--warning-track); }
+  .tile.warning .meter > span { background: var(--warning); }
+  .tile.critical .meter { background: var(--critical-track); }
+  .tile.critical .meter > span { background: var(--critical); }
+  .badge { font-size: 12px; font-weight: 500; color: var(--ink-2); white-space: nowrap; }
+  .badge::before { content: "●"; margin-right: 4px; }
+  .badge.ok::before { color: var(--good); }
+  .badge.warning::before { color: var(--warning); }
+  .badge.critical::before { color: var(--critical); }
+  .badge.unknown::before { color: var(--muted); }
+  .tile ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  th.num { text-align: right; }
+  .status { white-space: nowrap; }
+  .status::before { content: "●"; margin-right: 4px; color: var(--muted); }
+  .status.ok::before { color: var(--good); }
+  .status.failed::before { color: var(--critical); }
+  .status.skipped_unmounted::before, .status.missing::before { color: var(--warning); }
+  .empty { color: var(--muted); padding: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Backup status</h1>
+  <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
+    <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
+    <%= folders.size %> folders tracked · warning above <%= percent(warn_threshold) %> full</p>
+
+<%- unless warnings.empty? -%>
+  <div class="alerts">
+  <%- warnings.each do |d| -%>
+    <div class="alert <%= d.level %>">
+    <%- if d.level == :unknown -%>
+      <strong><%= h d.drive.friendly_name %></strong> has never been seen mounted, so its usage is unknown.
+    <%- else -%>
+      <strong><%= h d.drive.friendly_name %></strong> is <%= percent(d.used_fraction) %> full
+      (<%= bytes(d.free_bytes) %> free)<%= d.mounted ? '' : ', as of ' + when_(d.drive.last_seen_at) %>.
+    <%- end -%>
+    </div>
+  <%- end -%>
+  </div>
+<%- end -%>
+
+  <h2>Drives</h2>
+<%- if drives.empty? -%>
+  <p class="empty">No drives registered. Run <code>easy_sync jbod register-drive</code>.</p>
+<%- else -%>
+  <div class="tiles">
+  <%- drives.each do |d| -%>
+    <div class="tile <%= d.level %><%= d.mounted ? '' : ' unmounted' %>">
+      <div class="name"><span><%= h d.drive.friendly_name %></span>
+        <span class="badge <%= d.level %>"><%= d.mounted ? 'mounted' : 'not mounted' %></span></div>
+      <div class="serial"><%= h d.drive.serial_number %></div>
+      <div class="value"><%= percent(d.used_fraction) %> <span class="sub" style="font-size:14px;font-weight:400">used</span></div>
+      <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
+      <div class="sub"><%= bytes(d.used_bytes) %> used · <%= bytes(d.free_bytes) %> free · <%= bytes(d.capacity_bytes) %> total</div>
+      <div class="sub" style="color:var(--muted)"><%= d.mounted ? "at #{h d.mount_point}" : "last seen #{when_(d.drive.last_seen_at)}" %></div>
+    <%- unless d.folders.empty? -%>
+      <ul>
+      <%- d.folders.each do |f| -%>
+        <li><%= h f.folder_path %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+      <%- end -%>
+      </ul>
+    <%- end -%>
+    </div>
+  <%- end -%>
+  </div>
+<%- end -%>
+
+  <h2>Folders</h2>
+  <div class="table-wrap">
+<%- if folders.empty? -%>
+  <p class="empty">No folders placed yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Folder</th><th>Drive</th><th class="num">Size</th><th>Last synced</th><th>Status</th><th>Assigned</th></tr></thead>
+    <tbody>
+  <%- folders.each do |f| -%>
+    <%- status = source_status[f.folder_path] == :missing ? 'missing' : (f.last_sync_status || 'never') -%>
+      <tr>
+        <td><%= h f.folder_path %></td>
+        <td><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
+        <td class="num"><%= bytes(f.size_bytes) %></td>
+        <td><%= when_(f.last_synced_at) %></td>
+        <td><span class="status <%= status %>"><%= status == 'missing' ? 'missing on NAS' : status.tr('_', ' ') %></span></td>
+        <td><%= when_(f.assigned_at) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Placement history</h2>
+  <div class="table-wrap">
+<%- if history.empty? -%>
+  <p class="empty">Nothing recorded yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>When</th><th>Folder</th><th>Event</th><th>Drive</th><th>Note</th></tr></thead>
+    <tbody>
+  <%- history.each do |e| -%>
+      <tr>
+        <td><%= when_(e.recorded_at) %></td>
+        <td><%= h e.folder_path %></td>
+        <td><%= h e.event %></td>
+        <td><%= h names.fetch(e.drive_serial, e.drive_serial) %></td>
+        <td><%= h e.note %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Recent sync runs</h2>
+  <div class="table-wrap">
+<%- if runs.empty? -%>
+  <p class="empty">No sync runs recorded yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Started</th><th>Folder</th><th>Drive</th><th>Result</th><th class="num">Transferred</th><th class="num">Folder size</th></tr></thead>
+    <tbody>
+  <%- runs.each do |r| -%>
+      <tr>
+        <td><%= when_(r.started_at) %></td>
+        <td><%= h r.folder_path %></td>
+        <td><%= h names.fetch(r.drive_serial, r.drive_serial) %></td>
+        <td><span class="status <%= r.exit_status.to_i.zero? ? 'ok' : 'failed' %>"><%= r.exit_status.to_i.zero? ? 'ok' : "failed (exit #{r.exit_status})" %></span></td>
+        <td class="num"><%= bytes(r.bytes_transferred) %></td>
+        <td class="num"><%= bytes(r.total_size_bytes) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+</main>
+</body>
+</html>

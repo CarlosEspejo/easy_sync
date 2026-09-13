@@ -1,33 +1,19 @@
-require "minitest/autorun"
-require "minitest/pride"
-require 'pry'
+# frozen_string_literal: true
 
 require 'easy_sync'
-require_relative 'support'
+require 'tmpdir'
+require 'fileutils'
+require 'stringio'
 
-include EasySync
+Dir[File.join(__dir__, 'support', '**', '*.rb')].sort.each { |f| require f }
 
-class MiniTest::Spec
+RSpec.configure do |config|
+  config.expect_with(:rspec) { |c| c.syntax = :expect }
+  config.mock_with(:rspec) { |c| c.verify_partial_doubles = true }
+  config.disable_monkey_patching!
+  config.order = :random
+  Kernel.srand config.seed
 
-  before do
-    create_root_directory
-    create_source_directory
-    create_destination_directory
-    create_snapshot_directories
-    create_source_files
-    copy_to_latest
-
-    # Silences output, comment out to debug test cases
-    $stdout = StringIO.new
-    $stderr = StringIO.new
-    ENV['HOME'] = temp_directory
-  end
-
-
-  after do
-    FileUtils.rm_r temp_directory
-    $stdout = STDOUT
-    $stderr = STDERR
-  end
-
+  config.include FakeShellHelpers
+  config.include TempDirHelpers
 end

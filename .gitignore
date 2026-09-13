@@ -15,3 +15,7 @@ spec/reports
 test/tmp
 test/version_tmp
 tmp
+.rspec_status
+*.sqlite3
+*.db
+spec/test_data*

@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module EasySync
-  VERSION = '1.0.0'
+  class Error < StandardError; end
 end

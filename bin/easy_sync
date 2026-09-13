@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
 
 require 'easy_sync'
-EasySync::SyncRunner.new.run
+exit EasySync::CLI.new(ARGV).run
