@@ -22,10 +22,10 @@ Quick start
 
     gem install easy_sync
 
-    easy_sync                        # first run writes ~/.easy_sync/config.yml
-    $EDITOR ~/.easy_sync/config.yml  # list your shares under :sources:
+    easy_sync add-source /Volumes/tv                    # once per NAS share, mounted on the Mac
+    easy_sync add-source /Volumes/movies
     easy_sync register-drive /Volumes/backup-01-3tb     # once per drive, while mounted
-    easy_sync plan                   # measures each share: split it or keep it whole?
+    easy_sync plan --apply           # measures each share, writes split-or-whole for each
     easy_sync sync --dry-run         # what would be placed and copied, nothing written
     easy_sync sync                   # the real thing
     open ~/.easy_sync/dashboard.html
@@ -35,7 +35,10 @@ Mount and unlock the drives yourself first; the tool never unlocks anything.
 Configuration
 -------------
 
-`~/.easy_sync/config.yml`, written with comments on first run:
+You don't need to edit anything: `add-source`, `remove-source` and
+`plan --apply` maintain `~/.easy_sync/config.yml` for you, and `sources` lists
+it. The file stays readable and commented if you want to change the other
+settings by hand:
 
 ```yaml
 :sources:                               # each NAS share, as mounted on the Mac
@@ -117,8 +120,8 @@ or against `--largest-drive 8tb` before any drive is registered:
 | smaller | whole is simplest |
 | has loose files at its top level | must stay whole: only folders are placed |
 
-It ends with a `:sources:` block to paste and flags any share whose current
-setting disagrees. It reads only.
+It flags any share whose current setting disagrees, and `--apply` writes the
+recommendations to the config. Without `--apply` it reads only.
 
 Only folders are placed. A loose file at the top of a split share is never
 backed up; the run warns about it and the dashboard lists it until you move it
@@ -258,10 +261,13 @@ Commands
 
 | command | does |
 |---|---|
+| `add-source PATH [--split \| --whole]` | add a NAS share; the split setting is inferred unless given |
+| `remove-source PATH` | stop backing up a share (drives untouched) |
+| `sources` | list the configured shares and whether each is mounted |
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
-| `plan [--largest-drive 8tb]` | measure each share and recommend split or whole |
+| `plan [--largest-drive 8tb] [--apply]` | measure each share and recommend split or whole; `--apply` writes it |
 | `status` | drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |

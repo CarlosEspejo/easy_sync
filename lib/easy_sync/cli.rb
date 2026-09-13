@@ -9,6 +9,9 @@ module EasySync
     USAGE = <<~TEXT
       Usage: easy_sync [--config PATH] <command>
 
+        add-source PATH [--split | --whole]                add a NAS share (mounted on this Mac) to back up
+        remove-source PATH                                 stop backing up a share (drives are left alone)
+        sources                                            list the configured shares
         sync [--dry-run] [--no-purge] [--no-keep-awake]   mirror the shares onto the drives
         register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]
         replace-drive OLD_NAME [--to NEW_NAME] [--copy]      retire a drive; move its folders to NEW (or let the next sync re-place them)
@@ -17,7 +20,7 @@ module EasySync
         reassign FOLDER DRIVE_NAME [--note TEXT]           record a move you made by hand (moves no data)
         pending                                            deletion candidates and their expiry dates
         clean [--dry-run]                                  remove excluded junk (#recycle, .DS_Store, ...) from the drives now
-        plan [--largest-drive SIZE]                        split or whole? measured recommendation per share
+        plan [--largest-drive SIZE] [--apply]              split or whole? measured recommendation per share (--apply writes it)
         dashboard                                          regenerate the HTML report only
 
       --config PATH overrides the config file (default ~/.easy_sync/config.yml);
@@ -45,6 +48,9 @@ module EasySync
       case command
       when nil, '-h', '--help', 'help' then @out.puts USAGE
       when '-v', '--version', 'version' then @out.puts "easy_sync #{VERSION}"
+      when 'add-source' then add_source(@argv)
+      when 'remove-source' then remove_source(@argv)
+      when 'sources' then list_sources
       when 'sync' then sync(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)
@@ -170,6 +176,64 @@ module EasySync
       end
     end
 
+    # Adds a share. Without --split/--whole the setting is inferred: loose
+    # files at the top level force whole; otherwise, if a drive is registered
+    # the planner's rule decides, else split (safe for any size; `plan --apply`
+    # refines it once drives exist).
+    def add_source(args)
+      opts = {}
+      OptionParser.new do |o|
+        o.on('--split', 'Place each subfolder on its own (for shares bigger than one drive)') { opts[:split] = true }
+        o.on('--whole', 'Place the whole share as one unit on one drive') { opts[:split] = false }
+      end.parse!(args)
+      path = args.first or raise Error, "add-source needs the share's path, e.g. /Volumes/tv\n\n#{USAGE}"
+      path = File.expand_path(path)
+      raise Error, "#{path} is not mounted (or is empty)" unless Dir.exist?(path) && !Dir.empty?(path)
+
+      split, why = opts.key?(:split) ? [opts[:split], 'as you asked'] : infer_split(path)
+      config.add_source(path, split: split)
+      config.save
+      @out.puts "Added #{path} (split: #{split}, #{why}). Config: #{config.path}"
+      @out.puts 'Run `easy_sync plan` after registering your drives to check the split settings.' unless opts.key?(:split)
+    end
+
+    def infer_split(path)
+      excluded = settings[:exclude_folders]
+      children = Dir.children(path).reject { |n| n.start_with?('.') || excluded.any? { |pat| File.fnmatch?(pat, n) } }
+      loose = children.count { |n| File.file?(File.join(path, n)) }
+      dirs = children.count { |n| File.directory?(File.join(path, n)) }
+      return [false, "#{loose} loose file#{'s' if loose != 1} at the top level; only a whole share backs those up"] if loose.positive?
+      return [false, 'no subfolders to split by'] if dirs.zero?
+
+      largest = manifest.drives.map(&:capacity_bytes).max
+      return [true, 'no drive registered yet, so split, which works for any size; `plan --apply` will refine it'] unless largest
+
+      # A drive to judge against: measure the share (du) and apply the planner's rule.
+      row = Jbod::Planner.new(settings.merge(sources: [{ path: path, split: true }]), shell: @shell,
+                                                                                    largest_drive_bytes: largest).rows.first
+      [row.recommend_split, row.reason]
+    end
+
+    def remove_source(args)
+      path = args.first or raise Error, "remove-source needs the share's path\n\n#{USAGE}"
+      config.remove_source(File.expand_path(path))
+      config.save
+      @out.puts "Removed #{File.expand_path(path)}. Nothing on the drives was touched; folders already placed stay " \
+                'in the manifest (they will be reported as missing on the NAS and follow the deletion grace period).'
+    end
+
+    def list_sources
+      entries = config.source_entries
+      if entries.empty?
+        @out.puts "No sources configured. Add one with: easy_sync add-source /Volumes/<share>"
+        return
+      end
+      entries.each do |e|
+        state = Dir.exist?(e[:path]) && !Dir.empty?(e[:path]) ? 'mounted' : 'NOT MOUNTED'
+        @out.puts "  #{e[:path].ljust(32)} #{(e[:split] ? 'split' : 'whole').ljust(6)} #{state}"
+      end
+    end
+
     # Measures every configured share and says whether to split it.
     def plan(args)
       opts = {}
@@ -177,6 +241,7 @@ module EasySync
         o.on('--largest-drive SIZE', 'Capacity of the biggest drive you will register, e.g. 8tb (default: from the manifest)') do |v|
           opts[:largest] = Jbod::Placement.parse_size(v)
         end
+        o.on('--apply', 'Write the recommended split settings to the config') { opts[:apply] = true }
       end.parse!(args)
       largest = opts[:largest] || manifest.drives.map(&:capacity_bytes).max
       @out.puts(largest ? "Judging against the largest drive: #{Jbod::Placement.format_bytes(largest)}" \
@@ -195,10 +260,14 @@ module EasySync
         @out.puts "  recommend split: #{r.recommend_split.nil? ? '?' : r.recommend_split}  (#{r.reason})"
         @out.puts '  -> CHANGE the config to match' if r.mismatch?
       end
-      @out.puts "\nPaste into :sources: :"
-      rows.each do |r|
-        split = r.recommend_split.nil? ? r.source.split : r.recommend_split
-        @out.puts "  - :path: \"#{r.source.path}\"\n    :split: #{split}"
+      changes = rows.select(&:mismatch?)
+      if opts[:apply]
+        changes.each { |r| config.set_split(r.source.path, r.recommend_split) }
+        config.save if changes.any?
+        @out.puts(changes.empty? ? "\nConfig already matches the recommendations." \
+                                 : "\nUpdated #{changes.size} source#{'s' if changes.size != 1} in #{config.path}.")
+      elsif changes.any?
+        @out.puts "\nRun `easy_sync plan --apply` to write these recommendations to the config."
       end
     end
 

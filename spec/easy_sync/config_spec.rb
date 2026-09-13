@@ -72,8 +72,40 @@ RSpec.describe EasySync::Config do
     _, status = described_class.load(path)
     expect(status).to eq(:generated)
     text = File.read(path)
-    expect(text).to include('# easy_sync configuration', ':sources:', ':split:', ':grace_days:')
+    expect(text).to include('# easy_sync configuration', 'easy_sync add-source', ':sources: []', ':grace_days:')
     expect(text).not_to include(':jbod:', ':tasks:', ':logging:')
     expect(described_class.load(path).first.settings[:grace_days]).to eq(7)
+    expect(described_class.load(path).first.source_entries).to eq([])
+  end
+
+  it 'adds, removes and re-splits sources, and writes a commented file that loads back identically' do
+    config, = described_class.load(path)
+    config.add_source('/Volumes/tv', split: true)
+    config.add_source('/Volumes/pro', split: false)
+    config.set_split('/Volumes/pro', true)
+    config.save
+    text = File.read(path)
+    expect(text).to include('# easy_sync configuration', ':sources:                               # NAS shares',
+                            '- :path: "/Volumes/tv"', ':split: true                          # each subfolder placed on its own',
+                            ':grace_days: 7                          # ...this many days')
+    reloaded = described_class.load(path).first
+    expect(reloaded.source_entries).to eq([{ path: '/Volumes/tv', split: true }, { path: '/Volumes/pro', split: true }])
+    expect(reloaded.settings.except(:config_path)).to eq(config.settings.except(:config_path))
+
+    reloaded.remove_source('/Volumes/tv')
+    reloaded.save
+    expect(described_class.load(path).first.source_entries).to eq([{ path: '/Volumes/pro', split: true }])
+    expect { reloaded.remove_source('/Volumes/nope') }.to raise_error(EasySync::Error, /not a source/)
+    expect { reloaded.add_source('/Volumes/pro', split: false) }.to raise_error(EasySync::Error, /already a source/)
+  end
+
+  it 'keeps keys it does not know and non-scalar values when rewriting' do
+    File.write(path, { custom: 'x', exclude_folders: ['#recycle', '.DS_Store'], rsync_args: ['--bwlimit=1000'] }.to_yaml)
+    config, = described_class.load(path)
+    config.save
+    s = described_class.load(path).first
+    expect(s.data[:custom]).to eq('x')
+    expect(s.settings[:exclude_folders]).to eq(['#recycle', '.DS_Store'])
+    expect(s.settings[:rsync_args]).to eq(['--bwlimit=1000'])
   end
 end

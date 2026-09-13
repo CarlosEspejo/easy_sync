@@ -256,6 +256,51 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'add-source / remove-source / sources' do
+    let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
+
+    before { make_dirs(tv, 'Show A', 'Show B') }
+
+    it 'adds a share with an explicit setting and lists it' do
+      expect(cli('add-source', tv, '--whole').run).to eq(0)
+      expect(out.string).to include("Added #{tv} (split: false, as you asked)")
+      expect(EasySync::Config.load(config_path).first.source_entries.last).to eq({ path: tv, split: false })
+      out.truncate(0); out.rewind
+      cli('sources').run
+      expect(out.string).to include("#{tv}", 'whole', 'mounted')
+    end
+
+    it 'infers split when no drive is registered yet, and whole for a share with loose files' do
+      cli('add-source', tv).run
+      expect(out.string).to include('split: true, no drive registered yet', 'Run `easy_sync plan`')
+      loose = make_dirs(File.join(temp_dir, 'shares'), 'synology').first
+      write_file(File.join(loose, 'Boxing.mp4'))
+      out.truncate(0); out.rewind
+      cli('add-source', loose).run
+      expect(out.string).to include('split: false, 1 loose file')
+    end
+
+    it 'uses the planner rule once a drive is registered' do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.close
+      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{5 * 1024 * 1024}\t#{p}\n" }.join })   # 5 GB each
+      cli('add-source', tv).run
+      expect(out.string).to include('split: false', 'fits comfortably')
+    end
+
+    it 'refuses an unmounted or duplicate share, and removes one without touching drives' do
+      expect(cli('add-source', File.join(temp_dir, 'nope')).run).to eq(1)
+      expect(err.string).to include('not mounted')
+      cli('add-source', tv, '--split').run
+      expect(cli('add-source', tv, '--split').run).to eq(1)
+      expect(err.string).to include('already a source')
+      expect(cli('remove-source', tv).run).to eq(0)
+      expect(out.string).to include("Removed #{tv}. Nothing on the drives was touched")
+      expect(EasySync::Config.load(config_path).first.source_entries.map { |e| e[:path] }).not_to include(tv)
+    end
+  end
+
   describe 'jbod sync' do
     def merge_jbod_config(**overrides)
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
@@ -384,14 +429,20 @@ RSpec.describe EasySync::CLI do
   end
 
   describe 'jbod plan' do
-    it 'prints measurements, a recommendation per share, and a pasteable sources block' do
+    it 'prints measurements and a recommendation per share, and --apply writes it to the config' do
       nas = make_dirs(temp_dir, 'nas').first
       make_dirs(nas, 'A', 'B')
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{9 * 1024 * 1024 * 1024}\t#{p}\n" }.join })
       expect(cli('plan', '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include('Judging against the largest drive: 8.0 TB', '18.0 TB in 2 folders, largest A (9.0 TB)',
                                     'recommend split: true', 'bigger than any drive', 'CHANGE the config',
-                                    ":path: \"#{nas}\"\n    :split: true")
+                                    'Run `easy_sync plan --apply`')
+      expect(EasySync::Config.load(config_path).first.source_entries).to eq([{ path: nas, split: false }])
+
+      expect(cli('plan', '--largest-drive', '8tb', '--apply').run).to eq(0)
+      expect(out.string).to include('Updated 1 source in')
+      expect(EasySync::Config.load(config_path).first.source_entries).to eq([{ path: nas, split: true }])
+      expect(File.read(config_path)).to include('# easy_sync configuration')
     end
 
     it 'rejects a size it cannot parse' do

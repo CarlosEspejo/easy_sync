@@ -39,16 +39,26 @@ module EasySync
 
     PATH_KEYS = %i[manifest_path dashboard_path lock_path log_dir mount_root].freeze
 
+    # Comments written next to each key when the file is (re)written.
+    KEY_COMMENTS = {
+      sources: 'NAS shares, as mounted on this Mac. Manage with: easy_sync add-source / remove-source / sources',
+      mount_root: 'where the backup drives appear',
+      manifest_path: nil, dashboard_path: nil,
+      lock_path: 'refuses a second concurrent sync',
+      log_dir: 'one log per sync run', keep_logs: nil,
+      reserve: 'headroom placement always leaves on a drive',
+      keep_awake: 'caffeinate for the length of a sync',
+      purge: 'delete from the drives only after...',
+      grace_days: '...this many days missing on the NAS',
+      grace_runs: '...confirmed on this many separate runs',
+      exclude_folders: 'never placed, and excluded from every rsync at any depth',
+      rsync_args: 'extra arguments appended to every rsync'
+    }.freeze
+
     SAMPLE = <<~YAML
-      # easy_sync configuration. Each source is a NAS share mounted on this Mac.
-      # `easy_sync plan` measures them and recommends split true/false for each.
-      :sources:
-      - :path: "/Volumes/photos"
-        :split: false                         # the whole share is one unit on one drive
-      - :path: "/Volumes/tv"
-        :split: true                          # each subfolder is placed on its own
-      - :path: "/Volumes/movies"
-        :split: true
+      # easy_sync configuration. Add your NAS shares with:
+      #   easy_sync add-source /Volumes/<share>
+      :sources: []
       :mount_root: "/Volumes"                 # where the backup drives appear
       :manifest_path: "~/.easy_sync/manifest.sqlite3"
       :dashboard_path: "~/.easy_sync/dashboard.html"
@@ -100,6 +110,73 @@ module EasySync
     def self.write_sample(path)
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, SAMPLE)
+    end
+
+    # Renders +data+ as commented YAML: sources first, then the known keys in
+    # order, then anything else. Comments come from KEY_COMMENTS.
+    def self.dump(data)
+      out = +"# easy_sync configuration. Managed by `easy_sync add-source` and friends;\n# editing by hand is fine too.\n"
+      order = [:sources] + DEFAULTS.keys.reject { |k| k == :sources } + (data.keys - DEFAULTS.keys - [:sources])
+      order.uniq.each do |key|
+        next unless data.key?(key)
+
+        value = data[key]
+        comment = KEY_COMMENTS[key]
+        if key == :sources
+          sources = Array(value)
+          out << "#{(sources.empty? ? ':sources: []' : ':sources:').ljust(40)}# #{comment}\n"
+          sources.each do |src|
+            src = { path: src.to_s, split: false } unless src.is_a?(Hash)
+            out << "- :path: #{src[:path].to_s.inspect}\n"
+            out << "  #{":split: #{src[:split] ? true : false}".ljust(38)}# #{src[:split] ? 'each subfolder placed on its own' : 'the whole share is one unit'}\n"
+          end
+        elsif (value.is_a?(Array) || value.is_a?(Hash)) && !value.empty?
+          # Collections always go in block form under the key; a one-element
+          # array rendered inline is not valid YAML.
+          out << "#{":#{key}:".ljust(40)}#{comment ? "# #{comment}" : ''}".rstrip << "\n"
+          YAML.dump(value).sub(/\A---\s?/, '').lines.each { |l| out << "  #{l.chomp}\n" unless l.strip.empty? }
+        else
+          rendered = value.is_a?(Array) || value.is_a?(Hash) ? (value.is_a?(Array) ? '[]' : '{}') \
+                                                            : YAML.dump(value).sub(/\A---\s?/, '').lines.map(&:chomp).reject { |l| l == '...' }.join
+          line = ":#{key}: #{rendered}"
+          out << (comment ? "#{line.ljust(40)}# #{comment}\n" : "#{line}\n")
+        end
+      end
+      out
+    end
+
+    # Writes the current data back to +path+ (or the path it was loaded from).
+    def save(to = path)
+      raise Error, 'no config path to save to' unless to
+
+      FileUtils.mkdir_p(File.dirname(to))
+      File.write(to, self.class.dump(data))
+      to
+    end
+
+    # -- sources, as the CLI edits them --------------------------------
+
+    def source_entries
+      Array(data[:sources]).map { |e| e.is_a?(Hash) ? { path: e[:path].to_s, split: e[:split] ? true : false } : { path: e.to_s, split: false } }
+    end
+
+    def add_source(path, split:)
+      raise Error, "#{path} is already a source" if source_entries.any? { |e| e[:path] == path }
+
+      data[:sources] = source_entries + [{ path: path, split: split }]
+    end
+
+    def remove_source(path)
+      before = source_entries
+      data[:sources] = before.reject { |e| e[:path] == path }
+      raise Error, "#{path} is not a source" if data[:sources].size == before.size
+    end
+
+    def set_split(path, split)
+      entries = source_entries
+      entry = entries.find { |e| e[:path] == path } or raise Error, "#{path} is not a source"
+      entry[:split] = split
+      data[:sources] = entries
     end
 
     attr_reader :data, :path
