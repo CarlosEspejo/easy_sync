@@ -9,7 +9,7 @@ A small Ruby wrapper around `rsync` with two modes:
   several independently mounted drives, keeps a SQLite manifest of which folder
   lives where, and writes an HTML status dashboard after every run.
 
-Requires Ruby 3.3+ and rsync 3.0 or newer (`brew install rsync`; the copy
+Requires Ruby 3.3 or newer (4.0 works) and rsync 3.0 or newer (`brew install rsync`; the copy
 macOS ships is too old for the deletion reporting described below).
 
 ### Installation

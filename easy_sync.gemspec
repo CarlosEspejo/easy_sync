@@ -22,6 +22,8 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.add_dependency 'sqlite3', '~> 2.9'
+  # logger left the standard library in Ruby 4.0 and must be declared explicitly.
+  spec.add_dependency 'logger', '~> 1.6'
 
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rspec', '~> 3.13'
