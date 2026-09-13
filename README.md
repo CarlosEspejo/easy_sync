@@ -75,6 +75,21 @@ command or set `EASY_SYNC_CONFIG`:
 Drives
 ------
 
+Any enclosure works as long as each drive mounts as its own independent APFS
+volume rather than a RAID array — a multi-bay Thunderbolt dock like the
+[OWC ThunderBay 8](https://www.owc.com/solutions/thunderbay-8) run in JBOD
+mode (one volume per bay, no SoftRAID array across them) is a natural fit for
+a fleet that grows one drive at a time.
+
+A drive's friendly name defaults to its volume name, so naming the volume
+itself when you erase it (Disk Utility, or `diskutil apfs addVolume`) is
+usually enough — no need for `--name`. `backup-0N-<capacity>` (sequence
+number, then a size hint) is the convention used throughout this README:
+`backup-01-3tb`, `backup-02-6tb`, `backup-03-8tb`, and so on. The name is
+just a label for `status`, the dashboard and `replace-drive`; drives are
+matched by the serial in `.easy_sync/drive.json` (see below), never by name
+or mount path, so renaming a volume later is safe.
+
     easy_sync register-drive /Volumes/backup-04-8tb
     easy_sync register-drive /Volumes/backup-01-3tb --name drive-one --serial WD-WX12345678
 
