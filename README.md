@@ -71,8 +71,6 @@ command or set `EASY_SYNC_CONFIG`:
 
     easy_sync --config ~/jbod-test.yml sync
 
-A 1.x config (`~/.easy_syncrc.yml`, or settings nested under `:jbod:`) is still
-read.
 
 Drives
 ------
@@ -276,8 +274,7 @@ Commands
 | `reassign FOLDER DRIVE [--note TEXT]` | record a move you made by hand (moves no data) |
 | `dashboard` | regenerate the HTML report only |
 
-`--config PATH` goes before the command. `easy_sync jbod <command>`, the 1.x
-spelling, still works.
+`--config PATH` goes before the command.
 
 Where things live
 -----------------

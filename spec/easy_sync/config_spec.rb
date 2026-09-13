@@ -13,15 +13,6 @@ RSpec.describe EasySync::Config do
     expect(config[:grace_days]).to eq(9)
   end
 
-  it 'still reads the 1.x layout with settings nested under :jbod: and ignores :logging:/:tasks:' do
-    File.write(path, { logging: :on, tasks: [{ sync_name: 'x' }], jbod: { grace_days: 3, sources: ['/Volumes/a'] } }.to_yaml)
-    s = described_class.load(path).first.settings
-    expect(s[:grace_days]).to eq(3)
-    expect(s[:sources]).to eq(['/Volumes/a'])
-    expect(s).not_to have_key(:logging)
-    expect(s).not_to have_key(:tasks)
-  end
-
   it 'fills in defaults for missing keys' do
     File.write(path, { grace_days: 7 }.to_yaml)
     s = described_class.load(path).first.settings
@@ -49,18 +40,6 @@ RSpec.describe EasySync::Config do
       expect(s[k]).to start_with(File.join(temp_dir, 'home', '.easy_sync'))
       expect(s[k]).not_to start_with(Dir.home)
     end
-  end
-
-  it 'moves a legacy ~/.easy_syncrc.yml into place the first time' do
-    legacy = File.join(temp_dir, '.easy_syncrc.yml')
-    File.write(legacy, { logging: :off, jbod: { grace_days: 3 } }.to_yaml)
-    new_path = File.join(temp_dir, '.easy_sync', 'config.yml')
-    config, status = described_class.load(new_path, legacy_path: legacy)
-    expect(status).to eq(:migrated)
-    expect(File).to exist(new_path)
-    expect(File).not_to exist(legacy)
-    expect(config.settings[:grace_days]).to eq(3)
-    expect(described_class.load(new_path, legacy_path: legacy).last).to be_nil
   end
 
   it 'defaults to ~/.easy_sync/config.yml' do

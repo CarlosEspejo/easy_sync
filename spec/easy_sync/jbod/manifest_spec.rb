@@ -205,7 +205,7 @@ RSpec.describe EasySync::Jbod::Manifest, 'source inventory' do
     inv = manifest.source_inventory
     expect(inv.map(&:folder_path)).to eq(['tv/C'])
     expect(inv.first).to have_attributes(share: 'tv', state: 'empty', seen_at: '2026-09-13T12:00:00Z')
-    expect(manifest.schema_version).to eq(5)
+    expect(manifest.schema_version).to eq(described_class::SCHEMA_VERSION)
   end
 end
 
@@ -327,29 +327,4 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
     end
   end
 
-  it 'migrates a version 1 database by adding the new tables' do
-    db = SQLite3::Database.new(':memory:')
-    db.execute('PRAGMA user_version = 1')
-    m = described_class.new(db)
-    expect(m.schema_version).to eq(5)
-    expect(m.pending_deletions).to eq([])
-    expect(m.source_inventory).to eq([])
-  end
-
-  it 'migrates a version 2 drives table by adding the SMART columns without losing rows' do
-    db = SQLite3::Database.new(':memory:')
-    db.results_as_hash = true
-    db.execute_batch(<<~SQL)
-      CREATE TABLE drives (serial_number TEXT PRIMARY KEY, friendly_name TEXT NOT NULL UNIQUE, capacity_bytes INTEGER NOT NULL,
-                           added_date TEXT NOT NULL, volume_uuid TEXT, last_seen_at TEXT, last_used_bytes INTEGER, last_free_bytes INTEGER);
-      INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date) VALUES ('S1', 'backup-01-3tb', 1, 't');
-      PRAGMA user_version = 2;
-    SQL
-    m = described_class.new(db, clock: clock)
-    expect(m.schema_version).to eq(5)
-    expect(m.drive('S1')).not_to be_retired
-    expect(m.drive('S1')).to have_attributes(friendly_name: 'backup-01-3tb', smart_status: nil)
-    m.update_drive_health('S1', status: 'ok', detail: 'PASSED')
-    expect(m.drive('S1')).to have_attributes(smart_status: 'ok', smart_detail: 'PASSED', smart_checked_at: '2026-09-13T12:00:00Z')
-  end
 end

@@ -22,6 +22,5 @@ module EasySync
     # config so any single surviving drive can rebuild the map.
     DRIVE_DIR = '.easy_sync'
     MARKER_FILE = File.join(DRIVE_DIR, 'drive.json')
-    LEGACY_MARKER_FILE = '.easy_sync_drive.json'
   end
 end

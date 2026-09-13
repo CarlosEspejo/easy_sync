@@ -10,8 +10,8 @@ README.md is the user-facing truth; this file is for working on the code.
 - Every external call (rsync, df, du, diskutil, smartctl, caffeinate) goes through
   `EasySync::Shell`; specs inject `FakeShell` (spec/support/fake_shell.rb) and
   register responses with `fake_shell.on(...)`. Never let a spec shell out for real.
-- The suite redirects the home directory (`stub_const` on `Config::HOME_DIR` and
-  `LEGACY_PATH` in spec_helper). Keep it that way: an earlier version of a test
+- The suite redirects the home directory (`stub_const` on `Config::HOME_DIR` in
+  spec_helper). Keep it that way: an earlier version of a test
   found the developer's real config and moved it into a temp dir that was then
   deleted. Any new default path must be derived from `HOME_DIR` at call time
   (`Config.defaults`), never at load time.

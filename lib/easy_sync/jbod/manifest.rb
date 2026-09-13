@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 5
+      SCHEMA_VERSION = 1
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -448,19 +448,10 @@ module EasySync
               deleted_at       TEXT NOT NULL
             );
           SQL
-          add_missing_columns('drives', smart_status: 'TEXT', smart_detail: 'TEXT', smart_checked_at: 'TEXT',
-                                        retired_at: 'TEXT')
           db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
         end
       end
 
-      # Schema v3 added the SMART columns and v4 retired_at; older databases get them here.
-      def add_missing_columns(table, columns)
-        present = db.execute("PRAGMA table_info(#{table})").map { |r| r['name'] }
-        columns.each do |name, type|
-          db.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{type}") unless present.include?(name.to_s)
-        end
-      end
     end
   end
 end

@@ -28,11 +28,6 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       expect(info.read_marker(vol)).to be_nil
     end
 
-    it 'still reads a marker left at the drive root by an older version' do
-      vol = make_dirs(mount_root, 'old').first
-      write_file(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"SN-old","friendly_name":"old"}')
-      expect(info.read_marker(vol)).to include(serial_number: 'SN-old')
-    end
   end
 
   describe '#copy_state' do
@@ -51,14 +46,6 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       expect(copy.folders.map(&:folder_path)).to eq(['photos'])
       expect(copy.drive('SN-4').friendly_name).to eq('backup-04-8tb')
       expect(File.read(File.join(dir, 'config.yml'))).to include(':jbod: {}')
-    end
-
-    it 'moves a legacy root marker into the folder' do
-      write_file(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"SN-4","friendly_name":"backup-04-8tb"}')
-      info.copy_state(vol, manifest: manifest)
-      expect(File).not_to exist(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE))
-      expect(File).to exist(File.join(vol, EasySync::Jbod::MARKER_FILE))
-      expect(info.read_marker(vol)).to include(serial_number: 'SN-4')
     end
 
     it 'skips the config copy when no path is known' do

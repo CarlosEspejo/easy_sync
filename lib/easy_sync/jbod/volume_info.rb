@@ -49,11 +49,10 @@ module EasySync
         end
       end
 
-      # Reads <drive>/.easy_sync/drive.json, or the pre-folder marker at the
-      # drive root (moved into the folder by #copy_state on the next sync).
+      # Reads <drive>/.easy_sync/drive.json.
       def read_marker(mount_point)
-        path = [File.join(mount_point, MARKER_FILE), File.join(mount_point, LEGACY_MARKER_FILE)].find { |p| File.file?(p) }
-        return nil unless path
+        path = File.join(mount_point, MARKER_FILE)
+        return nil unless File.file?(path)
 
         data = JSON.parse(File.read(path), symbolize_names: true)
         return nil unless data[:serial_number]
@@ -73,14 +72,11 @@ module EasySync
         path
       end
 
-      # Refreshes <drive>/.easy_sync/ on one mounted drive: moves a legacy
-      # root marker into the folder, and drops in a consistent copy of the
-      # manifest (via SQLite's online backup API) and of the config file.
+      # Refreshes <drive>/.easy_sync/ on one mounted drive with a consistent copy
+      # of the manifest (via SQLite's online backup API) and of the config file.
       def copy_state(mount_point, manifest:, config_path: nil)
         dir = File.join(mount_point, DRIVE_DIR)
         FileUtils.mkdir_p(dir)
-        legacy = File.join(mount_point, LEGACY_MARKER_FILE)
-        FileUtils.mv(legacy, File.join(mount_point, MARKER_FILE)) if File.file?(legacy) && !File.file?(File.join(mount_point, MARKER_FILE))
         manifest.backup_to(File.join(dir, 'manifest.sqlite3'))
         FileUtils.cp(config_path, File.join(dir, 'config.yml')) if config_path && File.file?(config_path)
         File.write(File.join(dir, 'README.txt'), <<~TXT)

@@ -5,16 +5,10 @@ require 'fileutils'
 
 module EasySync
   # Loads ~/.easy_sync/config.yml, writing a commented sample on first run.
-  #
-  # The file is flat: its keys are the settings below. Two older layouts are
-  # still read: a file at ~/.easy_syncrc.yml is moved into place, and a file
-  # with the settings nested under a :jbod: key (with the removed snapshot
-  # mode's :logging:/:tasks: beside it) is unwrapped.
+  # The file is flat: its keys are the settings below.
   class Config
     HOME_DIR = File.join(Dir.home, '.easy_sync')
     DEFAULT_FILENAME = 'config.yml'
-    LEGACY_PATH = File.join(Dir.home, '.easy_syncrc.yml')
-    LEGACY_KEYS = %i[jbod logging tasks].freeze
 
     DEFAULTS = {
       sources: [
@@ -88,20 +82,13 @@ module EasySync
                      log_dir: File.join(HOME_DIR, 'logs'))
     end
 
-    # Loads the config at +path+. If it is missing: moves a legacy
-    # ~/.easy_syncrc.yml there when one exists, otherwise writes the sample.
-    # Returns [config, status] where status is :generated, :migrated, or nil.
-    def self.load(path = default_path, legacy_path: LEGACY_PATH)
+    # Loads the config at +path+, writing the sample first if it is missing.
+    # Returns [config, status] where status is :generated or nil.
+    def self.load(path = default_path)
       status = nil
       unless File.exist?(path)
-        FileUtils.mkdir_p(File.dirname(path))
-        if legacy_path && File.exist?(legacy_path)
-          File.rename(legacy_path, path)
-          status = :migrated
-        else
-          write_sample(path)
-          status = :generated
-        end
+        write_sample(path)
+        status = :generated
       end
       data = YAML.safe_load_file(path, permitted_classes: [Symbol], symbolize_names: true) || {}
       [new(data, path: path), status]
@@ -181,10 +168,8 @@ module EasySync
 
     attr_reader :data, :path
 
-    # +data+ may be the flat layout or the old nested one.
     def initialize(data, path: nil)
-      @data = data.key?(:jbod) ? data[:jbod].to_h.merge(data.reject { |k, _| LEGACY_KEYS.include?(k) }) : data
-      @data = @data.reject { |k, _| LEGACY_KEYS.include?(k) }
+      @data = data
       @path = path
     end
 

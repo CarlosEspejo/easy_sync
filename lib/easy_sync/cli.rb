@@ -3,8 +3,7 @@
 require 'optparse'
 
 module EasySync
-  # Command-line entry point. `easy_sync jbod <command>` (the 1.x spelling)
-  # is accepted as an alias for `easy_sync <command>`.
+  # Command-line entry point.
   class CLI
     # [group, [[command, description], ...]] in the order a new user meets them.
     COMMAND_GROUPS = [
@@ -60,7 +59,6 @@ module EasySync
     def run
       parse_global_options!
       command = @argv.shift
-      command = @argv.shift if command == 'jbod'   # 1.x alias
       case command
       when nil, '-h', '--help', 'help'
         @out.puts USAGE
@@ -133,7 +131,6 @@ module EasySync
     def config
       @config ||= begin
         cfg, status = Config.load(@config_path)
-        @err.puts "Moved #{Config::LEGACY_PATH} to #{@config_path}" if status == :migrated
         @err.puts "Generated sample config file: #{@config_path}" if status == :generated
         cfg
       end

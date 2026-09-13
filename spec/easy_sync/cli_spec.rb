@@ -163,7 +163,7 @@ RSpec.describe EasySync::CLI do
 
     it 'with --copy: rsyncs old to new over the local bus first, then records the move' do
       %w[OLD NEW].zip([old_vol, new_vol]).each do |serial, vol|
-        File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
       end
       fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == old_vol }, output: df_output(old_vol, capacity_kb: 8_000_000, used_kb: 5_000_000))
       fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == new_vol }, output: df_output(new_vol, capacity_kb: 12_000_000, used_kb: 10))
@@ -180,7 +180,7 @@ RSpec.describe EasySync::CLI do
 
     it 'with --copy: refuses when the new drive is too small, or the copy fails, leaving the manifest untouched' do
       %w[OLD NEW].zip([old_vol, new_vol]).each do |serial, vol|
-        File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), %({"serial_number":"#{serial}","friendly_name":"x"}))
       end
       fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == old_vol }, output: df_output(old_vol, capacity_kb: 8_000_000, used_kb: 5_000_000))
       fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == new_vol }, output: df_output(new_vol, capacity_kb: 12_000_000, used_kb: 11_000_000))
@@ -222,7 +222,7 @@ RSpec.describe EasySync::CLI do
   describe 'clean' do
     it 'removes excluded junk from mounted drives and reports what it freed' do
       vol = make_dirs(mount_root, 'backup-01-3tb').first
-      File.write(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-01-3tb"}')
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-01-3tb"}')
       fake_shell.on('df', output: df_output(vol, capacity_kb: 3_000_000, used_kb: 1_000))
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
@@ -449,14 +449,6 @@ RSpec.describe EasySync::CLI do
       expect(cli('plan', '--largest-drive', 'huge').run).to eq(1)
       expect(err.string).to include('cannot parse size')
     end
-  end
-
-  it 'accepts the 1.x `jbod` prefix as an alias' do
-    m = manifest
-    m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
-    m.close
-    expect(cli('jbod', 'status').run).to eq(0)
-    expect(out.string).to include('backup-01-3tb')
   end
 
   it 'writes a run log for every sync and echoes the same lines to the terminal' do
