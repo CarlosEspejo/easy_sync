@@ -86,7 +86,8 @@ module EasySync
         if largest && row.largest_subfolder.to_i > largest
           row.fits = false
           row.reason += ". WARNING: #{row.largest_name} alone is #{Placement.format_bytes(row.largest_subfolder)}, " \
-                        'bigger than any drive, so it cannot be backed up either way'
+                        "bigger than the largest drive currently registered (#{Placement.format_bytes(largest)}); " \
+                        'it cannot be placed on this fleet today, but will fit once you add a bigger drive'
         else
           row.fits = true
         end

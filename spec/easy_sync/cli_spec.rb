@@ -435,7 +435,8 @@ RSpec.describe EasySync::CLI do
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{9 * 1024 * 1024 * 1024}\t#{p}\n" }.join })
       expect(cli('plan', '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include('Judging against the largest drive: 8.0 TB', '18.0 TB in 2 folders, largest A (9.0 TB)',
-                                    'recommend split: true', 'bigger than any drive', 'CHANGE the config',
+                                    'recommend split: true', 'bigger than the largest drive currently registered',
+                                    'will fit once you add a bigger drive', 'CHANGE the config',
                                     'Run `easy_sync plan --apply`')
       expect(EasySync::Config.load(config_path).first.source_entries).to eq([{ path: nas, split: false }])
 

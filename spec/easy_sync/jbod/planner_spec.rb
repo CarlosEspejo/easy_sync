@@ -40,7 +40,8 @@ RSpec.describe EasySync::Jbod::Planner do
     expect(r.reason).to include('larger than the largest drive')
     expect(r).to be_mismatch
     expect(r.fits).to be false
-    expect(r.reason).to include('Show A alone is 8.8 TB, bigger than any drive')
+    expect(r.reason).to include('Show A alone is 8.8 TB, bigger than the largest drive currently registered',
+                                'will fit once you add a bigger drive')
   end
 
   it 'suggests split above half the largest drive, whole below it' do
