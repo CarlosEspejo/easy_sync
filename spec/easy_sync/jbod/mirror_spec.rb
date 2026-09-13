@@ -3,11 +3,13 @@
 RSpec.describe EasySync::Jbod::Mirror do
   let(:source) { make_dirs(temp_dir, 'nas/Photos').first }
 
-  it 'builds an archive command that reports, but never performs, deletions' do
+  it 'builds a copy command with no deletion flags, and a separate read-only deletion probe' do
     mirror = described_class.new(shell: fake_shell)
     expect(mirror.command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
-      .to eq(['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes', '--delete', '--max-delete=0',
+      .to eq(['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes',
               '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
+    expect(mirror.probe_command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
+      .to eq(['rsync', '-an', '--itemize-changes', '--delete', '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
   end
 
   it 'appends extra arguments' do
@@ -15,31 +17,43 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(mirror.command('/a/', '/b/')[-4..]).to eq(['--exclude', '.DS_Store', '/a/', '/b/'])
   end
 
-  it 'runs rsync and parses the stats' do
+  it 'runs the copy pass, then the probe, and parses the stats' do
     destination = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'Photos')
     fake_shell.on('rsync', output: rsync_stats(total: 123_456_789, transferred: 4_096))
+    fake_shell.on(->(argv) { argv[1] == '-an' }, output: '')
     result = described_class.new(shell: fake_shell).sync(source, destination)
     expect(result).to have_attributes(exit_status: 0, total_size_bytes: 123_456_789, bytes_transferred: 4_096, extraneous: [])
     expect(result).to be_success
+    expect(fake_shell.calls_to('rsync').map { |c| c[1] }).to eq(['-a', '-an'])
     expect(fake_shell.calls.last.last(2)).to eq(["#{source}/", "#{destination}/"])
   end
 
-  it 'collects the files rsync would have deleted and treats exit 25 as success' do
-    fake_shell.on('rsync', status: 25, output: <<~OUT)
-      sending incremental file list
+  it 'collects what the probe would delete (real rsync 3.5 dry-run output)' do
+    fake_shell.on('rsync', output: rsync_stats)
+    fake_shell.on(->(argv) { argv[1] == '-an' }, output: <<~OUT)
       *deleting   Old Movie (1999)/
       *deleting   Old Movie (1999)/movie.mkv
-      *deleting   stray.txt
-      >f+++++++++ New Movie/movie.mkv
-      #{rsync_stats}
+      *deleting   ep2.mkv
     OUT
     result = described_class.new(shell: fake_shell).sync(source, '/dest')
     expect(result).to be_success
-    expect(result.extraneous).to eq([['Old Movie (1999)', 'dir'], ['Old Movie (1999)/movie.mkv', 'file'], ['stray.txt', 'file']])
+    expect(result.extraneous).to eq([['Old Movie (1999)', 'dir'], ['Old Movie (1999)/movie.mkv', 'file'], ['ep2.mkv', 'file']])
+  end
+
+  it 'skips the probe after a failed copy, and reports nil if the probe itself fails' do
+    fake_shell.on('rsync', output: 'boom', status: 23)
+    result = described_class.new(shell: fake_shell).sync(source, '/dest')
+    expect(result.extraneous).to be_nil
+    expect(fake_shell.calls_to('rsync').size).to eq(1)
+
+    fake_shell.on('rsync', output: rsync_stats)
+    fake_shell.on(->(argv) { argv[1] == '-an' }, output: 'rsync: link_stat failed', status: 23)
+    expect(described_class.new(shell: fake_shell).sync(source, '/dest').extraneous).to be_nil
   end
 
   it 'creates the destination parent so split-share folders land under the share directory' do
     fake_shell.on('rsync', output: rsync_stats)
+    fake_shell.on(->(argv) { argv[1] == '-an' }, output: '')
     dest = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'tv', 'Show A')
     described_class.new(shell: fake_shell).sync(source, dest)
     expect(Dir).to exist(File.dirname(dest))

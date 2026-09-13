@@ -126,9 +126,10 @@ concurrent run (with a clear message naming the running PID) rather than letting
 two syncs race the NAS or the manifest. A stale lock — its process no longer
 running — is reclaimed automatically.
 
-**Deletions have a grace period.** rsync itself never deletes anything: it runs
-with `--delete --max-delete=0`, which copies as usual but only *reports* files
-that no longer exist on the NAS. Each reported path goes into a
+**Deletions have a grace period.** rsync itself never deletes anything. Each
+folder gets a copy pass with no deletion flags, then a read-only probe
+(`rsync -n --delete --itemize-changes`) that only *reports* the files on the
+drive that no longer exist on the NAS. Each reported path goes into a
 `pending_deletions` table with the time it was first seen missing and a count of
 the runs that confirmed it. A path is removed from its drive only once it has
 been missing for `grace_days` **and** confirmed on `grace_runs` separate runs,
@@ -139,6 +140,13 @@ from a mounted share follows the same policy; when it expires the folder is
 removed from the drive, its manifest row is deleted, and a `removed` row goes
 into the placement history. Every actual deletion is written to a `deletions`
 audit table and shown on the dashboard.
+
+**The first sync is long.** A 30 TB library over gigabit Ethernet is three to
+four days. Runs are resumable per folder (a folder interrupted mid-copy is simply
+synced again next time, and nothing is ever deleted by the copy), so Ctrl-C is
+safe, but the Mac must not sleep. Run it under `caffeinate`:
+
+    caffeinate -i easy_sync jbod sync
 
     easy_sync jbod pending          # what is scheduled, and when
     easy_sync jbod sync --no-purge  # sync without deleting anything this time

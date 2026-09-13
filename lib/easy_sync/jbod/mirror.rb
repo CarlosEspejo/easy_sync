@@ -6,17 +6,19 @@ module EasySync
   module Jbod
     # Mirrors one source folder onto one destination folder with rsync.
     #
-    # Nothing is ever deleted by rsync itself: `--delete --max-delete=0` makes
-    # rsync copy as usual but only *report* files that no longer exist on the
-    # source (as "*deleting path" lines, exit status 25). Those reports feed
-    # the grace-period purge in Runner.
+    # Nothing is ever deleted by rsync itself. Each folder gets two passes: a
+    # copy pass with no deletion flags at all, then a read-only probe
+    # (`rsync -n --delete --itemize-changes`) whose "*deleting path" lines say
+    # which files on the drive no longer exist on the source. Those feed the
+    # grace-period purge in Runner. (`--delete --max-delete=0` looked like a
+    # one-pass alternative, but rsync then only prints "N skipped" without
+    # naming the files, and exits 25.)
     class Mirror
-      MAX_DELETE_LIMIT_STATUS = 25
       MIN_VERSION = [3, 0, 0].freeze
 
       Result = Struct.new(:exit_status, :bytes_transferred, :total_size_bytes, :extraneous, :disk_full, :output,
                           keyword_init: true) do
-        def success? = exit_status.zero? || exit_status == MAX_DELETE_LIMIT_STATUS
+        def success? = exit_status.zero?
         def disk_full? = !!disk_full
       end
 
@@ -25,13 +27,19 @@ module EasySync
         @extra_args = Array(extra_args)
       end
 
+      # The copy pass. Extra args (from config, or --dry-run) apply here.
       def command(source, destination)
-        argv = ['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes', '--delete', '--max-delete=0']
+        argv = ['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes']
         argv += @extra_args
         argv + [with_slash(source), with_slash(destination)]
       end
 
-      # Raises unless the rsync on PATH is new enough for --max-delete=0 reporting.
+      # The deletion probe: never copies, never deletes, only reports.
+      def probe_command(source, destination)
+        ['rsync', '-an', '--itemize-changes', '--delete', with_slash(source), with_slash(destination)]
+      end
+
+      # Raises unless the rsync on PATH is new enough for --itemize-changes deletion reporting.
       def self.check_version!(shell)
         result = shell.capture(['rsync', '--version'])
         version = result.output[/rsync\s+version\s+(\d+)\.(\d+)\.(\d+)/, 0]
@@ -51,9 +59,18 @@ module EasySync
         FileUtils.mkdir_p(File.dirname(destination))
         result = @shell.run(command(source, destination))
         stats = self.class.parse_stats(result.output)
-        Result.new(exit_status: result.status, output: result.output,
-                   extraneous: self.class.parse_extraneous(result.output),
+        # Only probe after a clean copy: a half-synced folder must not start
+        # deletion clocks.
+        extraneous = result.success? ? probe(source, destination) : nil
+        Result.new(exit_status: result.status, output: result.output, extraneous: extraneous,
                    disk_full: self.class.disk_full?(result.output), **stats)
+      end
+
+      # Files present on the drive but gone from the source, as [[path, kind], ...].
+      # nil if the probe itself failed, so the caller records nothing.
+      def probe(source, destination)
+        result = @shell.capture(probe_command(source, destination))
+        result.success? ? self.class.parse_extraneous(result.output) : nil
       end
 
       # True when rsync's own output says the destination ran out of space.

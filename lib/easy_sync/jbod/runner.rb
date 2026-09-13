@@ -220,7 +220,11 @@ module EasySync
                              bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
         if result.success?
           report.synced << folder.key
-          note_missing(folder, result.extraneous || [])
+          if result.extraneous.nil?
+            warn(report, "#{folder.key}: the deletion probe failed, so nothing was recorded as missing this run")
+          else
+            note_missing(folder, result.extraneous)
+          end
         elsif result.disk_full?
           manifest.mark_folder_status(folder.key, 'drive_full')
           warn(report, "#{folder.key} did not fully sync: #{target.friendly_name} is full " \

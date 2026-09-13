@@ -347,6 +347,14 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(out.string).to include('photos: 1 newly missing on NAS')
     end
 
+    it 'warns and records nothing when the deletion probe failed' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: nil), ok_result)
+      report = runner.run
+      expect(manifest.pending_deletions).to be_empty
+      expect(report.warnings).to include(a_string_matching(/photos: the deletion probe failed/))
+    end
+
     it 'purges a file once it has expired and the drive is mounted' do
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
