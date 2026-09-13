@@ -16,25 +16,29 @@ module EasySync
   #   easy_sync jbod dashboard        regenerate the HTML report only
   class CLI
     USAGE = <<~TEXT
-      Usage: easy_sync [snapshot]
-             easy_sync jbod sync [--dry-run] [--no-purge]
+      Usage: easy_sync [--config PATH] [snapshot]
+             easy_sync [--config PATH] jbod sync [--dry-run] [--no-purge]
              easy_sync jbod register-drive MOUNT_POINT --name NAME [--serial SERIAL]
              easy_sync jbod status
              easy_sync jbod history [FOLDER]
              easy_sync jbod reassign FOLDER DRIVE_NAME [--note TEXT]
              easy_sync jbod pending
              easy_sync jbod dashboard
+
+      --config PATH overrides the config file (default ~/.easy_syncrc.yml);
+      the EASY_SYNC_CONFIG environment variable does the same.
     TEXT
 
-    def initialize(argv, out: $stdout, err: $stderr, config_path: Config.default_path, shell: Shell.new)
+    def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV)
       @argv = argv.dup
       @out = out
       @err = err
-      @config_path = config_path
       @shell = shell
+      @config_path = config_path || env['EASY_SYNC_CONFIG'] || Config.default_path
     end
 
     def run
+      parse_global_options!
       command = @argv.shift
       case command
       when nil, 'snapshot' then SyncRunner.new(config_path: @config_path, shell: @shell, out: @out, err: @err).run
@@ -51,6 +55,24 @@ module EasySync
     end
 
     private
+
+    # Global options come before the command: `easy_sync --config x jbod sync`.
+    # Only --config is global, so this is a small hand parser rather than an
+    # OptionParser that would also swallow the subcommands' own flags.
+    def parse_global_options!
+      while (arg = @argv.first)
+        case arg
+        when '--config'
+          @argv.shift
+          @config_path = @argv.shift or raise Error, "--config needs a path\n\n#{USAGE}"
+        when /\A--config=(.+)\z/
+          @argv.shift
+          @config_path = Regexp.last_match(1)
+        else
+          break
+        end
+      end
+    end
 
     def config
       @config ||= Config.load(@config_path).first
@@ -156,8 +178,13 @@ module EasySync
       @out.puts 'Drives:'
       manifest.drives.each do |d|
         m = mounted[d.serial_number]
-        usage = m ? "#{Jbod::Placement.format_bytes(m.used_bytes)} used, #{Jbod::Placement.format_bytes(m.free_bytes)} free at #{m.mount_point}" \
-                  : "not mounted (last seen #{d.last_seen_at || 'never'})"
+        usage = if m
+                  "#{Jbod::Placement.format_bytes(m.used_bytes)} used, #{Jbod::Placement.format_bytes(m.free_bytes)} free at #{m.mount_point}"
+                elsif volume_info.locked?(d.friendly_name)
+                  "connected but LOCKED (unlock it: diskutil apfs unlockVolume #{d.friendly_name})"
+                else
+                  "not mounted (last seen #{d.last_seen_at || 'never'})"
+                end
         @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} #{usage}"
       end
       @out.puts "\nFolders:"

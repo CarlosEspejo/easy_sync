@@ -19,7 +19,13 @@ macOS ships is too old for the deletion reporting described below).
 
 ### Configuration
 
-Running `easy_sync` once writes a sample config to `~/.easy_syncrc.yml`:
+Running `easy_sync` once writes a sample config to `~/.easy_syncrc.yml`. To use
+a different file (say, one that points at a couple of scratch USB drives while
+you test, without touching the real one), pass `--config PATH` before the
+command, or set `EASY_SYNC_CONFIG`:
+
+    easy_sync --config ~/jbod-test.yml jbod sync
+    EASY_SYNC_CONFIG=~/jbod-test.yml easy_sync jbod status
 
 ```yaml
 :logging: :on
@@ -112,6 +118,10 @@ Each run:
    that have been gone long enough are removed from the drives.
 6. Drive usage, every rsync run, and the dashboard are updated.
 
+Measuring a new folder means a `du` over the network, which can take a while
+per folder on a first run with hundreds of them; the run says how many it has
+to measure up front and names each one as it goes, so it never looks hung.
+
 Only one `jbod sync` runs at a time: a PID file at `lock_path` refuses a second
 concurrent run (with a clear message naming the running PID) rather than letting
 two syncs race the NAS or the manifest. A stale lock — its process no longer
@@ -145,6 +155,16 @@ matter of browsing `/Volumes/<drive>/<folder>`.
     easy_sync jbod reassign FOLDER DRIVE_NAME      # record a move you made by hand (moves no data)
     easy_sync jbod pending                         # deletion candidates and their expiry dates
     easy_sync jbod dashboard                       # regenerate the HTML report only
+
+### Dashboard
+
+The HTML report groups everything by share so a library of several hundred
+movie and show folders stays readable: each drive tile shows one line per share
+with a folder count and total size (the full list is a click away), and the
+folders table has one collapsible section per share, with a "Needs attention"
+section at the top listing every folder that is not in a good state (failed,
+drive full, missing on the NAS, share or drive not mounted). Shares with a
+handful of folders start expanded; big ones start collapsed.
 
 ### Manifest schema
 

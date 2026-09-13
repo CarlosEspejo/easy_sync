@@ -65,6 +65,12 @@ module EasySync
         # Free space as placements are made during this run, so two new folders
         # are not both sent to the drive that was emptiest at the start.
         free_ledger = mounted.to_h { |m| [m.serial_number, m.free_bytes] }
+        new_folders = folders.count { |f| manifest.folder(f.key).nil? }
+        @measured = 0
+        if new_folders.positive?
+          @out.puts "#{new_folders} new folder#{'s' if new_folders != 1} to measure and place " \
+                    '(du over the network can take a while per folder)'
+        end
 
         folders.each do |folder|
           record = manifest.folder(folder.key)
@@ -174,6 +180,8 @@ module EasySync
       end
 
       def place(folder, mounted, free_ledger, report)
+        @measured += 1
+        @out.puts "  measuring #{folder.key} (new folder #{@measured})..."
         size = @sizer.call(folder.path)
         candidates = mounted.map { |m| m.dup.tap { |c| c.free_bytes = free_ledger[c.serial_number] } }
         target = Placement.choose(candidates, size_bytes: size)

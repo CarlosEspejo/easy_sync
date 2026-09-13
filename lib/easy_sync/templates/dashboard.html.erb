@@ -72,6 +72,23 @@
   .status.failed::before, .status.drive_full::before { color: var(--critical); }
   .status.skipped_unmounted::before, .status.skipped_source_unmounted::before, .status.missing::before { color: var(--warning); }
   .empty { color: var(--muted); padding: 14px; }
+  details.share { border-bottom: 1px solid var(--hairline); }
+  details.share:last-child { border-bottom: 0; }
+  details.share > summary { cursor: pointer; padding: 10px 12px; list-style: none; display: flex; gap: 12px; align-items: baseline; }
+  details.share > summary::-webkit-details-marker { display: none; }
+  details.share > summary::before { content: "▸"; color: var(--muted); width: 12px; display: inline-block; }
+  details.share[open] > summary::before { content: "▾"; }
+  details.share > summary .share-name { font-weight: 600; }
+  details.share > summary .share-meta { color: var(--muted); font-size: 13px; }
+  details.share > summary .share-problems { color: var(--critical); font-size: 13px; font-weight: 500; }
+  details.share.attention { border-left: 4px solid var(--critical); }
+  details.share table { border-top: 1px solid var(--hairline); }
+  .tile .shares { margin: 10px 0 0; padding: 0; list-style: none; }
+  .tile .shares li { display: flex; justify-content: space-between; gap: 8px; color: var(--ink-2); padding: 2px 0; }
+  .tile .shares li span:last-child { color: var(--muted); white-space: nowrap; }
+  .tile details { margin-top: 6px; }
+  .tile details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .tile details ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; max-height: 240px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -118,11 +135,18 @@
       <div class="sub"><%= bytes(d.used_bytes) %> used · <%= bytes(d.free_bytes) %> free · <%= bytes(d.capacity_bytes) %> total</div>
       <div class="sub" style="color:var(--muted)"><%= d.mounted ? "at #{h d.mount_point}" : "last seen #{when_(d.drive.last_seen_at)}" %></div>
     <%- unless d.folders.empty? -%>
-      <ul>
-      <%- d.folders.each do |f| -%>
-        <li><%= h f.folder_path %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+      <ul class="shares">
+      <%- by_share(d.folders).each do |share, fs| -%>
+        <li><span><%= h share %><%= fs.size == 1 && fs.first.folder_path == share ? '' : " · #{fs.size} folder#{'s' if fs.size != 1}" %></span><span><%= bytes(total_size(fs)) %></span></li>
       <%- end -%>
       </ul>
+      <details><summary><%= d.folders.size %> folder<%= 's' if d.folders.size != 1 %> on this drive</summary>
+        <ul>
+      <%- d.folders.each do |f| -%>
+          <li><%= h f.folder_path %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+      <%- end -%>
+        </ul>
+      </details>
     <%- end -%>
     </div>
   <%- end -%>
@@ -134,27 +158,27 @@
 <%- if folders.empty? -%>
   <p class="empty">No folders placed yet.</p>
 <%- else -%>
-  <table>
-    <thead><tr><th>Folder</th><th>Drive</th><th class="num">Size</th><th>Last synced</th><th>Status</th><th>Assigned</th></tr></thead>
-    <tbody>
-  <%- folders.each do |f| -%>
-    <%- status = case source_status[f.folder_path]
-                 when :missing then 'missing'
-                 when :source_unavailable then 'skipped_source_unmounted'
-                 else f.last_sync_status || 'never'
-                 end -%>
-      <tr>
-        <td><%= h f.folder_path %></td>
-        <td><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
-        <td class="num"><%= bytes(f.size_bytes) %></td>
-        <td><%= when_(f.last_synced_at) %></td>
-    <%- whole = pending.find { |p| p.whole_folder? && p.folder_path == f.folder_path } -%>
-        <td><span class="status <%= status %>"><%= { 'missing' => 'missing on NAS', 'skipped_source_unmounted' => 'share not mounted', 'skipped_unmounted' => 'drive not mounted', 'drive_full' => 'drive full' }.fetch(status, status) %></span><%- if whole -%><br><small style="color:var(--muted)">deleted from drive after <%= expiry(whole) %></small><%- end -%></td>
-        <td><%= when_(f.assigned_at) %></td>
-      </tr>
+  <%- attention = folders.reject { |f| folder_status(f, source_status) == 'ok' } -%>
+  <%- unless attention.empty? -%>
+  <details class="share attention" open>
+    <summary>
+      <span class="share-name">Needs attention</span>
+      <span class="share-problems"><%= attention.size %> folder<%= 's' if attention.size != 1 %> not in a good state</span>
+    </summary>
+    <%= folder_rows(attention, source_status, pending, names) %>
+  </details>
   <%- end -%>
-    </tbody>
-  </table>
+  <%- by_share(folders).each do |share, fs| -%>
+    <%- problems = problems_in(fs, source_status) -%>
+  <details class="share"<%= ' open' if fs.size <= 5 %>>
+    <summary>
+      <span class="share-name"><%= h share %></span>
+      <span class="share-meta"><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %></span>
+      <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
+    </summary>
+    <%= folder_rows(fs, source_status, pending, names) %>
+  </details>
+  <%- end -%>
 <%- end -%>
   </div>
 

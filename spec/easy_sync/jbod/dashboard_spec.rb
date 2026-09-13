@@ -41,6 +41,22 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('has never been seen mounted')
   end
 
+  it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do
+    60.times { |i| manifest.assign_folder("movies/Film #{i}", 'SN-backup-05-8tb', size_bytes: TB / 100) }
+    manifest.assign_folder('tv/Show A', 'SN-backup-05-8tb', size_bytes: TB / 10)
+    manifest.mark_folder_status('movies/Film 7', 'drive_full')
+    html = dashboard.render(mounted: [mounted(drives['backup-05-8tb'], free: 1 * TB)])
+
+    expect(html).to match(/<details class="share attention" open>[\s\S]*?Needs attention[\s\S]*?movies\/Film 7[\s\S]*?drive full/)
+    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">movies<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
+    expect(html).to include('1 needs attention')
+    expect(html).to match(/<details class="share" open>\s*<summary>\s*<span class="share-name">Photos/)
+    expect(html).to match(/<details class="share" open>\s*<summary>\s*<span class="share-name">tv/)
+    # drive tile shows per-share totals rather than sixty list items
+    expect(html).to match(/<ul class="shares">[\s\S]*?movies · 60 folders<\/span><span>614\.4 GB[\s\S]*?tv · 1 folder<\/span><span>102\.4 GB/)
+    expect(html).to include('61 folders on this drive')
+  end
+
   it 'escapes HTML in names' do
     manifest.assign_folder('<script>alert(1)</script>', 'SN-backup-01-3tb')
     html = dashboard.render

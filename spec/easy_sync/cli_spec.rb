@@ -9,6 +9,9 @@ RSpec.describe EasySync::CLI do
 
   before do
     FileUtils.mkdir_p(mount_root)
+    # `status` asks diskutil whether each unmounted drive is merely locked; by
+    # default answer "nothing listed" so only the lock-specific test cares.
+    fake_shell.on(->(argv) { argv == ['diskutil', 'apfs', 'list'] }, output: '')
     File.write(config_path, { logging: :off, tasks: [],
                               jbod: { mount_root: mount_root, manifest_path: manifest_path,
                                       sources: [File.join(temp_dir, 'nas')],
@@ -149,6 +152,63 @@ RSpec.describe EasySync::CLI do
     it 'says so when nothing is pending' do
       cli('jbod', 'pending').run
       expect(out.string).to include('Nothing is pending deletion')
+    end
+  end
+
+  describe '--config' do
+    let(:other_config) { File.join(temp_dir, 'other.yml') }
+
+    before do
+      File.write(other_config, { logging: :off, tasks: [],
+                                 jbod: { manifest_path: File.join(temp_dir, 'other.sqlite3'),
+                                         mount_root: mount_root, sources: [] } }.to_yaml)
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.close
+    end
+
+    it 'reads the config named by --config PATH, placed before the command' do
+      code = described_class.new(['--config', other_config, 'jbod', 'status'], out: out, err: err, shell: fake_shell).run
+      expect(code).to eq(0)
+      expect(out.string).not_to include('backup-01-3tb')   # the other manifest has no drives
+    end
+
+    it 'accepts --config=PATH' do
+      described_class.new(["--config=#{config_path}", 'jbod', 'status'], out: out, err: err, shell: fake_shell).run
+      expect(out.string).to include('backup-01-3tb')
+    end
+
+    it 'falls back to EASY_SYNC_CONFIG, then to the default path' do
+      described_class.new(%w[jbod status], out: out, err: err, shell: fake_shell,
+                                           env: { 'EASY_SYNC_CONFIG' => config_path }).run
+      expect(out.string).to include('backup-01-3tb')
+      expect(described_class.new([], env: {}).instance_variable_get(:@config_path)).to eq(EasySync::Config.default_path)
+    end
+
+    it 'lets --config override EASY_SYNC_CONFIG' do
+      described_class.new(['--config', other_config, 'jbod', 'status'], out: out, err: err, shell: fake_shell,
+                                                                        env: { 'EASY_SYNC_CONFIG' => config_path }).run
+      expect(out.string).not_to include('backup-01-3tb')
+    end
+
+    it 'fails cleanly when --config has no path' do
+      expect(described_class.new(['--config'], out: out, err: err, shell: fake_shell).run).to eq(1)
+      expect(err.string).to include('--config needs a path')
+    end
+  end
+
+  describe 'jbod status with a locked drive' do
+    it 'says the drive is locked instead of merely not mounted' do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'jbod-test-2', capacity_bytes: 3 * TB)
+      m.close
+      fake_shell.on(->(argv) { argv == ['diskutil', 'apfs', 'list'] }, output: <<~OUT)
+            Name:                      jbod-test-2 (Case-insensitive)
+            Mount Point:               Not Mounted
+            FileVault:                 Yes (Locked)
+      OUT
+      cli('jbod', 'status').run
+      expect(out.string).to include('connected but LOCKED', 'diskutil apfs unlockVolume jbod-test-2')
     end
   end
 

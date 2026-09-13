@@ -119,6 +119,15 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(manifest.sync_runs.size).to eq(1)
     end
 
+    it 'announces how many new folders it will measure and reports each as it goes' do
+      make_dirs(tv, 'Show A')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      expect(out.string).to include('2 new folders to measure and place', 'measuring photos (new folder 1)',
+                                    'measuring tv/Show A (new folder 2)')
+    end
+
     it 'mirrors a split-share subfolder under the share name on the drive' do
       make_dirs(tv, 'Show A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
