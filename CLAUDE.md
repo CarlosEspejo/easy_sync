@@ -124,14 +124,12 @@ assumptions, they cannot check them.
 ## Open items
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
-- The real fleet (seven `backup-0N-…` drives) had not arrived as of this
-  writing; first real run is `register-drive` x7, `plan --apply`,
-  `sync --dry-run`, `sync`. On the two 235 GB test drives, the full real
-  library (`tv` 17.7 TB/~308 folders, `movies` 12.3 TB/~2,379 folders,
-  `synology` 1.9 TB/16 folders + loose top-level files so it must stay
-  `split: false`, `pro` 35.6 GB/4 folders) only partially fits — that's
-  expected on test hardware, not a bug; the dashboard's "not backed up" count
-  is doing its job. Re-run `plan --apply` once real drives are registered.
+- The real fleet has arrived and a first real `sync` (not a test-drive run) is
+  in progress against the real library (`tv` 17.7 TB/~308 folders, `movies`
+  12.3 TB/~2,379 folders, `synology` 1.9 TB/16 folders + loose top-level files
+  so it must stay `split: false`, `pro` 35.6 GB/4 folders). Check
+  `easy_sync status` / the dashboard for current placement once it finishes;
+  don't assume the two 235 GB test drives' old partial-fit numbers still apply.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.
