@@ -249,7 +249,8 @@ copy phase is interrupted.
 Folders are grouped by share so thousands of them stay readable: each drive tile
 shows one line per share with a count and total size, and the folders table has
 a collapsible section per share with a "Needs attention" list on top for
-anything failed, full, missing or unmounted. Pending and completed deletions,
+anything failed, full, missing or unmounted. Every share starts collapsed;
+only "Needs attention" starts open. Pending and completed deletions,
 placement history and recent runs follow.
 
 Commands

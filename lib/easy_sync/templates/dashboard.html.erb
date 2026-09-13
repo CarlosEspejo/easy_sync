@@ -182,7 +182,7 @@
   <%- by_share(folders, inventory).each do |share, fs| -%>
     <%- problems = problems_in(fs, source_status) -%>
     <%- unsynced = unsynced_in(fs, source_status) -%>
-  <details class="share"<%= ' open' if fs.size <= 5 %>>
+  <details class="share">
     <summary>
       <span class="share-name"><%= h share %></span>
     <%- inv = inventory_for(inventory, share) -%>

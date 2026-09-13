@@ -60,8 +60,10 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('60 folders · 614.4 GB · 59 not yet synced', '(60 not yet synced)')
     expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">movies<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
     expect(html).to include('1 needs attention')
-    expect(html).to match(/<details class="share" open>\s*<summary>\s*<span class="share-name">Photos/)
-    expect(html).to match(/<details class="share" open>\s*<summary>\s*<span class="share-name">tv/)
+    # every share starts collapsed; only Needs attention starts open
+    expect(html).not_to include('<details class="share" open>')
+    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">Photos/)
+    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">tv/)
     # drive tile shows per-share totals rather than sixty list items
     expect(html).to match(/<ul class="shares">[\s\S]*?movies · 60 folders<\/span><span>614\.4 GB[\s\S]*?tv · 1 folder<\/span><span>102\.4 GB/)
     expect(html).to include('61 folders on this drive')
