@@ -120,7 +120,9 @@ or against `--largest-drive 8tb` before any drive is registered:
 | has loose files at its top level | must stay whole: only folders are placed |
 
 It flags any share whose current setting disagrees, and `--apply` writes the
-recommendations to the config. Without `--apply` it reads only.
+recommendations to the config. Without `--apply` it reads only. Name one or
+more shares (by folder name or full path, e.g. `easy_sync plan pro`) to judge
+just those instead of measuring everything.
 
 Only folders are placed. A loose file at the top of a split share is never
 backed up; the run warns about it and the dashboard lists it until you move it
@@ -266,7 +268,7 @@ Commands
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
-| `plan [--largest-drive 8tb] [--apply]` | measure each share and recommend split or whole; `--apply` writes it |
+| `plan [SHARE ...] [--largest-drive 8tb] [--apply]` | measure each share (or just those named) and recommend split or whole; `--apply` writes it |
 | `status` | drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |

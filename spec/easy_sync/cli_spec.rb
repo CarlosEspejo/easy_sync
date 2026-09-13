@@ -450,6 +450,31 @@ RSpec.describe EasySync::CLI do
       expect(cli('plan', '--largest-drive', 'huge').run).to eq(1)
       expect(err.string).to include('cannot parse size')
     end
+
+    it 'judges only the named share(s) when given, leaving the rest unmeasured' do
+      pro = make_dirs(temp_dir, 'pro').first
+      movies = make_dirs(temp_dir, 'movies').first
+      make_dirs(pro, 'Course 1')
+      make_dirs(movies, 'Film 1')
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      File.write(config_path, cfg.merge(sources: [{ path: pro, split: false }, { path: movies, split: true }]).to_yaml)
+      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "1024\t#{p}\n" }.join })
+
+      expect(cli('plan', 'pro', '--largest-drive', '8tb').run).to eq(0)
+      expect(out.string).to include(pro)
+      expect(out.string).not_to include(movies)
+
+      out.truncate(0)
+      out.rewind
+      expect(cli('plan', movies, '--largest-drive', '8tb').run).to eq(0)
+      expect(out.string).to include(movies)
+      expect(out.string).not_to include(pro)
+    end
+
+    it 'fails clearly when no configured source matches the given name' do
+      expect(cli('plan', 'nonexistent-share', '--largest-drive', '8tb').run).to eq(1)
+      expect(err.string).to include('no configured source matches nonexistent-share')
+    end
   end
 
   it 'writes a run log for every sync and echoes the same lines to the terminal' do

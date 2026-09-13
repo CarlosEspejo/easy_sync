@@ -64,4 +64,26 @@ RSpec.describe EasySync::Jbod::Planner do
     expect(r.reason).to include('register a drive')
     expect(r).not_to be_mismatch
   end
+
+  describe '#rows with only:' do
+    it 'measures just the named shares, matched by folder name or full path, without touching the rest' do
+      planner = described_class.new(settings, shell: fake_shell, largest_drive_bytes: 8 * TB)
+      result = planner.rows(only: ['pro'])
+      expect(result.map { |r| File.basename(r.source.path) }).to eq(['pro'])
+      expect(fake_shell.calls_to('du').first).to eq(['du', '-sk', "#{pro}/Course 1", "#{pro}/Course 2"])
+
+      result = planner.rows(only: [tv])
+      expect(result.map { |r| File.basename(r.source.path) }).to eq(['tv'])
+    end
+
+    it 'returns an empty list when nothing matches' do
+      planner = described_class.new(settings, shell: fake_shell, largest_drive_bytes: 8 * TB)
+      expect(planner.rows(only: ['nope'])).to eq([])
+    end
+
+    it 'measures everything when only: is nil' do
+      planner = described_class.new(settings, shell: fake_shell, largest_drive_bytes: 8 * TB)
+      expect(planner.rows(only: nil).size).to eq(4)
+    end
+  end
 end

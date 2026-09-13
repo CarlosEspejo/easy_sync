@@ -10,7 +10,7 @@ module EasySync
       ['Set up, once', [
         ['add-source PATH [--split | --whole]', 'add a NAS share (mounted on this Mac); split/whole is inferred unless given'],
         ['register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]', 'add a backup drive (mounted and unlocked)'],
-        ['plan [--largest-drive SIZE] [--apply]', 'measure each share and recommend split or whole; --apply writes it']
+        ['plan [SHARE ...] [--largest-drive SIZE] [--apply]', 'measure each share (or just the ones named) and recommend split or whole; --apply writes it']
       ]],
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
@@ -274,10 +274,13 @@ module EasySync
         end
         o.on('--apply', 'Write the recommended split settings to the config') { opts[:apply] = true }
       end.parse!(args)
+      only = args.empty? ? nil : args
       largest = opts[:largest] || manifest.drives.map(&:capacity_bytes).max
       @out.puts(largest ? "Judging against the largest drive: #{Jbod::Placement.format_bytes(largest)}" \
                         : 'No drives registered yet; pass --largest-drive 8tb for recommendations')
-      rows = Jbod::Planner.new(settings, shell: @shell, largest_drive_bytes: largest).rows
+      rows = Jbod::Planner.new(settings, shell: @shell, largest_drive_bytes: largest).rows(only: only)
+      raise Error, "no configured source matches #{only.join(', ')}" if only && rows.empty?
+
       rows.each do |r|
         @out.puts "\n#{r.source.path}"
         unless r.mounted

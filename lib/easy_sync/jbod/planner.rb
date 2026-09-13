@@ -22,8 +22,12 @@ module EasySync
         @largest = largest_drive_bytes
       end
 
-      def rows
-        Array(@settings[:sources]).map { |e| Runner::Source.from_config(e) }.map { |src| measure(src) }
+      # +only+ restricts to sources whose basename or full path is in the list
+      # (e.g. easy_sync plan pro, matching /Volumes/pro). nil measures all.
+      def rows(only: nil)
+        sources = Array(@settings[:sources]).map { |e| Runner::Source.from_config(e) }
+        sources = sources.select { |s| only.include?(s.name) || only.include?(s.path) } if only
+        sources.map { |src| measure(src) }
       end
 
       private
