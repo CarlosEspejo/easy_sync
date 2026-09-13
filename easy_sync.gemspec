@@ -1,26 +1,31 @@
-# coding: utf-8
-lib = File.expand_path('../lib', __FILE__)
+# frozen_string_literal: true
+
+lib = File.expand_path('lib', __dir__)
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 require 'easy_sync/version'
 
 Gem::Specification.new do |spec|
-  spec.name          = "easy_sync"
+  spec.name          = 'easy_sync'
   spec.version       = EasySync::VERSION
-  spec.authors       = ["Carlos Espejo"]
-  spec.email         = ["carlosespejo@gmail.com"]
-  spec.summary       = %q{Ruby wrapper around rsync to easily create incremental backups.}
-  #spec.description   = %q{TODO: Write a longer description. Optional.}
-  spec.homepage      = "https://github.com/CarlosEspejo/easy_sync"
-  spec.license       = "MIT"
+  spec.authors       = ['Carlos Espejo']
+  spec.email         = ['carlosespejo@gmail.com']
+  spec.summary       = 'Folder-level rsync backups from a NAS onto a set of independent (JBOD) drives.'
+  spec.description   = 'Mirrors each folder of your NAS shares onto one of several independently mounted ' \
+                       'drives, tracks where everything lives in a SQLite manifest with a grace period ' \
+                       'before deletions, and writes an HTML status dashboard with SMART health.'
+  spec.homepage      = 'https://github.com/CarlosEspejo/easy_sync'
+  spec.license       = 'MIT'
+  spec.required_ruby_version = '>= 3.3'
+  spec.metadata['platform_note'] = 'macOS only (10.13 High Sierra or later): relies on diskutil and caffeinate'
 
-  spec.files         = `git ls-files -z`.split("\x0")
+  spec.files         = `git ls-files -z`.split("\x0").reject { |f| f.start_with?('spec/') }
   spec.executables   = spec.files.grep(%r{^bin/}) { |f| File.basename(f) }
-  spec.test_files    = spec.files.grep(%r{^(test|spec|features)/})
-  spec.require_paths = ["lib"]
+  spec.require_paths = ['lib']
 
-  spec.add_development_dependency "bundler", "~> 1.5"
-  spec.add_development_dependency "rake"
-  spec.add_development_dependency "guard-minitest"
-  spec.add_development_dependency "terminal-notifier-guard"
+  spec.add_dependency 'sqlite3', '~> 2.9'
+  # logger left the standard library in Ruby 4.0 and must be declared explicitly.
+  spec.add_dependency 'logger', '~> 1.6'
 
+  spec.add_development_dependency 'rake', '~> 13.0'
+  spec.add_development_dependency 'rspec', '~> 3.13'
 end

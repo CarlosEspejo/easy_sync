@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Easy Sync Backup Status</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --hairline: #e1e0d9; --ring: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --track: #cde2fb;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --warning-track: #fdebc2; --critical-track: #f6cfcf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
+      --accent: #3987e5; --track: #184f95;
+      --warning-track: #4a3708; --critical-track: #4a1717;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5; --track: #184f95;
+    --warning-track: #4a3708; --critical-track: #4a1717;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding-block: 32px; padding-inline: 20px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  .meta { color: var(--muted); margin: 0 0 20px; }
+  .alerts { display: grid; gap: 8px; margin: 0 0 20px; }
+  .alert { border: 1px solid var(--ring); border-left: 4px solid var(--warning); background: var(--surface);
+           border-radius: 6px; padding: 10px 14px; }
+  .alert.critical { border-left-color: var(--critical); }
+  .alert.unknown { border-left-color: var(--muted); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 14px 16px; }
+  .tile.unmounted { opacity: 0.7; }
+  .tile .name { font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .tile .serial { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .tile .value { font-size: 26px; font-weight: 600; margin: 8px 0 2px; }
+  .tile .sub { color: var(--ink-2); }
+  .meter { height: 8px; border-radius: 4px; background: var(--track); margin: 10px 0 8px; overflow: hidden; }
+  .meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .tile.warning { border-color: var(--warning); box-shadow: inset 4px 0 0 var(--warning); }
+  .tile.critical { border-color: var(--critical); box-shadow: inset 4px 0 0 var(--critical); }
+  .tile .health { font-size: 12px; margin-top: 8px; color: var(--ink-2); }
+  .tile .health::before { content: "●"; margin-right: 4px; }
+  .tile .health.ok::before { color: var(--good); }
+  .tile .health.warning::before { color: var(--warning); }
+  .tile .health.failing::before { color: var(--critical); }
+  .tile .health.unknown::before { color: var(--muted); }
+  .tile .health small { color: var(--muted); display: block; margin-left: 12px; }
+  .badge { font-size: 12px; font-weight: 500; color: var(--ink-2); white-space: nowrap; }
+  .badge::before { content: "●"; margin-right: 4px; }
+  .badge.ok::before { color: var(--good); }
+  .badge.warning::before { color: var(--warning); }
+  .badge.critical::before { color: var(--critical); }
+  .badge.unknown::before { color: var(--muted); }
+  .tile ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  th.num { text-align: right; }
+  .status { white-space: nowrap; }
+  .status::before { content: "●"; margin-right: 4px; color: var(--muted); }
+  .status.ok::before { color: var(--good); }
+  .status.failed::before, .status.drive_full::before { color: var(--critical); }
+  .status.skipped_unmounted::before, .status.skipped_source_unmounted::before, .status.missing::before { color: var(--warning); }
+  .empty { color: var(--muted); padding: 14px; }
+  details.share { border-bottom: 1px solid var(--hairline); }
+  details.share:last-child { border-bottom: 0; }
+  details.share > summary { cursor: pointer; padding: 10px 12px; list-style: none; display: flex; gap: 12px; align-items: baseline; }
+  details.share > summary::-webkit-details-marker { display: none; }
+  details.share > summary::before { content: "▸"; color: var(--muted); width: 12px; display: inline-block; }
+  details.share[open] > summary::before { content: "▾"; }
+  details.share > summary .share-name { font-weight: 600; }
+  details.share > summary .share-meta { color: var(--muted); font-size: 13px; }
+  details.share > summary .share-problems { color: var(--critical); font-size: 13px; font-weight: 500; }
+  details.share.attention { border-left: 4px solid var(--critical); }
+  details.share table { border-top: 1px solid var(--hairline); }
+  .tile .shares { margin: 10px 0 0; padding: 0; list-style: none; }
+  .tile .shares li { display: flex; justify-content: space-between; gap: 8px; color: var(--ink-2); padding: 2px 0; }
+  .tile .shares li span:last-child { color: var(--muted); white-space: nowrap; }
+  .tile details { margin-top: 6px; }
+  .tile details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .tile details ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; max-height: 240px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Easy Sync Backup Status</h1>
+  <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
+    <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
+    <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
+    <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> backed up<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
+
+<%- unless warnings.empty? && loose_files.empty? && unplaced_all.empty? -%>
+  <div class="alerts">
+  <%- unless unplaced_all.empty? -%>
+    <div class="alert critical">
+      <strong><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %>
+      (<%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %>) on the NAS <%= unplaced_all.size == 1 ? 'is' : 'are' %> not backed up</strong>:
+      no mounted drive has room. Add or replace a drive, then sync again. The list is under Folders.
+    </div>
+  <%- end -%>
+  <%- unless loose_files.empty? -%>
+    <div class="alert">
+      <strong><%= loose_files.size %> loose file<%= 's' if loose_files.size != 1 %></strong> at the top level of a split share
+      <%= loose_files.size == 1 ? 'is' : 'are' %> not backed up. Move them into a folder on the NAS:
+      <%= h loose_files.first(10).join(', ') %><%= ', ...' if loose_files.size > 10 %>
+    </div>
+  <%- end -%>
+  <%- warnings.each do |d| -%>
+    <div class="alert <%= d.level %>">
+      <strong><%= h d.drive.friendly_name %></strong> <%= d.level == :critical ? 'is FAILING' : 'is starting to fail' %>:
+      SMART says <%= h d.drive.smart_detail %> (checked <%= when_(d.drive.smart_checked_at) %>).
+      Plan to replace it and move its folders with <code>jbod reassign</code>.
+    </div>
+  <%- end -%>
+  </div>
+<%- end -%>
+
+  <h2>Drives</h2>
+<%- if drives.empty? -%>
+  <p class="empty">No drives registered. Run <code>easy_sync jbod register-drive</code>.</p>
+<%- else -%>
+  <div class="tiles">
+  <%- drives.each do |d| -%>
+    <div class="tile <%= d.level %><%= d.mounted ? '' : ' unmounted' %>">
+      <div class="name"><span><%= h d.drive.friendly_name %></span>
+        <span class="badge <%= d.mounted ? 'ok' : 'unknown' %>"><%= d.mounted ? 'mounted' : 'not mounted' %></span></div>
+      <div class="serial"><%= h d.drive.serial_number %></div>
+      <div class="value"><%= percent(d.used_fraction) %> <span class="sub" style="font-size:14px;font-weight:400">used</span></div>
+      <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
+      <div class="sub"><%= bytes(d.used_bytes) %> used · <%= bytes(d.free_bytes) %> free · <%= bytes(d.capacity_bytes) %> total</div>
+      <div class="sub" style="color:var(--muted)"><%= d.mounted ? "at #{h d.mount_point}" : "last seen #{when_(d.drive.last_seen_at)}" %></div>
+      <div class="health <%= d.health %>"><%= health_label(d.health) %><%- if d.drive.smart_detail -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
+    <%- unless d.folders.empty? -%>
+      <ul class="shares">
+      <%- by_share(d.folders).each do |share, fs| -%>
+        <li><span><%= h share %><%= fs.size == 1 && fs.first.folder_path == share ? '' : " · #{fs.size} folder#{'s' if fs.size != 1}" %></span><span><%= bytes(total_size(fs)) %></span></li>
+      <%- end -%>
+      </ul>
+      <details><summary><%= d.folders.size %> folder<%= 's' if d.folders.size != 1 %> on this drive</summary>
+        <ul>
+      <%- d.folders.each do |f| -%>
+          <li><%= h f.folder_path %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+      <%- end -%>
+        </ul>
+      </details>
+    <%- end -%>
+    </div>
+  <%- end -%>
+  </div>
+<%- end -%>
+
+  <h2>Folders</h2>
+  <div class="table-wrap">
+<%- if folders.empty? -%>
+  <p class="empty">No folders placed yet.</p>
+<%- else -%>
+  <%- attention = folders.reject { |f| EasySync::Jbod::Dashboard::NEUTRAL.include?(folder_status(f, source_status)) } -%>
+  <%- unless attention.empty? -%>
+  <details class="share attention" open>
+    <summary>
+      <span class="share-name">Needs attention</span>
+      <span class="share-problems"><%= attention.size %> folder<%= 's' if attention.size != 1 %> not in a good state</span>
+    </summary>
+    <%= folder_rows(attention, source_status, pending, names) %>
+  </details>
+  <%- end -%>
+  <%- by_share(folders, inventory).each do |share, fs| -%>
+    <%- problems = problems_in(fs, source_status) -%>
+    <%- unsynced = unsynced_in(fs, source_status) -%>
+  <details class="share">
+    <summary>
+      <span class="share-name"><%= h share %></span>
+    <%- inv = inventory_for(inventory, share) -%>
+      <span class="share-meta"><%- if inv[:total].positive? -%><%= inv[:placed] %> of <%= inv[:total] %> folders on the NAS backed up · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
+      <%- if inv[:unplaced].any? -%><span class="share-problems"><%= inv[:unplaced].size %> not backed up</span><%- end -%>
+      <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
+    </summary>
+    <%- if fs.empty? -%><p class="empty">Nothing from this share fits on the mounted drives yet.</p><%- else -%><%= folder_rows(fs, source_status, pending, names) %><%- end -%>
+  </details>
+  <%- end -%>
+  <%- unless unplaced_all.empty? -%>
+  <details class="share attention">
+    <summary>
+      <span class="share-name">Not backed up</span>
+      <span class="share-problems"><%= unplaced_all.size %> folders · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
+    </summary>
+    <table>
+      <thead><tr><th>Folder</th><th class="num">Size</th><th>Why</th><th>Seen</th></tr></thead>
+      <tbody>
+    <%- unplaced_all.each do |e| -%>
+        <tr><td><%= h e.folder_path %></td><td class="num"><%= bytes(e.size_bytes) %></td><td><%= h e.detail %></td><td><%= when_(e.seen_at) %></td></tr>
+    <%- end -%>
+      </tbody>
+    </table>
+  </details>
+  <%- end -%>
+<%- end -%>
+  </div>
+
+  <h2>Pending deletions</h2>
+  <p class="meta">Files rsync no longer finds on the NAS. Each is removed from its drive once it has been missing for <%= grace_days %> days and confirmed on two separate runs. Anything that reappears on the NAS drops off this list.</p>
+  <div class="table-wrap">
+<%- if pending.empty? -%>
+  <p class="empty">Nothing pending.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Path</th><th>Kind</th><th>Missing since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
+    <tbody>
+  <%- pending.each do |p| -%>
+      <tr>
+        <td><%= h pending_label(p) %></td>
+        <td><%= h p.kind %></td>
+        <td><%= when_(p.first_missing_at) %></td>
+        <td class="num"><%= p.missing_runs %></td>
+        <td><%= expiry(p) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Deleted from drives</h2>
+  <div class="table-wrap">
+<%- if deletions.empty? -%>
+  <p class="empty">Nothing has been deleted yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Deleted</th><th>Path</th><th>Kind</th><th>Drive</th><th>Was missing since</th></tr></thead>
+    <tbody>
+  <%- deletions.each do |d| -%>
+      <tr>
+        <td><%= when_(d.deleted_at) %></td>
+        <td><%= h(d.kind == 'folder' ? "#{d.folder_path} (whole folder)" : "#{d.folder_path}/#{d.relative_path}") %></td>
+        <td><%= h d.kind %></td>
+        <td><%= h names.fetch(d.drive_serial, d.drive_serial) %></td>
+        <td><%= when_(d.first_missing_at) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Placement history</h2>
+  <div class="table-wrap">
+<%- if history.empty? -%>
+  <p class="empty">Nothing recorded yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>When</th><th>Folder</th><th>Event</th><th>Drive</th><th>Note</th></tr></thead>
+    <tbody>
+  <%- history.each do |e| -%>
+      <tr>
+        <td><%= when_(e.recorded_at) %></td>
+        <td><%= h e.folder_path %></td>
+        <td><%= h e.event %></td>
+        <td><%= h names.fetch(e.drive_serial, e.drive_serial) %></td>
+        <td><%= h e.note %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Recent sync runs</h2>
+  <div class="table-wrap">
+<%- if runs.empty? -%>
+  <p class="empty">No sync runs recorded yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Started</th><th>Folder</th><th>Drive</th><th>Result</th><th class="num">Transferred</th><th class="num">Folder size</th></tr></thead>
+    <tbody>
+  <%- runs.each do |r| -%>
+      <tr>
+        <td><%= when_(r.started_at) %></td>
+        <td><%= h r.folder_path %></td>
+        <td><%= h names.fetch(r.drive_serial, r.drive_serial) %></td>
+        <td><span class="status <%= r.exit_status.to_i.zero? ? 'ok' : 'failed' %>"><%= r.exit_status.to_i.zero? ? 'ok' : "failed (exit #{r.exit_status})" %></span></td>
+        <td class="num"><%= bytes(r.bytes_transferred) %></td>
+        <td class="num"><%= bytes(r.total_size_bytes) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+</main>
+</body>
+</html>
