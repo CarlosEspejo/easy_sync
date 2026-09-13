@@ -15,7 +15,7 @@ RSpec.describe EasySync::Config do
   it 'fills in jbod defaults for missing keys' do
     File.write(path, { logging: :off }.to_yaml)
     config, = described_class.load(path)
-    expect(config.jbod).to include(mount_root: '/Volumes', delete: true, warn_threshold: 0.85)
+    expect(config.jbod).to include(mount_root: '/Volumes', purge: true, grace_days: 7, grace_runs: 2, warn_threshold: 0.85)
     expect(config.jbod[:exclude_folders]).to include('#recycle', '@eaDir')
   end
 

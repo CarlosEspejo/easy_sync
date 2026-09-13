@@ -86,6 +86,31 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'jbod sync' do
+    it 'refuses to run with an old rsync' do
+      fake_shell.on('rsync', output: "rsync  version 2.6.9  protocol version 29\n")
+      expect(cli('jbod', 'sync').run).to eq(1)
+      expect(err.string).to include('too old')
+    end
+  end
+
+  describe 'jbod pending' do
+    it 'lists candidates with their expiry' do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.assign_folder('photos', 'S1')
+      m.reconcile_pending('photos', [['old.jpg', 'file'], ['', 'folder']], at: '2026-09-01T00:00:00Z')
+      m.close
+      expect(cli('jbod', 'pending').run).to eq(0)
+      expect(out.string).to include('2 pending', 'photos/old.jpg', 'photos (whole folder)', 'since 2026-09-01')
+    end
+
+    it 'says so when nothing is pending' do
+      cli('jbod', 'pending').run
+      expect(out.string).to include('Nothing is pending deletion')
+    end
+  end
+
   it 'prints usage for unknown commands' do
     expect(cli('bogus').run).to eq(1)
     expect(err.string).to include('Unknown command: bogus', 'Usage:')

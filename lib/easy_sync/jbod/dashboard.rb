@@ -13,11 +13,12 @@ module EasySync
       DriveView = Struct.new(:drive, :mounted, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,
                              :used_fraction, :level, :folders, keyword_init: true)
 
-      attr_reader :manifest, :warn_threshold
+      attr_reader :manifest, :warn_threshold, :grace_days
 
-      def initialize(manifest, warn_threshold: 0.85, clock: Time)
+      def initialize(manifest, warn_threshold: 0.85, grace_days: 7, clock: Time)
         @manifest = manifest
         @warn_threshold = warn_threshold
+        @grace_days = grace_days
         @clock = clock
       end
 
@@ -35,7 +36,9 @@ module EasySync
           runs: manifest.sync_runs(limit: 30),
           generated_at: @clock.now,
           warnings: drives.select { |d| d.level != :ok },
-          source_status: source_status
+          source_status: source_status,
+          pending: manifest.pending_deletions,
+          deletions: manifest.deletions(limit: 30)
         }
         scope = binding
         locals.each { |name, value| scope.local_variable_set(name, value) }
@@ -84,6 +87,14 @@ module EasySync
       end
 
       def h(text) = ERB::Util.html_escape(text.to_s)
+
+      def expiry(pending)
+        pending.expires_at(grace_days).localtime.strftime('%Y-%m-%d')
+      end
+
+      def pending_label(p)
+        p.whole_folder? ? "#{p.folder_path} (whole folder)" : "#{p.folder_path}/#{p.relative_path}"
+      end
     end
   end
 end

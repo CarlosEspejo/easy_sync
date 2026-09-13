@@ -185,3 +185,92 @@ RSpec.describe EasySync::Jbod::Manifest do
     end
   end
 end
+
+RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
+  let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
+  let(:manifest) { memory_manifest(clock: clock) }
+
+  before do
+    register_fleet(manifest)
+    manifest.assign_folder('movies/Heat (1995)', 'SN-backup-04-8tb')
+  end
+
+  describe '#reconcile_pending' do
+    it 'records newly missing paths with the run time' do
+      counts = manifest.reconcile_pending('movies/Heat (1995)', [['extras', 'dir'], ['extras/trailer.mkv', 'file']])
+      expect(counts).to eq(new: 2, still: 0, reappeared: 0)
+      expect(manifest.pending_deletions.map { |p| [p.relative_path, p.kind, p.first_missing_at, p.missing_runs] })
+        .to eq([['extras', 'dir', '2026-09-13T12:00:00Z', 1], ['extras/trailer.mkv', 'file', '2026-09-13T12:00:00Z', 1]])
+    end
+
+    it 'keeps first_missing_at and bumps the run counter for paths still missing' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']], at: '2026-09-01T00:00:00Z')
+      counts = manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file'], ['b.srt', 'file']])
+      expect(counts).to eq(new: 1, still: 1, reappeared: 0)
+      a, b = manifest.pending_deletions
+      expect(a).to have_attributes(relative_path: 'a.srt', first_missing_at: '2026-09-01T00:00:00Z',
+                                   last_missing_at: '2026-09-13T12:00:00Z', missing_runs: 2)
+      expect(b).to have_attributes(relative_path: 'b.srt', missing_runs: 1)
+    end
+
+    it 'forgets paths that reappeared on the NAS so their clock restarts' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']], at: '2026-09-01T00:00:00Z')
+      counts = manifest.reconcile_pending('movies/Heat (1995)', [])
+      expect(counts).to eq(new: 0, still: 0, reappeared: 1)
+      expect(manifest.pending_deletions).to be_empty
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']])
+      expect(manifest.pending_deletions.first.first_missing_at).to eq('2026-09-13T12:00:00Z')
+    end
+
+    it 'scopes reconciliation to one folder' do
+      manifest.assign_folder('photos', 'SN-backup-01-3tb')
+      manifest.reconcile_pending('photos', [['x.jpg', 'file']])
+      manifest.reconcile_pending('movies/Heat (1995)', [])
+      expect(manifest.pending_deletions.map(&:folder_path)).to eq(['photos'])
+      expect(manifest.pending_deletions(folder_path: 'movies/Heat (1995)')).to be_empty
+    end
+
+    it 'tracks a whole missing folder with an empty relative path' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['', 'folder']])
+      expect(manifest.pending_deletions.first).to have_attributes(relative_path: '', kind: 'folder')
+      expect(manifest.pending_deletions.first).to be_whole_folder
+    end
+  end
+
+  describe '#expired_deletions' do
+    it 'requires both the day and run thresholds' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['old.srt', 'file'], ['fresh.srt', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_pending('movies/Heat (1995)', [['old.srt', 'file'], ['fresh.srt', 'file'], ['once.srt', 'file']],
+                                 at: '2026-09-10T00:00:00Z')
+      manifest.db.execute("UPDATE pending_deletions SET first_missing_at = '2026-09-12T00:00:00Z' WHERE relative_path = 'fresh.srt'")
+
+      expired = manifest.expired_deletions(now: Time.utc(2026, 9, 13), grace_days: 7, grace_runs: 2)
+      expect(expired.map(&:relative_path)).to eq(['old.srt'])   # fresh.srt: too recent; once.srt: only 1 run
+    end
+
+    it 'exposes the expiry date' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['a', 'file']], at: '2026-09-01T00:00:00Z')
+      expect(manifest.pending_deletions.first.expires_at(7)).to eq(Time.utc(2026, 9, 8))
+    end
+  end
+
+  describe '#record_deletion' do
+    it 'moves the candidate into the audit log' do
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.record_deletion(manifest.pending_deletions.first, drive_serial: 'SN-backup-04-8tb')
+      expect(manifest.pending_deletions).to be_empty
+      expect(manifest.deletions.first).to have_attributes(folder_path: 'movies/Heat (1995)', relative_path: 'a.srt',
+                                                          kind: 'file', drive_serial: 'SN-backup-04-8tb',
+                                                          first_missing_at: '2026-09-01T00:00:00Z',
+                                                          deleted_at: '2026-09-13T12:00:00Z')
+    end
+  end
+
+  it 'migrates a version 1 database by adding the new tables' do
+    db = SQLite3::Database.new(':memory:')
+    db.execute('PRAGMA user_version = 1')
+    m = described_class.new(db)
+    expect(m.schema_version).to eq(2)
+    expect(m.pending_deletions).to eq([])
+  end
+end

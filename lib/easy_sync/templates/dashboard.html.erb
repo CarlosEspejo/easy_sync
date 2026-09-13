@@ -79,7 +79,7 @@
   <h1>Backup status</h1>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
-    <%= folders.size %> folders tracked · warning above <%= percent(warn_threshold) %> full</p>
+    <%= folders.size %> folders tracked · <%= pending.size %> pending deletion · warning above <%= percent(warn_threshold) %> full</p>
 
 <%- unless warnings.empty? -%>
   <div class="alerts">
@@ -141,8 +141,54 @@
         <td><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
         <td class="num"><%= bytes(f.size_bytes) %></td>
         <td><%= when_(f.last_synced_at) %></td>
-        <td><span class="status <%= status %>"><%= { 'missing' => 'missing on NAS', 'skipped_source_unmounted' => 'share not mounted', 'skipped_unmounted' => 'drive not mounted' }.fetch(status, status) %></span></td>
+    <%- whole = pending.find { |p| p.whole_folder? && p.folder_path == f.folder_path } -%>
+        <td><span class="status <%= status %>"><%= { 'missing' => 'missing on NAS', 'skipped_source_unmounted' => 'share not mounted', 'skipped_unmounted' => 'drive not mounted' }.fetch(status, status) %></span><%- if whole -%><br><small style="color:var(--muted)">deleted from drive after <%= expiry(whole) %></small><%- end -%></td>
         <td><%= when_(f.assigned_at) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Pending deletions</h2>
+  <p class="meta">Files rsync no longer finds on the NAS. Each is removed from its drive once it has been missing for <%= grace_days %> days and confirmed on two separate runs. Anything that reappears on the NAS drops off this list.</p>
+  <div class="table-wrap">
+<%- if pending.empty? -%>
+  <p class="empty">Nothing pending.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Path</th><th>Kind</th><th>Missing since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
+    <tbody>
+  <%- pending.each do |p| -%>
+      <tr>
+        <td><%= h pending_label(p) %></td>
+        <td><%= h p.kind %></td>
+        <td><%= when_(p.first_missing_at) %></td>
+        <td class="num"><%= p.missing_runs %></td>
+        <td><%= expiry(p) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Deleted from drives</h2>
+  <div class="table-wrap">
+<%- if deletions.empty? -%>
+  <p class="empty">Nothing has been deleted yet.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Deleted</th><th>Path</th><th>Kind</th><th>Drive</th><th>Was missing since</th></tr></thead>
+    <tbody>
+  <%- deletions.each do |d| -%>
+      <tr>
+        <td><%= when_(d.deleted_at) %></td>
+        <td><%= h(d.kind == 'folder' ? "#{d.folder_path} (whole folder)" : "#{d.folder_path}/#{d.relative_path}") %></td>
+        <td><%= h d.kind %></td>
+        <td><%= h names.fetch(d.drive_serial, d.drive_serial) %></td>
+        <td><%= when_(d.first_missing_at) %></td>
       </tr>
   <%- end -%>
     </tbody>

@@ -21,7 +21,9 @@ module EasySync
       manifest_path: "#{Dir.home}/.easy_sync/manifest.sqlite3",
       dashboard_path: "#{Dir.home}/.easy_sync/dashboard.html",
       warn_threshold: 0.85,
-      delete: true,
+      purge: true,          # remove files from the backup once they have been gone from the NAS long enough
+      grace_days: 7,        # ...at least this many days
+      grace_runs: 2,        # ...and confirmed missing on at least this many separate runs
       exclude_folders: ['#recycle', '@eaDir', '.DS_Store'],
       rsync_args: []
     }.freeze

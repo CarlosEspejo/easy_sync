@@ -19,13 +19,14 @@ RSpec.describe EasySync::Jbod::Runner do
   let(:sizes) { Hash.new(1_000) }
   let(:runner) { build_runner(settings) }
 
-  def build_runner(settings, sizer: ->(path) { sizes[File.basename(path)] })
+  def build_runner(settings, sizer: ->(path) { sizes[File.basename(path)] }, **opts)
     described_class.new(settings, manifest: manifest, volume_info: volume_info, mirror: mirror,
-                                  shell: fake_shell, out: out, clock: clock, sizer: sizer)
+                                  shell: fake_shell, out: out, clock: clock, sizer: sizer, **opts)
   end
 
-  def ok_result(total: 1_000, transferred: 10)
-    EasySync::Jbod::Mirror::Result.new(exit_status: 0, total_size_bytes: total, bytes_transferred: transferred, output: '')
+  def ok_result(total: 1_000, transferred: 10, extraneous: [])
+    EasySync::Jbod::Mirror::Result.new(exit_status: 0, total_size_bytes: total, bytes_transferred: transferred,
+                                       extraneous: extraneous, output: '')
   end
 
   def failed_result(status = 23)
@@ -249,6 +250,101 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(mirror).not_to receive(:sync)
       expect { runner.run }.to raise_error(described_class::SourceUnavailable)
       expect(File).not_to exist(dashboard_path)
+    end
+  end
+
+  describe 'grace-period deletions' do
+    let(:drive_root) { "#{mount_root}/backup-04-8tb" }
+
+    before do
+      make_dirs(tv, 'Show A')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+    end
+
+    it 'records what rsync would have deleted instead of deleting it' do
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]), ok_result)
+      report = runner.run
+      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.relative_path, p.missing_runs] }).to eq([['photos', 'old.jpg', 1]])
+      expect(report.pending).to eq(1)
+      expect(report.purged).to be_empty
+      expect(out.string).to include('photos: 1 newly missing on NAS')
+    end
+
+    it 'purges a file once it has expired and the drive is mounted' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]), ok_result)
+
+      report = runner.run
+      expect(report.purged).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
+      expect(File).not_to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(manifest.deletions.size).to eq(1)
+      expect(File.read(dashboard_path)).to include('Deleted from drives', 'photos/old.jpg')
+    end
+
+    it 'does not purge a file that reappeared on the NAS' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: []), ok_result)
+
+      report = runner.run
+      expect(report.purged).to be_empty
+      expect(manifest.pending_deletions).to be_empty
+      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+    end
+
+    it 'starts the clock on a whole folder that vanished from a mounted share, then removes it after the grace period' do
+      manifest.assign_folder('tv/Cancelled', 'SN-backup-04-8tb')
+      write_file(File.join(drive_root, 'tv', 'Cancelled', 'ep1.mkv'))
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      runner.run
+      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.kind, p.missing_runs] }).to eq([['tv/Cancelled', 'folder', 1]])
+      expect(Dir).to exist(File.join(drive_root, 'tv', 'Cancelled'))
+      expect(File.read(dashboard_path)).to include('deleted from drive after 2026-09-20')
+
+      manifest.db.execute("UPDATE pending_deletions SET first_missing_at = '2026-09-01T00:00:00Z'")
+      report = build_runner(settings).run
+      expect(report.purged).to eq([['tv/Cancelled', '', 'backup-04-8tb']])
+      expect(Dir).not_to exist(File.join(drive_root, 'tv', 'Cancelled'))
+      expect(manifest.folder('tv/Cancelled')).to be_nil
+      expect(manifest.history('tv/Cancelled').map(&:event)).to eq(%w[removed assigned])
+    end
+
+    it 'does not start a clock for folders whose share is not mounted' do
+      FileUtils.rm_rf(tv)
+      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      expect(manifest.pending_deletions).to be_empty
+    end
+
+    it 'honours --no-purge and purge: false' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]))
+
+      build_runner(settings, purge: false).run
+      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      build_runner(settings.merge(purge: false)).run
+      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(manifest.pending_deletions.first.missing_runs).to eq(3)
+    end
+
+    it 'in dry-run mode touches neither the drives nor the pending table' do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-05T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file'], ['new.jpg', 'file']]))
+
+      report = build_runner(settings, dry_run: true).run
+      expect(report.would_purge).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
+      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(manifest.pending_deletions.map { |p| [p.relative_path, p.missing_runs] }).to eq([['old.jpg', 2]])
     end
   end
 

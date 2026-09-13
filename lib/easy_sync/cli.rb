@@ -17,11 +17,12 @@ module EasySync
   class CLI
     USAGE = <<~TEXT
       Usage: easy_sync [snapshot]
-             easy_sync jbod sync [--dry-run]
+             easy_sync jbod sync [--dry-run] [--no-purge]
              easy_sync jbod register-drive MOUNT_POINT --name NAME [--serial SERIAL]
              easy_sync jbod status
              easy_sync jbod history [FOLDER]
              easy_sync jbod reassign FOLDER DRIVE_NAME [--note TEXT]
+             easy_sync jbod pending
              easy_sync jbod dashboard
     TEXT
 
@@ -72,19 +73,38 @@ module EasySync
       when 'status' then status
       when 'history' then history(args.first)
       when 'reassign' then reassign(args)
+      when 'pending' then pending
       when 'dashboard' then dashboard
       else raise Error, "unknown jbod command #{sub.inspect}\n\n#{USAGE}"
       end
     end
 
     def jbod_sync(args)
-      opts = { dry_run: false }
-      OptionParser.new { |o| o.on('--dry-run', 'Show rsync commands without running them') { opts[:dry_run] = true } }
-                  .parse!(args)
-      mirror = Jbod::Mirror.new(shell: @shell, delete: settings.fetch(:delete, true),
-                                extra_args: settings.fetch(:rsync_args, []) + (opts[:dry_run] ? ['--dry-run'] : []))
-      Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, mirror: mirror,
-                                 shell: @shell, out: @out).run
+      opts = { dry_run: false, purge: nil }
+      OptionParser.new do |o|
+        o.on('--dry-run', 'Show what rsync and the purge would do without changing anything') { opts[:dry_run] = true }
+        o.on('--no-purge', 'Sync but do not delete expired files from the drives') { opts[:purge] = false }
+      end.parse!(args)
+      version = Jbod::Mirror.check_version!(@shell)
+      @out.puts "Using rsync #{version}#{' (dry run)' if opts[:dry_run]}"
+      Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out,
+                                 dry_run: opts[:dry_run], purge: opts[:purge]).run
+    end
+
+    def pending
+      rows = manifest.pending_deletions
+      if rows.empty?
+        @out.puts 'Nothing is pending deletion.'
+        return
+      end
+      now = Time.now
+      @out.puts "#{rows.size} pending (deleted after #{settings[:grace_days]} days and #{settings[:grace_runs]} runs missing):"
+      rows.each do |p|
+        label = p.whole_folder? ? "#{p.folder_path} (whole folder)" : "#{p.folder_path}/#{p.relative_path}"
+        state = p.expired?(now: now, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs]) ? 'EXPIRED, deleted on next sync' \
+                : "expires #{p.expires_at(settings[:grace_days]).strftime('%Y-%m-%d')}, seen missing #{p.missing_runs}x"
+        @out.puts "  #{label.ljust(50)} since #{p.first_missing_at}  #{state}"
+      end
     end
 
     def register_drive(args)
@@ -150,7 +170,7 @@ module EasySync
 
     def dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
-      path = Jbod::Dashboard.new(manifest, warn_threshold: settings[:warn_threshold])
+      path = Jbod::Dashboard.new(manifest, warn_threshold: settings[:warn_threshold], grace_days: settings[:grace_days])
                             .write(settings[:dashboard_path], mounted: mounted)
       @out.puts "Dashboard written to #{path}"
     end

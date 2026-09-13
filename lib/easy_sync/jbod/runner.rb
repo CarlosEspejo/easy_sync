@@ -24,27 +24,32 @@ module EasySync
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :skipped, :unplaced, :missing_on_source, :warnings,
-                          keyword_init: true) do
+                          :purged, :would_purge, :pending, keyword_init: true) do
         def initialize(**)
           super
-          members.each { |m| self[m] ||= [] }
+          (members - [:pending]).each { |m| self[m] ||= [] }
+          self.pending ||= 0
         end
       end
 
       attr_reader :settings, :manifest
 
       # +settings+ is Config#jbod. +sizer+ returns the byte size of a source folder.
-      def initialize(settings, manifest:, volume_info: nil, mirror: nil, dashboard: nil,
-                     shell: Shell.new, out: $stdout, clock: Time, sizer: nil)
+      def initialize(settings, manifest:, volume_info: nil, mirror: nil, dashboard: nil, purger: nil,
+                     shell: Shell.new, out: $stdout, clock: Time, sizer: nil, dry_run: false, purge: nil)
         @settings = settings
         @manifest = manifest
         @shell = shell
         @out = out
         @clock = clock
+        @dry_run = dry_run
+        @purge = purge.nil? ? settings.fetch(:purge, true) : purge
         @volume_info = volume_info || VolumeInfo.new(mount_root: settings[:mount_root], shell: shell)
-        @mirror = mirror || Mirror.new(shell: shell, delete: settings.fetch(:delete, true),
-                                       extra_args: settings.fetch(:rsync_args, []))
-        @dashboard = dashboard || Dashboard.new(manifest, warn_threshold: settings[:warn_threshold], clock: clock)
+        @mirror = mirror || Mirror.new(shell: shell, extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
+        @dashboard = dashboard || Dashboard.new(manifest, warn_threshold: settings[:warn_threshold],
+                                                          grace_days: settings[:grace_days], clock: clock)
+        @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
+                                                 clock: clock, out: out)
         @sizer = sizer || method(:du_bytes)
       end
 
@@ -79,6 +84,7 @@ module EasySync
         end
 
         source_status = reconcile_manifest(folders, available, report)
+        purge(mounted, report)
 
         mounted = refresh_drives(report, quiet: true)
         path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status)
@@ -168,6 +174,7 @@ module EasySync
                              bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
         if result.success?
           report.synced << folder.key
+          note_missing(folder, result.extraneous || [])
         else
           warn(report, "rsync for #{folder.key} exited with status #{result.exit_status}")
           report.failed << folder.key
@@ -185,7 +192,9 @@ module EasySync
           if available.include?(share)
             status[f.folder_path] = :missing
             report.missing_on_source << f.folder_path
-            warn(report, "#{f.folder_path} is in the manifest but no longer on the NAS (still on #{drive_name(f.drive_serial)})")
+            manifest.reconcile_pending(f.folder_path, [['', 'folder']]) unless @dry_run
+            warn(report, "#{f.folder_path} is in the manifest but no longer on the NAS (still on #{drive_name(f.drive_serial)}); " \
+                         "it will be deleted from the drive #{settings[:grace_days]} days after it first went missing")
           else
             status[f.folder_path] = :source_unavailable
             manifest.mark_folder_status(f.folder_path, 'skipped_source_unmounted')
@@ -193,6 +202,32 @@ module EasySync
           end
         end
         status
+      end
+
+      # Feeds rsync's "would delete" report into the pending_deletions table.
+      def note_missing(folder, extraneous)
+        return if @dry_run
+
+        counts = manifest.reconcile_pending(folder.key, extraneous)
+        return if counts.values.all?(&:zero?)
+
+        @out.puts "  #{folder.key}: #{counts[:new]} newly missing on NAS, #{counts[:still]} still missing, " \
+                  "#{counts[:reappeared]} reappeared"
+      end
+
+      def purge(mounted, report)
+        report.pending = manifest.pending_deletions.size
+        return unless @purge
+
+        expired = manifest.expired_deletions(now: @clock.now, grace_days: settings[:grace_days],
+                                             grace_runs: settings[:grace_runs])
+        return if expired.empty?
+
+        @out.puts "\n------------------ purging #{expired.size} expired deletion#{'s' if expired.size != 1} ------------------"
+        result = @purger.run(mounted, dry_run: @dry_run)
+        report.purged = result.purged.map { |p, drive| [p.folder_path, p.relative_path, drive] }
+        report.would_purge = result.would_purge.map { |p, drive| [p.folder_path, p.relative_path, drive] }
+        result.skipped.each { |p, why| warn(report, "not purging #{p.folder_path}/#{p.relative_path}: #{why}") }
       end
 
       def du_bytes(path)
@@ -213,7 +248,8 @@ module EasySync
 
       def summarize(report)
         @out.puts "Synced #{report.synced.size}, placed #{report.placed.size} new, failed #{report.failed.size}, " \
-                  "skipped #{report.skipped.size}, unplaced #{report.unplaced.size}, warnings #{report.warnings.size}"
+                  "skipped #{report.skipped.size}, unplaced #{report.unplaced.size}, purged #{report.purged.size}, " \
+                  "#{report.pending.to_i} pending deletion#{'s' if report.pending.to_i != 1}, warnings #{report.warnings.size}"
       end
     end
   end

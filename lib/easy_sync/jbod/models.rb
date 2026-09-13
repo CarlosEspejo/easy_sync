@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'time'
+
 module EasySync
   module Jbod
     Drive = Struct.new(:serial_number, :friendly_name, :capacity_bytes, :added_date, :volume_uuid,
@@ -19,6 +21,24 @@ module EasySync
 
     SyncRun = Struct.new(:id, :folder_path, :drive_serial, :started_at, :finished_at, :exit_status,
                          :bytes_transferred, :total_size_bytes, keyword_init: true)
+
+    # A path on a drive that rsync reported as no longer present on the NAS.
+    # relative_path is '' (kind 'folder') when the whole folder is gone.
+    PendingDeletion = Struct.new(:id, :folder_path, :relative_path, :kind, :first_missing_at, :last_missing_at,
+                                 :missing_runs, keyword_init: true) do
+      def whole_folder? = kind == 'folder'
+
+      def expires_at(grace_days)
+        Time.parse(first_missing_at) + (grace_days * 86_400)
+      end
+
+      def expired?(now:, grace_days:, grace_runs:)
+        missing_runs >= grace_runs && expires_at(grace_days) <= now
+      end
+    end
+
+    Deletion = Struct.new(:id, :folder_path, :relative_path, :kind, :drive_serial, :first_missing_at, :deleted_at,
+                          keyword_init: true)
 
     # A registered drive that is currently mounted, with live usage numbers.
     MountedDrive = Struct.new(:drive, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,

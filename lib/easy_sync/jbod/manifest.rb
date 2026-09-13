@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 1
+      SCHEMA_VERSION = 2
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -181,6 +181,78 @@ module EasySync
         db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row)) }
       end
 
+      # -- pending deletions ----------------------------------------------
+
+      # Replaces the candidate set for +folder_path+ with +missing+, an array of
+      # [relative_path, kind] pairs reported by rsync this run. Paths seen before
+      # keep their first_missing_at and get their run counter bumped; paths no
+      # longer reported have reappeared on the NAS and are forgotten.
+      # Returns { new:, still:, reappeared: } counts.
+      def reconcile_pending(folder_path, missing, at: now)
+        existing = pending_deletions(folder_path: folder_path).to_h { |p| [p.relative_path, p] }
+        keys = missing.map(&:first)
+        counts = { new: 0, still: 0, reappeared: 0 }
+        db.transaction do
+          existing.each_key do |rel|
+            next if keys.include?(rel)
+
+            db.execute('DELETE FROM pending_deletions WHERE folder_path = ? AND relative_path = ?', [folder_path, rel])
+            counts[:reappeared] += 1
+          end
+          missing.each do |rel, kind|
+            if existing[rel]
+              db.execute(<<~SQL, [at, kind, folder_path, rel])
+                UPDATE pending_deletions SET last_missing_at = ?, missing_runs = missing_runs + 1, kind = ?
+                 WHERE folder_path = ? AND relative_path = ?
+              SQL
+              counts[:still] += 1
+            else
+              db.execute(<<~SQL, [folder_path, rel, kind, at, at])
+                INSERT INTO pending_deletions (folder_path, relative_path, kind, first_missing_at, last_missing_at, missing_runs)
+                VALUES (?, ?, ?, ?, ?, 1)
+              SQL
+              counts[:new] += 1
+            end
+          end
+        end
+        counts
+      end
+
+      def pending_deletions(folder_path: nil)
+        sql = 'SELECT * FROM pending_deletions'
+        params = []
+        if folder_path
+          sql += ' WHERE folder_path = ?'
+          params << folder_path
+        end
+        sql += ' ORDER BY folder_path, relative_path'
+        db.execute(sql, params).map { |row| PendingDeletion.new(**symbolize(row)) }
+      end
+
+      def expired_deletions(now:, grace_days:, grace_runs:)
+        pending_deletions.select { |p| p.expired?(now: now, grace_days: grace_days, grace_runs: grace_runs) }
+      end
+
+      # Moves a candidate into the audit log once it has actually been removed.
+      def record_deletion(pending, drive_serial:, at: now)
+        params = [pending.folder_path, pending.relative_path, pending.kind, drive_serial, pending.first_missing_at, at]
+        db.transaction do
+          db.execute(<<~SQL, params)
+            INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          SQL
+          db.execute('DELETE FROM pending_deletions WHERE id = ?', [pending.id])
+        end
+      end
+
+      def clear_pending(folder_path)
+        db.execute('DELETE FROM pending_deletions WHERE folder_path = ?', [folder_path])
+      end
+
+      def deletions(limit: 50)
+        db.execute('SELECT * FROM deletions ORDER BY id DESC LIMIT ?', [limit]).map { |row| Deletion.new(**symbolize(row)) }
+      end
+
       def schema_version
         db.get_first_value('PRAGMA user_version')
       end
@@ -253,6 +325,27 @@ module EasySync
               total_size_bytes  INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_sync_runs_folder ON sync_runs(folder_path);
+
+            CREATE TABLE IF NOT EXISTS pending_deletions (
+              id               INTEGER PRIMARY KEY AUTOINCREMENT,
+              folder_path      TEXT NOT NULL,
+              relative_path    TEXT NOT NULL,
+              kind             TEXT NOT NULL,
+              first_missing_at TEXT NOT NULL,
+              last_missing_at  TEXT NOT NULL,
+              missing_runs     INTEGER NOT NULL DEFAULT 1,
+              UNIQUE (folder_path, relative_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS deletions (
+              id               INTEGER PRIMARY KEY AUTOINCREMENT,
+              folder_path      TEXT NOT NULL,
+              relative_path    TEXT NOT NULL,
+              kind             TEXT NOT NULL,
+              drive_serial     TEXT NOT NULL,
+              first_missing_at TEXT NOT NULL,
+              deleted_at       TEXT NOT NULL
+            );
           SQL
           db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
         end

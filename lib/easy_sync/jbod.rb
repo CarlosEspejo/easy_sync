@@ -5,6 +5,7 @@ require_relative 'jbod/manifest'
 require_relative 'jbod/placement'
 require_relative 'jbod/volume_info'
 require_relative 'jbod/mirror'
+require_relative 'jbod/purger'
 require_relative 'jbod/dashboard'
 require_relative 'jbod/runner'
 
