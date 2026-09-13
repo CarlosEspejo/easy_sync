@@ -136,7 +136,9 @@ module EasySync
     def clean(args)
       dry_run = false
       OptionParser.new { |o| o.on('--dry-run', 'List what would be removed') { dry_run = true } }.parse!(args)
-      Jbod::RunLock.new(settings[:lock_path]).acquire do
+      # A dry run only reads, so it may look while a sync is running.
+      lock = dry_run ? ->(&blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
+      lock.call do
         mounted = volume_info.mounted_drives(manifest.drives)
         raise Error, 'no registered drive is mounted' if mounted.empty?
 

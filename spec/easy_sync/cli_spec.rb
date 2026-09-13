@@ -243,6 +243,17 @@ RSpec.describe EasySync::CLI do
       expect(cli('clean').run).to eq(1)
       expect(err.string).to include('no registered drive is mounted')
     end
+
+    it 'lets a dry run look while a sync holds the lock, but not a real clean' do
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      lock_path = File.join(temp_dir, 'jbod.lock')
+      File.write(config_path, cfg.merge(lock_path: lock_path).to_yaml)
+      File.write(lock_path, Process.pid.to_s)
+      expect(cli('clean', '--dry-run').run).to eq(1)        # fails later, on "no drive mounted", not on the lock
+      expect(err.string).to include('no registered drive is mounted')
+      expect(cli('clean').run).to eq(1)
+      expect(err.string).to include('already running')
+    end
   end
 
   describe 'jbod sync' do
