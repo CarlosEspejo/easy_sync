@@ -59,6 +59,13 @@ module EasySync
     rescue Error, OptionParser::ParseError => e
       @err.puts "error: #{e.message}"
       1
+    rescue Interrupt
+      # Ctrl-C. Everything is resumable: the lock and log are released by
+      # their ensure blocks, caffeinate exits with us, rsync's own temp file for
+      # the in-flight copy is removed by rsync, and the folder that was being
+      # synced simply syncs again next run.
+      @err.puts "\nInterrupted. Nothing is lost: run `easy_sync sync` again to pick up where this left off."
+      130
     end
 
     private

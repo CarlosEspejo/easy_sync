@@ -380,6 +380,21 @@ RSpec.describe EasySync::CLI do
     expect(out.string).to include('easy_sync 2.0.0')
   end
 
+  it 'turns Ctrl-C into a calm message and exit 130, releasing the lock' do
+    lock_path = File.join(temp_dir, 'jbod.lock')
+    cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+    File.write(config_path, cfg.merge(lock_path: lock_path, sources: [File.join(temp_dir, 'nas')]).to_yaml)
+    make_dirs(temp_dir, 'nas', 'nas/photos')
+    write_file(File.join(temp_dir, 'nas', 'photos', 'x.jpg'))
+    fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+    fake_shell.on('du', output: ->(_) { raise Interrupt })   # the user hits Ctrl-C while a folder is measured
+
+    expect(cli('sync').run).to eq(130)
+    expect(err.string).to include('Interrupted. Nothing is lost')
+    expect(File).not_to exist(lock_path)
+    expect(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log')).size).to eq(1)
+  end
+
   it 'prints usage for unknown commands' do
     expect(cli('bogus').run).to eq(1)
     expect(err.string).to include('Unknown command: bogus', 'Usage:')
