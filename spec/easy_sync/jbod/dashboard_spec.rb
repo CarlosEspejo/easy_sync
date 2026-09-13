@@ -16,7 +16,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
 
   it 'renders every drive, folder, history row, and sync run' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
-    expect(html).to include('<title>Easy Sync backup status</title>')
+    expect(html).to include('<title>Easy Sync Backup Status</title>')
     drives.each_key { |name| expect(html).to include(name) }
     expect(html).to include('Photos', 'assigned', '6.0 TB', 'ok')
     expect(html).to include('7 drives, 1 mounted', '1 folders tracked')
