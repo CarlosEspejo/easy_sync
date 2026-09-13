@@ -90,7 +90,8 @@ one drive, so each of its subfolders is placed independently and ends up at
 relative to the mount root: `photos`, `tv/Show Name`.
 
 **Not sure whether to split a share?** `easy_sync jbod plan` measures every
-configured share (one `du` per share, seconds even for thousands of folders)
+configured share (one `du` per share: seconds for a few thousand single-file
+movie folders, minutes for a share with hundreds of thousands of files)
 and prints a recommendation against the largest drive in the fleet, or against
 `--largest-drive 8tb` before any drive is registered: a share bigger than the
 largest drive must be split; one over half that size should be, because a whole
