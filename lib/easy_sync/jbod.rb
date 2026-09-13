@@ -15,6 +15,11 @@ require_relative 'jbod/runner'
 module EasySync
   # Folder-level mirroring from a NAS share onto independently mounted drives.
   module Jbod
-    MARKER_FILE = '.easy_sync_drive.json'
+    # Everything easy_sync keeps on a drive lives in this folder at its root:
+    # the identity marker, and after every run a copy of the manifest and
+    # config so any single surviving drive can rebuild the map.
+    DRIVE_DIR = '.easy_sync'
+    MARKER_FILE = File.join(DRIVE_DIR, 'drive.json')
+    LEGACY_MARKER_FILE = '.easy_sync_drive.json'
   end
 end

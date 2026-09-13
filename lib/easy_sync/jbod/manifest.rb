@@ -31,6 +31,24 @@ module EasySync
 
       def close = db.close
 
+      # Writes a consistent copy of the whole database to +path+ using
+      # SQLite's online backup API, safe while this connection is open.
+      def backup_to(path)
+        FileUtils.mkdir_p(File.dirname(path))
+        tmp = "#{path}.tmp"
+        File.delete(tmp) if File.exist?(tmp)
+        dest = SQLite3::Database.new(tmp)
+        begin
+          backup = SQLite3::Backup.new(dest, 'main', db, 'main')
+          backup.step(-1)
+          backup.finish
+        ensure
+          dest.close
+        end
+        File.rename(tmp, path)
+        path
+      end
+
       # -- drives ---------------------------------------------------------
 
       def register_drive(serial_number:, friendly_name:, capacity_bytes:, volume_uuid: nil, added_date: now)

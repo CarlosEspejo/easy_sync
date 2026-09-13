@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'fileutils'
 
 module EasySync
   module Jbod
@@ -48,9 +49,11 @@ module EasySync
         end
       end
 
+      # Reads <drive>/.easy_sync/drive.json, or the pre-folder marker at the
+      # drive root (moved into the folder by #copy_state on the next sync).
       def read_marker(mount_point)
-        path = File.join(mount_point, MARKER_FILE)
-        return nil unless File.file?(path)
+        path = [File.join(mount_point, MARKER_FILE), File.join(mount_point, LEGACY_MARKER_FILE)].find { |p| File.file?(p) }
+        return nil unless path
 
         data = JSON.parse(File.read(path), symbolize_names: true)
         return nil unless data[:serial_number]
@@ -64,9 +67,30 @@ module EasySync
         raise NotMounted, "#{mount_point} is not a directory" unless Dir.exist?(mount_point)
 
         path = File.join(mount_point, MARKER_FILE)
+        FileUtils.mkdir_p(File.dirname(path))
         File.write(path, JSON.pretty_generate(serial_number: serial_number, friendly_name: friendly_name,
                                               registered_at: registered_at))
         path
+      end
+
+      # Refreshes <drive>/.easy_sync/ on one mounted drive: moves a legacy
+      # root marker into the folder, and drops in a consistent copy of the
+      # manifest (via SQLite's online backup API) and of the config file.
+      def copy_state(mount_point, manifest:, config_path: nil)
+        dir = File.join(mount_point, DRIVE_DIR)
+        FileUtils.mkdir_p(dir)
+        legacy = File.join(mount_point, LEGACY_MARKER_FILE)
+        FileUtils.mv(legacy, File.join(mount_point, MARKER_FILE)) if File.file?(legacy) && !File.file?(File.join(mount_point, MARKER_FILE))
+        manifest.backup_to(File.join(dir, 'manifest.sqlite3'))
+        FileUtils.cp(config_path, File.join(dir, 'config.yml')) if config_path && File.file?(config_path)
+        File.write(File.join(dir, 'README.txt'), <<~TXT)
+          This folder is maintained by easy_sync (https://github.com/CarlosEspejo/easy_sync).
+          drive.json        identifies this drive to the tool; do not edit or delete it.
+          manifest.sqlite3  a copy of the manifest (which folder lives on which drive, and the
+                            deletion history) as of the last sync. Any one drive can rebuild the map.
+          config.yml        a copy of the configuration used for that sync.
+        TXT
+        dir
       end
 
       # Capacity/used/free in bytes, from `df -kP`.

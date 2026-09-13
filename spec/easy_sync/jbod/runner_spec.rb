@@ -44,6 +44,7 @@ RSpec.describe EasySync::Jbod::Runner do
     # Best-effort lock detection: unstubbed tests treat every unmounted drive as
     # "can't tell" rather than expecting every test to know about it.
     allow(volume_info).to receive(:locked?).and_return(nil)
+    allow(volume_info).to receive(:copy_state)
     allow(volume_info).to receive(:smart_health).and_return(
       EasySync::Jbod::Health.new(status: 'unknown', detail: 'not exposed', source: 'none')
     )
@@ -320,6 +321,26 @@ RSpec.describe EasySync::Jbod::Runner do
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
       expect(File.read(dashboard_path)).to include('1 loose file', 'tv/Stray Episode.mkv')
+    end
+
+    it 'copies the manifest and config to every mounted drive after the run, but not in dry-run' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB), mount('backup-05-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      build_runner(settings.merge(config_path: '/etc/easy.yml')).run
+      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-04-8tb", manifest: manifest, config_path: '/etc/easy.yml')
+      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-05-8tb", manifest: manifest, config_path: '/etc/easy.yml')
+
+      build_runner(settings, dry_run: true).run
+      expect(volume_info).to have_received(:copy_state).twice   # no new calls
+    end
+
+    it 'warns rather than fails when a drive refuses the state copy' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(volume_info).to receive(:copy_state).and_raise(Errno::EROFS, 'read-only')
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      report = runner.run
+      expect(report.warnings).to include(a_string_matching(/could not copy the manifest to backup-04-8tb/))
+      expect(File).to exist(dashboard_path)
     end
 
     it 'aborts before touching anything when no share is mounted' do

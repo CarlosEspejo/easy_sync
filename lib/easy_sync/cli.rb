@@ -26,7 +26,7 @@ module EasySync
              easy_sync jbod plan [--largest-drive SIZE]
              easy_sync jbod dashboard
 
-      --config PATH overrides the config file (default ~/.easy_syncrc.yml);
+      --config PATH overrides the config file (default ~/.easy_sync/config.yml);
       the EASY_SYNC_CONFIG environment variable does the same.
     TEXT
 
@@ -78,7 +78,12 @@ module EasySync
     end
 
     def config
-      @config ||= Config.load(@config_path).first
+      @config ||= begin
+        cfg, status = Config.load(@config_path)
+        @err.puts "Moved #{Config::LEGACY_PATH} to #{@config_path}" if status == :migrated
+        @err.puts "Generated sample config file: #{@config_path}" if status == :generated
+        cfg
+      end
     end
 
     def settings = config.jbod

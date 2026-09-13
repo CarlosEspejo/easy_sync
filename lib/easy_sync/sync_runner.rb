@@ -6,8 +6,9 @@ module EasySync
     attr_reader :config
 
     def initialize(config_path: Config.default_path, shell: Shell.new, out: $stdout, err: $stderr)
-      @config, generated = Config.load(config_path)
-      err.puts "Generated sample config file: #{config_path}\n\n" if generated
+      @config, status = Config.load(config_path)
+      err.puts "Generated sample config file: #{config_path}\n\n" if status == :generated
+      err.puts "Moved #{Config::LEGACY_PATH} to #{config_path}\n\n" if status == :migrated
       @shell = shell
       @out = out
     end

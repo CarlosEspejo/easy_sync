@@ -92,6 +92,7 @@ module EasySync
         purge(mounted, report)
 
         mounted = refresh_drives(report, quiet: true)
+        copy_state_to_drives(mounted, report)
         path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status,
                                                             loose_files: report.loose_files)
         @out.puts "\nDashboard written to #{path}"
@@ -285,6 +286,18 @@ module EasySync
         report.purged = result.purged.map { |p, drive| [p.folder_path, p.relative_path, drive] }
         report.would_purge = result.would_purge.map { |p, drive| [p.folder_path, p.relative_path, drive] }
         result.skipped.each { |p, why| warn(report, "not purging #{p.folder_path}/#{p.relative_path}: #{why}") }
+      end
+
+      # Every mounted drive gets a fresh copy of the manifest and config in
+      # its .easy_sync folder, so losing the Mac never loses the map.
+      def copy_state_to_drives(mounted, report)
+        return if @dry_run
+
+        mounted.each do |m|
+          @volume_info.copy_state(m.mount_point, manifest: manifest, config_path: settings[:config_path])
+        rescue SystemCallError, SQLite3::Exception => e
+          warn(report, "could not copy the manifest to #{m.friendly_name}: #{e.message}")
+        end
       end
 
       def du_bytes(path)

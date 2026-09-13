@@ -16,4 +16,11 @@ RSpec.configure do |config|
 
   config.include FakeShellHelpers
   config.include TempDirHelpers
+
+  # The suite must never look at, let alone move, a real config in the
+  # developer's home directory. Point every default path into the temp dir.
+  config.before do
+    stub_const('EasySync::Config::HOME_DIR', File.join(temp_dir, 'home', '.easy_sync'))
+    stub_const('EasySync::Config::LEGACY_PATH', File.join(temp_dir, 'home', '.easy_syncrc.yml'))
+  end
 end

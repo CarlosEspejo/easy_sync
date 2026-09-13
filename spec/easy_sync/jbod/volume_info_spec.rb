@@ -28,6 +28,45 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       expect(info.read_marker(vol)).to be_nil
     end
 
+    it 'still reads a marker left at the drive root by an older version' do
+      vol = make_dirs(mount_root, 'old').first
+      write_file(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"SN-old","friendly_name":"old"}')
+      expect(info.read_marker(vol)).to include(serial_number: 'SN-old')
+    end
+  end
+
+  describe '#copy_state' do
+    let(:manifest) { memory_manifest }
+    let(:vol) { make_dirs(mount_root, 'backup-04-8tb').first }
+
+    it 'drops a consistent manifest copy, the config, and a README into the drive folder' do
+      manifest.register_drive(serial_number: 'SN-4', friendly_name: 'backup-04-8tb', capacity_bytes: 8 * TB)
+      manifest.assign_folder('photos', 'SN-4')
+      cfg = write_file(File.join(temp_dir, 'config.yml'), "---\n:jbod: {}\n")
+
+      dir = info.copy_state(vol, manifest: manifest, config_path: cfg)
+      expect(dir).to eq(File.join(vol, '.easy_sync'))
+      expect(Dir.children(dir).sort).to eq(%w[README.txt config.yml manifest.sqlite3])
+      copy = EasySync::Jbod::Manifest.open(File.join(dir, 'manifest.sqlite3'))
+      expect(copy.folders.map(&:folder_path)).to eq(['photos'])
+      expect(copy.drive('SN-4').friendly_name).to eq('backup-04-8tb')
+      expect(File.read(File.join(dir, 'config.yml'))).to include(':jbod: {}')
+    end
+
+    it 'moves a legacy root marker into the folder' do
+      write_file(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE), '{"serial_number":"SN-4","friendly_name":"backup-04-8tb"}')
+      info.copy_state(vol, manifest: manifest)
+      expect(File).not_to exist(File.join(vol, EasySync::Jbod::LEGACY_MARKER_FILE))
+      expect(File).to exist(File.join(vol, EasySync::Jbod::MARKER_FILE))
+      expect(info.read_marker(vol)).to include(serial_number: 'SN-4')
+    end
+
+    it 'skips the config copy when no path is known' do
+      info.copy_state(vol, manifest: manifest, config_path: nil)
+      expect(File).not_to exist(File.join(vol, '.easy_sync', 'config.yml'))
+      expect(File).to exist(File.join(vol, '.easy_sync', 'manifest.sqlite3'))
+    end
+
     it 'refuses to write a marker to a path that is not mounted' do
       expect { info.write_marker(File.join(mount_root, 'gone'), serial_number: 'x', friendly_name: 'y') }
         .to raise_error(described_class::NotMounted)

@@ -11,6 +11,7 @@ RSpec.describe EasySync::SyncRunner do
 
   it 'generates a sample config when none exists' do
     described_class.new(config_path: config_path, shell: fake_shell, out: out, err: err)
+    expect(err.string).to include('Generated sample config file')
     expect(YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true))
       .to eq(EasySync::Config.sample)
     expect(err.string).to include("Generated sample config file: #{config_path}")

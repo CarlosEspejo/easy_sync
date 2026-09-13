@@ -16,6 +16,14 @@ RSpec.describe EasySync::Jbod::Manifest do
       expect { described_class.new(db) }.not_to raise_error
     end
 
+    it 'writes a consistent copy of itself with #backup_to' do
+      manifest.register_drive(serial_number: 'A', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      path = File.join(temp_dir, 'copy', 'manifest.sqlite3')
+      manifest.backup_to(path)
+      expect(described_class.open(path).drives.map(&:serial_number)).to eq(['A'])
+      expect(Dir.children(File.dirname(path))).to eq(['manifest.sqlite3'])   # no .tmp left behind
+    end
+
     it 'persists to a file via .open' do
       path = File.join(temp_dir, 'nested', 'manifest.sqlite3')
       m = described_class.open(path)

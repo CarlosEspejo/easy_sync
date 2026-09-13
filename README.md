@@ -19,7 +19,10 @@ macOS ships is too old for the deletion reporting described below).
 
 ### Configuration
 
-Running `easy_sync` once writes a sample config to `~/.easy_syncrc.yml`. To use
+Everything the tool keeps on the Mac lives in `~/.easy_sync/`: `config.yml`,
+`manifest.sqlite3`, `dashboard.html` and the run lock. Running `easy_sync` once
+writes a sample `config.yml` there (a config from the original gem at
+`~/.easy_syncrc.yml` is moved into place automatically). To use
 a different file (say, one that points at a couple of scratch USB drives while
 you test, without touching the real one), pass `--config PATH` before the
 command, or set `EASY_SYNC_CONFIG`:
@@ -64,8 +67,11 @@ unlock them yourself first; the tool never tries to unlock anything.
     easy_sync jbod register-drive /Volumes/backup-04-8tb
     easy_sync jbod register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # override auto-detection
 
-This records the drive in the manifest (serial number, name, capacity) and writes
-a small marker file, `.easy_sync_drive.json`, at the root of the volume.
+This records the drive in the manifest (serial number, name, capacity) and
+creates a `.easy_sync/` folder at the root of the volume holding `drive.json`,
+the drive's identity. After every sync that folder also receives a fresh copy of
+the manifest and of the config, so any single surviving drive can rebuild the
+map of where everything lives even if the Mac is gone.
 
 Without `--serial`, the serial is auto-detected: `register-drive` first tries the
 hardware serial via `smartctl` (a real, stable serial that survives a reformat),
