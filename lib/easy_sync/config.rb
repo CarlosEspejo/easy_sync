@@ -30,12 +30,24 @@ module EasySync
       purge: true,          # remove files from the backup once they have been gone from the NAS long enough
       grace_days: 7,        # ...at least this many days
       grace_runs: 2,        # ...and confirmed missing on at least this many separate runs
-      exclude_folders: ['#recycle', '@eaDir', '.DS_Store'],
+      # Names skipped when choosing folders to place AND passed to every rsync as
+      # --exclude, so they are never copied at any depth (Synology recycle bins and
+      # thumbnail dirs, Synology Drive's .sync, macOS metadata, SMB leftovers).
+      exclude_folders: ['#recycle', '@eaDir', '.DS_Store', '.sync', '.TemporaryItems', '.Trashes',
+                        '.smbdelete*', '.com.apple.timemachine.supported*', '.Spotlight-V100', '.fseventsd'],
       rsync_args: []
     }.freeze
 
     def self.default_path
       File.join(HOME_DIR, DEFAULT_FILENAME)
+    end
+
+    # JBOD_DEFAULTS with the home-relative paths resolved now rather than at
+    # load time, so HOME_DIR is honoured wherever it points (tests redirect it).
+    def self.jbod_defaults
+      JBOD_DEFAULTS.merge(manifest_path: File.join(HOME_DIR, 'manifest.sqlite3'),
+                          dashboard_path: File.join(HOME_DIR, 'dashboard.html'),
+                          lock_path: File.join(HOME_DIR, 'jbod.lock'))
     end
 
     def self.sample
@@ -47,7 +59,7 @@ module EasySync
           destination: '[/example/path]',
           exclude_file: '[/example/path]'
         }],
-        jbod: JBOD_DEFAULTS.dup
+        jbod: jbod_defaults
       }
     end
 
@@ -93,7 +105,7 @@ module EasySync
     # Merged JBOD settings with `~` expanded in every path, so a config copied
     # from the README ("~/.easy_sync/...") never creates a literal "~" directory.
     def jbod
-      merged = JBOD_DEFAULTS.merge(data.fetch(:jbod, {}))
+      merged = self.class.jbod_defaults.merge(data.fetch(:jbod, {}))
       PATH_KEYS.each { |k| merged[k] = File.expand_path(merged[k]) if merged[k].is_a?(String) }
       merged[:sources] = Array(merged[:sources]).map do |e|
         e.is_a?(Hash) ? e.merge(path: File.expand_path(e[:path].to_s)) : File.expand_path(e.to_s)

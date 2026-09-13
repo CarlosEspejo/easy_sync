@@ -9,7 +9,14 @@ RSpec.describe EasySync::Jbod::Mirror do
       .to eq(['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes',
               '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
     expect(mirror.probe_command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
-      .to eq(['rsync', '-an', '--itemize-changes', '--delete', '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
+      .to eq(['rsync', '-an', '--itemize-changes', '--delete', '--delete-excluded', '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
+  end
+
+  it 'passes exclusions to both passes, and asks the probe to report already-copied excluded junk' do
+    mirror = described_class.new(shell: fake_shell, excludes: ['#recycle', '.smbdelete*'])
+    expect(mirror.command('/a', '/b')).to include('--exclude=#recycle', '--exclude=.smbdelete*')
+    expect(mirror.probe_command('/a', '/b')).to include('--delete-excluded', '--exclude=#recycle', '--exclude=.smbdelete*')
+    expect(mirror.probe_command('/a', '/b').last(2)).to eq(['/a/', '/b/'])
   end
 
   it 'appends extra arguments' do

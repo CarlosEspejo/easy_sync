@@ -45,7 +45,8 @@ module EasySync
         @dry_run = dry_run
         @purge = purge.nil? ? settings.fetch(:purge, true) : purge
         @volume_info = volume_info || VolumeInfo.new(mount_root: settings[:mount_root], shell: shell)
-        @mirror = mirror || Mirror.new(shell: shell, extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
+        @mirror = mirror || Mirror.new(shell: shell, excludes: settings.fetch(:exclude_folders, []),
+                                       extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
         @dashboard = dashboard || Dashboard.new(manifest, grace_days: settings[:grace_days], clock: clock)
         @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
                                                  clock: clock, out: out)

@@ -454,6 +454,16 @@ RSpec.describe EasySync::Jbod::Runner do
     end
   end
 
+  it 'hands the configured exclusions to the rsync it builds' do
+    fake_shell.on('rsync', output: rsync_stats)
+    fake_shell.on('du', output: "1\tx\n")
+    allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+    described_class.new(settings, manifest: manifest, volume_info: volume_info, shell: fake_shell, out: out, clock: clock).run
+    copy, probe = fake_shell.calls_to('rsync')
+    expect(copy).to include('--exclude=#recycle', '--exclude=@eaDir')
+    expect(probe).to include('--delete-excluded', '--exclude=#recycle')
+  end
+
   describe 'default sizer' do
     it 'uses du -sk and converts to bytes' do
       fake_shell.on('du', output: "2048\t#{photos}\n")

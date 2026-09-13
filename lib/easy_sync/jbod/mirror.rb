@@ -22,21 +22,27 @@ module EasySync
         def disk_full? = !!disk_full
       end
 
-      def initialize(shell: Shell.new, extra_args: [])
+      # +excludes+ are rsync patterns (no slash, so they match at any depth):
+      # the config's exclude_folders. They apply to both passes.
+      def initialize(shell: Shell.new, extra_args: [], excludes: [])
         @shell = shell
         @extra_args = Array(extra_args)
+        @excludes = Array(excludes).map { |e| "--exclude=#{e}" }
       end
 
       # The copy pass. Extra args (from config, or --dry-run) apply here.
       def command(source, destination)
-        argv = ['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes']
+        argv = ['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes', *@excludes]
         argv += @extra_args
         argv + [with_slash(source), with_slash(destination)]
       end
 
       # The deletion probe: never copies, never deletes, only reports.
+      # --delete-excluded makes it also report excluded junk that an earlier
+      # run copied before the exclusion existed, so the purge clears it.
       def probe_command(source, destination)
-        ['rsync', '-an', '--itemize-changes', '--delete', with_slash(source), with_slash(destination)]
+        ['rsync', '-an', '--itemize-changes', '--delete', '--delete-excluded', *@excludes,
+         with_slash(source), with_slash(destination)]
       end
 
       # Raises unless the rsync on PATH is new enough for --itemize-changes deletion reporting.

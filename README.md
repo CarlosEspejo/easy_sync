@@ -53,7 +53,9 @@ command, or set `EASY_SYNC_CONFIG`:
   :purge: true                            # remove backed-up files once they have been gone from the NAS...
   :grace_days: 7                          # ...for at least this many days
   :grace_runs: 2                          # ...and confirmed missing on this many separate runs
-  :exclude_folders: ["#recycle", "@eaDir", ".DS_Store"]
+  :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
+                     ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
+                                          # never placed, and passed to every rsync as --exclude at any depth
   :rsync_args: []                         # extra arguments appended to every rsync
 ```
 

@@ -17,7 +17,7 @@ RSpec.describe EasySync::Config do
     File.write(path, { logging: :off }.to_yaml)
     config, = described_class.load(path)
     expect(config.jbod).to include(mount_root: '/Volumes', purge: true, grace_days: 7, grace_runs: 2, keep_awake: true)
-    expect(config.jbod[:exclude_folders]).to include('#recycle', '@eaDir')
+    expect(config.jbod[:exclude_folders]).to include('#recycle', '@eaDir', '.sync', '.smbdelete*')
   end
 
   it 'expands ~ in every path setting, including sources' do
@@ -39,6 +39,15 @@ RSpec.describe EasySync::Config do
     expect(File).not_to exist(legacy)
     expect(config.jbod[:grace_days]).to eq(3)
     expect(described_class.load(new_path, legacy_path: legacy).last).to be_nil
+  end
+
+  it 'resolves the manifest, dashboard and lock defaults under HOME_DIR at call time' do
+    File.write(path, { jbod: {} }.to_yaml)
+    j = described_class.load(path).first.jbod
+    %i[manifest_path dashboard_path lock_path].each do |k|
+      expect(j[k]).to start_with(File.join(temp_dir, 'home', '.easy_sync'))
+      expect(j[k]).not_to start_with(Dir.home)
+    end
   end
 
   it 'defaults to ~/.easy_sync/config.yml' do
