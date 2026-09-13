@@ -16,11 +16,12 @@ RSpec.describe EasySync::Jbod::Mirror do
   end
 
   it 'runs rsync and parses the stats' do
+    destination = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'Photos')
     fake_shell.on('rsync', output: rsync_stats(total: 123_456_789, transferred: 4_096))
-    result = described_class.new(shell: fake_shell).sync(source, '/Volumes/backup-04-8tb/Photos')
+    result = described_class.new(shell: fake_shell).sync(source, destination)
     expect(result).to have_attributes(exit_status: 0, total_size_bytes: 123_456_789, bytes_transferred: 4_096, extraneous: [])
     expect(result).to be_success
-    expect(fake_shell.calls.last.last(2)).to eq(["#{source}/", '/Volumes/backup-04-8tb/Photos/'])
+    expect(fake_shell.calls.last.last(2)).to eq(["#{source}/", "#{destination}/"])
   end
 
   it 'collects the files rsync would have deleted and treats exit 25 as success' do
