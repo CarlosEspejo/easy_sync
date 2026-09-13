@@ -1,5 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+unless RUBY_PLATFORM.include?('darwin')
+  warn 'easy_sync is a macOS-only tool: it relies on diskutil (APFS volume identity and lock state) ' \
+       'and caffeinate. See the README.'
+  exit 1
+end
+
 require 'easy_sync'
 exit EasySync::CLI.new(ARGV).run

@@ -16,6 +16,7 @@ Gem::Specification.new do |spec|
   spec.homepage      = 'https://github.com/CarlosEspejo/easy_sync'
   spec.license       = 'MIT'
   spec.required_ruby_version = '>= 3.3'
+  spec.metadata['platform_note'] = 'macOS only (10.13 High Sierra or later): relies on diskutil and caffeinate'
 
   spec.files         = `git ls-files -z`.split("\x0").reject { |f| f.start_with?('spec/') }
   spec.executables   = spec.files.grep(%r{^bin/}) { |f| File.basename(f) }

@@ -10,9 +10,12 @@ before deleting anything, and writes an HTML dashboard with each drive's SMART
 health. One folder always lives whole on one drive, so a restore is just
 browsing `/Volumes/<drive>/<folder>` in the Finder.
 
-Requires macOS, Ruby 3.3 or newer, and rsync 3.0 or newer (`brew install rsync`;
-the copy macOS ships is too old). `smartctl` (`brew install smartmontools`) is
-optional and adds drive health.
+**macOS only.** It leans on `diskutil` for APFS volume identity and lock state
+and on `caffeinate` to keep the Mac awake, so it needs macOS 10.13 High Sierra
+or later (the first release with APFS on external drives). It is developed and
+tested on macOS 26. Also needed: Ruby 3.3 or newer and rsync 3.0 or newer
+(`brew install rsync`; the copy macOS ships is too old). `smartctl`
+(`brew install smartmontools`) is optional and adds drive health.
 
 Quick start
 -----------
