@@ -26,6 +26,14 @@ module EasySync
         best
       end
 
+      # "2gb", "500 MB", 2147483648 -> bytes. Used for config values and CLI flags.
+      def self.parse_size(value)
+        return value.to_i if value.is_a?(Numeric)
+
+        m = value.to_s.strip.match(/\A([\d.]+)\s*(tb|gb|mb|kb|b)?\z/i) or raise Error, "cannot parse size #{value.inspect} (try 2gb)"
+        (m[1].to_f * { nil => 1, 'b' => 1, 'kb' => 1024, 'mb' => 1024**2, 'gb' => 1024**3, 'tb' => 1024**4 }[m[2]&.downcase]).to_i
+      end
+
       UNITS = %w[B KB MB GB TB PB].freeze
 
       def self.format_bytes(bytes)

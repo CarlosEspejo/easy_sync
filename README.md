@@ -51,6 +51,7 @@ Configuration
 :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent sync
 :log_dir: "~/.easy_sync/logs"           # one log per sync run
 :keep_logs: 20
+:reserve: "2gb"                         # headroom placement always leaves on every drive
 :keep_awake: true                       # caffeinate for the length of a sync
 :purge: true                            # delete from the drives only after...
 :grace_days: 7                          # ...this many days missing on the NAS
@@ -97,8 +98,11 @@ A share with `:split: false` is one unit and lands at `/Volumes/<drive>/photos`.
 A share with `:split: true` is too big for one drive, so each of its subfolders
 is placed independently and lands at `/Volumes/<drive>/tv/<Show Name>`.
 
-A new folder goes to the mounted drive with the most free space, if it fits.
-Once placed, a folder never moves: there is no rebalancing. To move one by hand,
+A new folder goes to the mounted drive with the most free space, if it fits
+while leaving `reserve` (2 GB by default) untouched for APFS metadata, the
+drive's `.easy_sync/` copies and rsync's temporary files. A folder with no real
+files on the NAS (a show folder left holding only a `.DS_Store`) is not placed;
+the run says so. Once placed, a folder never moves: there is no rebalancing. To move one by hand,
 copy it and then record the move with `easy_sync reassign`.
 
 `easy_sync plan` tells you which setting each share needs. It measures every

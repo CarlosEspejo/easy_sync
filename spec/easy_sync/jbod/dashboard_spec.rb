@@ -56,6 +56,8 @@ RSpec.describe EasySync::Jbod::Dashboard do
     html = dashboard.render(mounted: [mounted(drives['backup-05-8tb'], free: 1 * TB)])
 
     expect(html).to match(/<details class="share attention" open>[\s\S]*?Needs attention[\s\S]*?movies\/Film 7[\s\S]*?drive full/)
+    expect(html).to include('1 folder not in a good state')        # the 59 never-synced films are pending work, not problems
+    expect(html).to include('60 folders · 614.4 GB · 59 not yet synced', '(60 not yet synced)')
     expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">movies<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
     expect(html).to include('1 needs attention')
     expect(html).to match(/<details class="share" open>\s*<summary>\s*<span class="share-name">Photos/)

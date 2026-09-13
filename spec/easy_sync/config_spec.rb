@@ -26,6 +26,9 @@ RSpec.describe EasySync::Config do
     File.write(path, { grace_days: 7 }.to_yaml)
     s = described_class.load(path).first.settings
     expect(s).to include(mount_root: '/Volumes', purge: true, grace_days: 7, grace_runs: 2, keep_awake: true, keep_logs: 20)
+    expect(s[:reserve_bytes]).to eq(2 * 1024**3)
+    File.write(path, { reserve: '500mb' }.to_yaml)
+    expect(described_class.load(path).first.settings[:reserve_bytes]).to eq(500 * 1024**2)
     expect(s[:exclude_folders]).to include('#recycle', '@eaDir', '.sync', '.smbdelete*')
   end
 

@@ -150,7 +150,7 @@ module EasySync
       opts = {}
       OptionParser.new do |o|
         o.on('--largest-drive SIZE', 'Capacity of the biggest drive you will register, e.g. 8tb (default: from the manifest)') do |v|
-          opts[:largest] = parse_size(v)
+          opts[:largest] = Jbod::Placement.parse_size(v)
         end
       end.parse!(args)
       largest = opts[:largest] || manifest.drives.map(&:capacity_bytes).max
@@ -175,11 +175,6 @@ module EasySync
         split = r.recommend_split.nil? ? r.source.split : r.recommend_split
         @out.puts "  - :path: \"#{r.source.path}\"\n    :split: #{split}"
       end
-    end
-
-    def parse_size(text)
-      m = text.to_s.strip.match(/\A([\d.]+)\s*(tb|gb|mb|kb|b)?\z/i) or raise Error, "cannot parse size #{text.inspect} (try 8tb)"
-      (m[1].to_f * { nil => 1, 'b' => 1, 'kb' => 1024, 'mb' => 1024**2, 'gb' => 1024**3, 'tb' => 1024**4 }[m[2]&.downcase]).to_i
     end
 
     def register_drive(args)

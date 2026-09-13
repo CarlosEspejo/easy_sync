@@ -51,6 +51,16 @@ RSpec.describe EasySync::Jbod::Placement do
     expect(described_class.choose(candidates, size_bytes: nil).friendly_name).to eq('backup-01-3tb')
   end
 
+  describe '.parse_size' do
+    it 'reads sizes with units, case-insensitively, and passes integers through' do
+      expect(described_class.parse_size('2gb')).to eq(2 * 1024**3)
+      expect(described_class.parse_size('500 MB')).to eq(500 * 1024**2)
+      expect(described_class.parse_size('8tb')).to eq(8 * TB)
+      expect(described_class.parse_size(4096)).to eq(4096)
+      expect { described_class.parse_size('huge') }.to raise_error(EasySync::Error, /cannot parse size/)
+    end
+  end
+
   describe '.format_bytes' do
     it 'formats sizes for humans' do
       expect(described_class.format_bytes(nil)).to eq('—')

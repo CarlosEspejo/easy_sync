@@ -101,7 +101,7 @@
   <h1>Backup status</h1>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
-    <%= folders.size %> folders tracked · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
+    <%= folders.size %> folders tracked<%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
 
 <%- unless warnings.empty? && loose_files.empty? -%>
   <div class="alerts">
@@ -161,7 +161,7 @@
 <%- if folders.empty? -%>
   <p class="empty">No folders placed yet.</p>
 <%- else -%>
-  <%- attention = folders.reject { |f| folder_status(f, source_status) == 'ok' } -%>
+  <%- attention = folders.reject { |f| EasySync::Jbod::Dashboard::NEUTRAL.include?(folder_status(f, source_status)) } -%>
   <%- unless attention.empty? -%>
   <details class="share attention" open>
     <summary>
@@ -173,10 +173,11 @@
   <%- end -%>
   <%- by_share(folders).each do |share, fs| -%>
     <%- problems = problems_in(fs, source_status) -%>
+    <%- unsynced = unsynced_in(fs, source_status) -%>
   <details class="share"<%= ' open' if fs.size <= 5 %>>
     <summary>
       <span class="share-name"><%= h share %></span>
-      <span class="share-meta"><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %></span>
+      <span class="share-meta"><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
       <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
     </summary>
     <%= folder_rows(fs, source_status, pending, names) %>

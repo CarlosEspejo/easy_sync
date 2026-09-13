@@ -33,6 +33,12 @@ RSpec.describe EasySync::Jbod::Runner do
     EasySync::Jbod::Mirror::Result.new(exit_status: status, total_size_bytes: nil, bytes_transferred: nil, output: '')
   end
 
+  # A show folder on the NAS has episodes in it; a bare directory would be
+  # (correctly) skipped as empty.
+  def make_shows(*names)
+    names.each { |n| write_file(File.join(tv, n, 'ep1.mkv')) }
+  end
+
   def mount(name, free:, used: nil, at: "#{mount_root}/#{name}")
     mounted(drives[name], free: free, used: used, mount_point: at)
   end
@@ -60,7 +66,7 @@ RSpec.describe EasySync::Jbod::Runner do
 
   describe '#source_folders' do
     it 'treats a whole share as one folder and each subfolder of a split share as its own' do
-      make_dirs(tv, 'Show A', 'Show B', '#recycle', '@eaDir', '.hidden')
+      make_shows('Show A', 'Show B', '#recycle', '@eaDir', '.hidden')
       folders, available = runner.source_folders
       expect(folders.map(&:key)).to eq(['photos', 'tv/Show A', 'tv/Show B'])
       expect(folders.map(&:path)).to eq([photos, "#{tv}/Show A", "#{tv}/Show B"])
@@ -68,7 +74,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'warns loudly about loose files at the top of a split share, which are never backed up' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       write_file(File.join(tv, 'Stray Episode.mkv'))
       write_file(File.join(tv, '.DS_Store'))
       report = described_class::Report.new
@@ -124,7 +130,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'announces how many new folders it will measure and reports each as it goes' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
@@ -133,7 +139,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'mirrors a split-share subfolder under the share name on the drive' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       expect(mirror).to receive(:sync).with(photos, "#{mount_root}/backup-04-8tb/photos").and_return(ok_result)
       expect(mirror).to receive(:sync).with("#{tv}/Show A", "#{mount_root}/backup-04-8tb/tv/Show A").and_return(ok_result)
@@ -163,7 +169,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'skips folders whose drive is not mounted and warns' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       manifest.assign_folder('photos', 'SN-backup-03-6tb')
       manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
@@ -247,7 +253,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'accounts for folders placed earlier in the same run when choosing the next drive' do
-      make_dirs(tv, 'A', 'B')
+      make_shows('A', 'B')
       sizes['photos'] = 0
       sizes['A'] = 600
       sizes['B'] = 100
@@ -256,6 +262,30 @@ RSpec.describe EasySync::Jbod::Runner do
 
       report = runner.run
       expect(report.placed).to eq([%w[photos backup-01-3tb], ['tv/A', 'backup-01-3tb'], ['tv/B', 'backup-02-6tb']])
+    end
+
+    it 'keeps the configured reserve free on a drive when placing' do
+      sizes['photos'] = 950
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-01-3tb', free: 1_000)])
+      expect(mirror).not_to receive(:sync)
+      report = build_runner(settings.merge(reserve_bytes: 100)).run
+      expect(report.unplaced).to eq(['photos'])
+      expect(report.warnings).to include(a_string_matching(/does not fit on backup-01-3tb \(1000 B free, 100 B reserved\)/))
+    end
+
+    it 'does not place a folder that has no real files on the NAS' do
+      make_dirs(tv, 'Empty Show', 'DS Only', 'Real Show')
+      write_file(File.join(tv, 'DS Only', '.DS_Store'))
+      write_file(File.join(tv, 'Real Show', 'Season 01', 'ep1.mkv'))
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      report = runner.run
+      expect(report.empty).to eq(['tv/DS Only', 'tv/Empty Show'])
+      expect(report.placed.map(&:first)).to eq(['photos', 'tv/Real Show'])
+      expect(manifest.folder('tv/Empty Show')).to be_nil
+      expect(report.warnings).to include(a_string_matching(%r{tv/DS Only has no files on the NAS}))
+      expect(out.string).to include('empty 2')
     end
 
     it 'leaves a folder unplaced when it fits nowhere, without touching the manifest' do
@@ -276,7 +306,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'records a failed rsync and keeps going' do
-      make_dirs(tv, 'B')
+      make_shows('B')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(failed_result(23), ok_result)
 
@@ -288,7 +318,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'flags folders that vanished from a mounted share but keeps them in the manifest' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
       manifest.assign_folder('tv/Cancelled Show', 'SN-backup-04-8tb')
@@ -315,7 +345,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'lists loose files on the dashboard' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       write_file(File.join(tv, 'Stray Episode.mkv'))
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
@@ -355,7 +385,7 @@ RSpec.describe EasySync::Jbod::Runner do
     let(:drive_root) { "#{mount_root}/backup-04-8tb" }
 
     before do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
     end
 
@@ -441,7 +471,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'in dry-run mode writes nothing at all to the manifest and leaves the dashboard alone' do
-      make_dirs(tv, 'Show A')
+      make_shows('Show A')
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['gone.jpg', 'file']]))

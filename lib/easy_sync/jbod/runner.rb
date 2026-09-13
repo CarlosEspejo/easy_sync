@@ -24,7 +24,7 @@ module EasySync
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, :loose_files, :unhealthy, keyword_init: true) do
+                          :purged, :would_purge, :pending, :loose_files, :unhealthy, :empty, keyword_init: true) do
         def initialize(**)
           super
           (members - [:pending]).each { |m| self[m] ||= [] }
@@ -201,11 +201,16 @@ module EasySync
       end
 
       def place(folder, mounted, free_ledger, report)
+        if empty_source?(folder.path)
+          warn(report, "#{folder.key} has no files on the NAS (only excluded or hidden ones); not placing it")
+          report.empty << folder.key
+          return nil
+        end
         @measured += 1
         @out.puts "  measuring #{folder.key} (new folder #{@measured})..."
         size = @sizer.call(folder.path)
         candidates = mounted.map { |m| m.dup.tap { |c| c.free_bytes = free_ledger[c.serial_number] } }
-        target = Placement.choose(candidates, size_bytes: size)
+        target = Placement.choose(candidates, size_bytes: size, reserve_bytes: settings.fetch(:reserve_bytes, 0))
         if @dry_run
           @out.puts "Would place new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
         else
@@ -315,6 +320,23 @@ module EasySync
         end
       end
 
+      # True when a folder holds no regular file apart from excluded/hidden
+      # names (a show folder left with just a .DS_Store, an empty downloads
+      # dir). Stops at the first real file, so a full folder costs one stat.
+      def empty_source?(path)
+        excluded = Array(settings[:exclude_folders])
+        Dir.each_child(path) do |name|
+          next if name.start_with?('.') || excluded.any? { |pat| File.fnmatch?(pat, name) }
+
+          child = File.join(path, name)
+          return false if File.file?(child)
+          return false if File.directory?(child) && !empty_source?(child)
+        end
+        true
+      rescue SystemCallError
+        false   # can't tell; let rsync decide
+      end
+
       def du_bytes(path)
         result = @shell.capture(['du', '-sk', path])
         raise Error, "du failed for #{path}: #{result.output}" unless result.success?
@@ -334,7 +356,7 @@ module EasySync
       def summarize(report)
         @out.puts "Synced #{report.synced.size}, placed #{report.placed.size} new, failed #{report.failed.size}, " \
                   "drive full #{report.drive_full.size}, skipped #{report.skipped.size}, " \
-                  "unplaced #{report.unplaced.size}, purged #{report.purged.size}, " \
+                  "unplaced #{report.unplaced.size}, empty #{report.empty.size}, purged #{report.purged.size}, " \
                   "#{report.pending.to_i} pending deletion#{'s' if report.pending.to_i != 1}, warnings #{report.warnings.size}"
       end
     end

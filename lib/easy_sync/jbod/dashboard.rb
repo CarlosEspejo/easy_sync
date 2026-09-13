@@ -115,14 +115,22 @@ module EasySync
 
       def status_label(status) = STATUS_LABELS.fetch(status, status)
 
+      # 'never' means assigned but not yet copied (mid-run, or an interrupted
+      # run): pending work, not a problem, so it never lands in Needs attention.
+      NEUTRAL = %w[ok never].freeze
+
       def problems_in(folders, source_status)
-        folders.count { |f| folder_status(f, source_status) != 'ok' }
+        folders.count { |f| !NEUTRAL.include?(folder_status(f, source_status)) }
+      end
+
+      def unsynced_in(folders, source_status)
+        folders.count { |f| folder_status(f, source_status) == 'never' }
       end
 
       # The folder table body, shared by the "needs attention" list and each
       # per-share group. Rows needing attention sort first within a group.
       def folder_rows(folders, source_status, pending, names)
-        rows = folders.sort_by { |f| [folder_status(f, source_status) == 'ok' ? 1 : 0, f.folder_path] }.map do |f|
+        rows = folders.sort_by { |f| [NEUTRAL.include?(folder_status(f, source_status)) ? 1 : 0, f.folder_path] }.map do |f|
           status = folder_status(f, source_status)
           whole = pending.find { |p| p.whole_folder? && p.folder_path == f.folder_path }
           note = whole ? %(<br><small style="color:var(--muted)">deleted from drive after #{expiry(whole)}</small>) : ''

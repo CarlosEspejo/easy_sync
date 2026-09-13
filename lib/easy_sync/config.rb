@@ -23,6 +23,7 @@ module EasySync
         { path: '/Volumes/movies', split: true }
       ],
       mount_root: '/Volumes',
+      reserve: '2gb',       # headroom placement always leaves on a drive: APFS metadata, the .easy_sync copies, rsync temp files
       keep_awake: true,     # hold off idle sleep (caffeinate) for the length of a sync, on macOS
       keep_logs: 20,        # run logs kept under log_dir
       purge: true,          # remove files from the backup once they have been gone from the NAS long enough
@@ -54,6 +55,7 @@ module EasySync
       :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent sync
       :log_dir: "~/.easy_sync/logs"           # one log per sync run
       :keep_logs: 20
+      :reserve: "2gb"                         # headroom placement always leaves on a drive
       :keep_awake: true                       # caffeinate for the length of a sync
       :purge: true                            # delete from the drives only after...
       :grace_days: 7                          # ...this many days missing on the NAS
@@ -120,6 +122,7 @@ module EasySync
         e.is_a?(Hash) ? e.merge(path: File.expand_path(e[:path].to_s)) : File.expand_path(e.to_s)
       end
       merged[:config_path] = path   # so a copy of the config can travel with the drives
+      merged[:reserve_bytes] = Jbod::Placement.parse_size(merged[:reserve])
       merged
     end
   end
