@@ -17,7 +17,7 @@ optional and adds drive health.
 Quick start
 -----------
 
-    gem build easy_sync.gemspec && gem install ./easy_sync-*.gem
+    gem install easy_sync
 
     easy_sync                        # first run writes ~/.easy_sync/config.yml
     $EDITOR ~/.easy_sync/config.yml  # list your shares under :sources:
@@ -234,7 +234,9 @@ Development
 -----------
 
     bundle install
-    bundle exec rake        # RSpec; every external call is faked, no drives or rsync needed
+    bundle exec rake            # RSpec; every external call is faked, no drives or rsync needed
+    bundle exec rake install    # build the gem from this checkout and install it locally
+    bundle exec rake release    # tag the version and push it to rubygems.org
 
 Version 2 removed the original snapshot mode (dated hard-linked snapshots of one
 directory). It lives on in the 1.x tags.
