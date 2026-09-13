@@ -397,6 +397,7 @@ RSpec.describe EasySync::CLI do
 
   it 'prints the version' do
     %w[--version -v version].each do |arg|
+      out.rewind
       out.truncate(0)
       expect(cli(arg).run).to eq(0)
       expect(out.string).to eq("easy_sync #{EasySync::VERSION}\n")

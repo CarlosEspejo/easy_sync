@@ -20,14 +20,15 @@ module EasySync
 
     # Runs +argv+ (an Array, never a shell string) and streams its output.
     #
-    # On Interrupt the child gets SIGINT too, then SIGTERM if it lingers. A
-    # terminal Ctrl-C already signals the whole process group, but a signal
-    # sent to our pid alone (pkill, launchd, an app quitting) would otherwise
-    # leave us blocked until rsync finished the folder it was on.
+    # The child runs in its own process group. On Interrupt that whole group
+    # (rsync and its helper processes) gets SIGINT, then SIGTERM if it lingers,
+    # whether the interrupt came from a terminal Ctrl-C or from a signal sent
+    # to our pid alone (pkill, launchd, an app quitting); without this we would
+    # sit blocked until rsync finished the folder it was on.
     def run(argv, echo: true)
       lines = []
       status = nil
-      Open3.popen2e(*argv) do |stdin, stdout_err, wait|
+      Open3.popen2e(*argv, pgroup: true) do |stdin, stdout_err, wait|
         stdin.close
         begin
           stdout_err.each_line do |line|
@@ -44,10 +45,10 @@ module EasySync
     end
 
     def stop_child(wait)
-      Process.kill('INT', wait.pid)
+      Process.kill('INT', -wait.pid)   # negative pid: the whole process group
       return if wait.join(5)
 
-      Process.kill('TERM', wait.pid)
+      Process.kill('TERM', -wait.pid)
       wait.join(5)
     rescue Errno::ESRCH
       nil # already gone
