@@ -9,10 +9,10 @@ Gem::Specification.new do |spec|
   spec.version       = EasySync::VERSION
   spec.authors       = ['Carlos Espejo']
   spec.email         = ['carlosespejo@gmail.com']
-  spec.summary       = 'Ruby wrapper around rsync for incremental snapshots and JBOD backup management.'
-  spec.description   = 'Creates incremental rsync snapshots, and manages folder-level backups from a ' \
-                       'NAS onto a set of independently mounted JBOD drives with a SQLite manifest ' \
-                       'and an HTML status dashboard.'
+  spec.summary       = 'Folder-level rsync backups from a NAS onto a set of independent (JBOD) drives.'
+  spec.description   = 'Mirrors each folder of your NAS shares onto one of several independently mounted ' \
+                       'drives, tracks where everything lives in a SQLite manifest with a grace period ' \
+                       'before deletions, and writes an HTML status dashboard with SMART health.'
   spec.homepage      = 'https://github.com/CarlosEspejo/easy_sync'
   spec.license       = 'MIT'
   spec.required_ruby_version = '>= 3.3'

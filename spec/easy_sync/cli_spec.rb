@@ -12,10 +12,10 @@ RSpec.describe EasySync::CLI do
     # `status` asks diskutil whether each unmounted drive is merely locked; by
     # default answer "nothing listed" so only the lock-specific test cares.
     fake_shell.on(->(argv) { argv == ['diskutil', 'apfs', 'list'] }, output: '')
-    File.write(config_path, { logging: :off, tasks: [],
-                              jbod: { mount_root: mount_root, manifest_path: manifest_path,
-                                      sources: [File.join(temp_dir, 'nas')],
-                                      dashboard_path: File.join(temp_dir, 'dashboard.html') } }.to_yaml)
+    File.write(config_path, { mount_root: mount_root, manifest_path: manifest_path,
+                              sources: [File.join(temp_dir, 'nas')],
+                              dashboard_path: File.join(temp_dir, 'dashboard.html'),
+                              log_dir: File.join(temp_dir, 'logs') }.to_yaml)
   end
 
   let(:keep_awake) { instance_double(EasySync::Jbod::KeepAwake, start: false) }
@@ -35,7 +35,7 @@ RSpec.describe EasySync::CLI do
     end
 
     it 'registers the drive using the Volume UUID and writes a marker' do
-      expect(cli('jbod', 'register-drive', vol).run).to eq(0)
+      expect(cli('register-drive', vol).run).to eq(0)
       drive = manifest.drives.first
       expect(drive).to have_attributes(serial_number: 'ABCD-1234', friendly_name: 'backup-04-8tb',
                                        capacity_bytes: 8_000_000 * 1024, volume_uuid: 'ABCD-1234',
@@ -55,27 +55,27 @@ RSpec.describe EasySync::CLI do
           5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
         194 Temperature_Celsius     0x0022   036   049   000    Old_age   Always       -       36
       OUT
-      cli('jbod', 'register-drive', vol).run
+      cli('register-drive', vol).run
       expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', smart_status: 'ok',
                                                        smart_detail: 'PASSED · reallocated 0 · 36°C')
       expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)')
     end
 
     it 'prefers an explicit --serial and --name' do
-      cli('jbod', 'register-drive', vol, '--serial', 'WD-WX12345', '--name', 'drive-four').run
+      cli('register-drive', vol, '--serial', 'WD-WX12345', '--name', 'drive-four').run
       expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', friendly_name: 'drive-four',
                                                        volume_uuid: 'ABCD-1234')
     end
 
     it 'refuses a volume that already carries a marker' do
-      cli('jbod', 'register-drive', vol).run
-      expect(cli('jbod', 'register-drive', vol, '--serial', 'other').run).to eq(1)
+      cli('register-drive', vol).run
+      expect(cli('register-drive', vol, '--serial', 'other').run).to eq(1)
       expect(err.string).to include('already carries a marker')
       expect(manifest.drives.size).to eq(1)
     end
 
     it 'fails cleanly when the mount point does not exist' do
-      expect(cli('jbod', 'register-drive', File.join(mount_root, 'nope')).run).to eq(1)
+      expect(cli('register-drive', File.join(mount_root, 'nope')).run).to eq(1)
       expect(err.string).to include('not mounted')
     end
 
@@ -89,7 +89,7 @@ RSpec.describe EasySync::CLI do
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
       fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: "Serial Number: 0ba0284a20e0ec22\n")
 
-      expect(cli('jbod', 'register-drive', vol).run).to eq(0)
+      expect(cli('register-drive', vol).run).to eq(0)
       expect(manifest.drives.first).to have_attributes(serial_number: '0ba0284a20e0ec22', volume_uuid: 'ABCD-1234')
       expect(out.string).to include('Using the smartctl hardware serial')
     end
@@ -105,15 +105,15 @@ RSpec.describe EasySync::CLI do
     end
 
     it 'records a manual move without touching data' do
-      expect(cli('jbod', 'reassign', 'Photos', 'backup-02-6tb', '--note', 'copied by hand').run).to eq(0)
+      expect(cli('reassign', 'Photos', 'backup-02-6tb', '--note', 'copied by hand').run).to eq(0)
       expect(manifest.folder('Photos').drive_serial).to eq('S2')
       expect(out.string).to include('No data was moved')
-      cli('jbod', 'history', 'Photos').run
+      cli('history', 'Photos').run
       expect(out.string).to include('reassigned', 'copied by hand', 'assigned')
     end
 
     it 'rejects an unknown drive name' do
-      expect(cli('jbod', 'reassign', 'Photos', 'backup-99').run).to eq(1)
+      expect(cli('reassign', 'Photos', 'backup-99').run).to eq(1)
       expect(err.string).to include('no drive named backup-99')
     end
 
@@ -121,7 +121,7 @@ RSpec.describe EasySync::CLI do
       m = manifest
       m.update_drive_health('S2', status: 'warning', detail: 'PASSED · pending 3')
       m.close
-      expect(cli('jbod', 'status').run).to eq(0)
+      expect(cli('status').run).to eq(0)
       expect(out.string).to include('backup-01-3tb', 'not mounted', 'Photos', 'SMART unchecked', 'SMART warning: PASSED · pending 3')
     end
   end
@@ -129,12 +129,12 @@ RSpec.describe EasySync::CLI do
   describe 'jbod sync' do
     def merge_jbod_config(**overrides)
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      File.write(config_path, cfg.merge(jbod: cfg[:jbod].merge(overrides)).to_yaml)
+      File.write(config_path, cfg.merge(overrides).to_yaml)
     end
 
     it 'refuses to run with an old rsync' do
       fake_shell.on('rsync', output: "rsync  version 2.6.9  protocol version 29\n")
-      expect(cli('jbod', 'sync').run).to eq(1)
+      expect(cli('sync').run).to eq(1)
       expect(err.string).to include('too old')
     end
 
@@ -145,7 +145,7 @@ RSpec.describe EasySync::CLI do
       File.write(lock_path, Process.pid.to_s) # simulate a live concurrent run
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
 
-      expect(cli('jbod', 'sync').run).to eq(1)
+      expect(cli('sync').run).to eq(1)
       expect(err.string).to include('already running', "pid #{Process.pid}")
       expect(File.read(lock_path)).to eq(Process.pid.to_s)
     end
@@ -155,18 +155,18 @@ RSpec.describe EasySync::CLI do
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
       allow(keep_awake).to receive(:start).and_return(true)
 
-      cli('jbod', 'sync').run
+      cli('sync').run
       expect(keep_awake).to have_received(:start).once
       expect(out.string).to include('Keeping the Mac awake for this run (caffeinate).')
 
-      cli('jbod', 'sync', '--no-keep-awake').run
+      cli('sync', '--no-keep-awake').run
       expect(keep_awake).to have_received(:start).once   # not called again
     end
 
     it 'respects keep_awake: false in the config' do
       merge_jbod_config(sources: [], keep_awake: false)
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
-      cli('jbod', 'sync').run
+      cli('sync').run
       expect(keep_awake).not_to have_received(:start)
     end
 
@@ -175,7 +175,7 @@ RSpec.describe EasySync::CLI do
       merge_jbod_config(lock_path: lock_path, sources: [])
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
 
-      cli('jbod', 'sync').run # fails fast (no sources configured), but the lock must still be released
+      cli('sync').run # fails fast (no sources configured), but the lock must still be released
       expect(File).not_to exist(lock_path)
     end
   end
@@ -187,12 +187,12 @@ RSpec.describe EasySync::CLI do
       m.assign_folder('photos', 'S1')
       m.reconcile_pending('photos', [['old.jpg', 'file'], ['', 'folder']], at: '2026-09-01T00:00:00Z')
       m.close
-      expect(cli('jbod', 'pending').run).to eq(0)
+      expect(cli('pending').run).to eq(0)
       expect(out.string).to include('2 pending', 'photos/old.jpg', 'photos (whole folder)', 'since 2026-09-01')
     end
 
     it 'says so when nothing is pending' do
-      cli('jbod', 'pending').run
+      cli('pending').run
       expect(out.string).to include('Nothing is pending deletion')
     end
   end
@@ -201,34 +201,33 @@ RSpec.describe EasySync::CLI do
     let(:other_config) { File.join(temp_dir, 'other.yml') }
 
     before do
-      File.write(other_config, { logging: :off, tasks: [],
-                                 jbod: { manifest_path: File.join(temp_dir, 'other.sqlite3'),
-                                         mount_root: mount_root, sources: [] } }.to_yaml)
+      File.write(other_config, { manifest_path: File.join(temp_dir, 'other.sqlite3'),
+                                 mount_root: mount_root, sources: [] }.to_yaml)
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
       m.close
     end
 
     it 'reads the config named by --config PATH, placed before the command' do
-      code = described_class.new(['--config', other_config, 'jbod', 'status'], out: out, err: err, shell: fake_shell).run
+      code = described_class.new(['--config', other_config, 'status'], out: out, err: err, shell: fake_shell).run
       expect(code).to eq(0)
       expect(out.string).not_to include('backup-01-3tb')   # the other manifest has no drives
     end
 
     it 'accepts --config=PATH' do
-      described_class.new(["--config=#{config_path}", 'jbod', 'status'], out: out, err: err, shell: fake_shell).run
+      described_class.new(["--config=#{config_path}", 'status'], out: out, err: err, shell: fake_shell).run
       expect(out.string).to include('backup-01-3tb')
     end
 
     it 'falls back to EASY_SYNC_CONFIG, then to the default path' do
-      described_class.new(%w[jbod status], out: out, err: err, shell: fake_shell,
+      described_class.new(%w[status], out: out, err: err, shell: fake_shell,
                                            env: { 'EASY_SYNC_CONFIG' => config_path }).run
       expect(out.string).to include('backup-01-3tb')
       expect(described_class.new([], env: {}).instance_variable_get(:@config_path)).to eq(EasySync::Config.default_path)
     end
 
     it 'lets --config override EASY_SYNC_CONFIG' do
-      described_class.new(['--config', other_config, 'jbod', 'status'], out: out, err: err, shell: fake_shell,
+      described_class.new(['--config', other_config, 'status'], out: out, err: err, shell: fake_shell,
                                                                         env: { 'EASY_SYNC_CONFIG' => config_path }).run
       expect(out.string).not_to include('backup-01-3tb')
     end
@@ -249,7 +248,7 @@ RSpec.describe EasySync::CLI do
             Mount Point:               Not Mounted
             FileVault:                 Yes (Locked)
       OUT
-      cli('jbod', 'status').run
+      cli('status').run
       expect(out.string).to include('connected but LOCKED', 'diskutil apfs unlockVolume jbod-test-2')
     end
   end
@@ -259,16 +258,33 @@ RSpec.describe EasySync::CLI do
       nas = make_dirs(temp_dir, 'nas').first
       make_dirs(nas, 'A', 'B')
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{9 * 1024 * 1024 * 1024}\t#{p}\n" }.join })
-      expect(cli('jbod', 'plan', '--largest-drive', '8tb').run).to eq(0)
+      expect(cli('plan', '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include('Judging against the largest drive: 8.0 TB', '18.0 TB in 2 folders, largest A (9.0 TB)',
                                     'recommend split: true', 'bigger than any drive', 'CHANGE the config',
                                     ":path: \"#{nas}\"\n    :split: true")
     end
 
     it 'rejects a size it cannot parse' do
-      expect(cli('jbod', 'plan', '--largest-drive', 'huge').run).to eq(1)
+      expect(cli('plan', '--largest-drive', 'huge').run).to eq(1)
       expect(err.string).to include('cannot parse size')
     end
+  end
+
+  it 'accepts the 1.x `jbod` prefix as an alias' do
+    m = manifest
+    m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+    m.close
+    expect(cli('jbod', 'status').run).to eq(0)
+    expect(out.string).to include('backup-01-3tb')
+  end
+
+  it 'writes a run log for every sync and echoes the same lines to the terminal' do
+    fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+    cli('sync').run   # fails fast: the configured source is not mounted
+    logs = Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log'))
+    expect(logs.size).to eq(1)
+    expect(File.read(logs.first)).to include('easy_sync 2.0.0', 'rsync 3.5.0')
+    expect(out.string).to include('easy_sync 2.0.0')
   end
 
   it 'prints usage for unknown commands' do
@@ -276,8 +292,9 @@ RSpec.describe EasySync::CLI do
     expect(err.string).to include('Unknown command: bogus', 'Usage:')
   end
 
-  it 'runs the snapshot tasks when called with no arguments' do
+  it 'prints usage when called with no arguments' do
     expect(cli.run).to eq(0)
+    expect(out.string).to include('Usage: easy_sync')
     expect(fake_shell.calls).to be_empty
   end
 end

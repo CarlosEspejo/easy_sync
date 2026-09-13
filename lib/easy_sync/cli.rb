@@ -1,52 +1,54 @@
 # frozen_string_literal: true
 
 require 'optparse'
-require 'securerandom'
 
 module EasySync
-  # Command-line entry point.
-  #
-  #   easy_sync                       run the incremental snapshot tasks (original behaviour)
-  #   easy_sync snapshot              same
-  #   easy_sync jbod sync             mirror NAS folders onto the JBOD drives
-  #   easy_sync jbod register-drive   register a mounted drive
-  #   easy_sync jbod status           print drives and folders
-  #   easy_sync jbod history [FOLDER] print placement history
-  #   easy_sync jbod reassign FOLDER DRIVE   record a manual move (no data is moved)
-  #   easy_sync jbod dashboard        regenerate the HTML report only
+  # Command-line entry point. `easy_sync jbod <command>` (the 1.x spelling)
+  # is accepted as an alias for `easy_sync <command>`.
   class CLI
     USAGE = <<~TEXT
-      Usage: easy_sync [--config PATH] [snapshot]
-             easy_sync [--config PATH] jbod sync [--dry-run] [--no-purge] [--no-keep-awake]
-             easy_sync jbod register-drive MOUNT_POINT --name NAME [--serial SERIAL]
-             easy_sync jbod status
-             easy_sync jbod history [FOLDER]
-             easy_sync jbod reassign FOLDER DRIVE_NAME [--note TEXT]
-             easy_sync jbod pending
-             easy_sync jbod plan [--largest-drive SIZE]
-             easy_sync jbod dashboard
+      Usage: easy_sync [--config PATH] <command>
+
+        sync [--dry-run] [--no-purge] [--no-keep-awake]   mirror the shares onto the drives
+        register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]
+        status                                             drives and folders, in the terminal
+        history [FOLDER]                                   where has a folder lived?
+        reassign FOLDER DRIVE_NAME [--note TEXT]           record a move you made by hand (moves no data)
+        pending                                            deletion candidates and their expiry dates
+        plan [--largest-drive SIZE]                        split or whole? measured recommendation per share
+        dashboard                                          regenerate the HTML report only
 
       --config PATH overrides the config file (default ~/.easy_sync/config.yml);
       the EASY_SYNC_CONFIG environment variable does the same.
     TEXT
 
+    COMMANDS = %w[sync register-drive status history reassign pending plan dashboard].freeze
+
     def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV,
-                   keep_awake: Jbod::KeepAwake.new)
+                   keep_awake: Jbod::KeepAwake.new, clock: Time)
       @argv = argv.dup
       @out = out
       @err = err
       @shell = shell
       @keep_awake = keep_awake
+      @clock = clock
       @config_path = config_path || env['EASY_SYNC_CONFIG'] || Config.default_path
     end
 
     def run
       parse_global_options!
       command = @argv.shift
+      command = @argv.shift if command == 'jbod'   # 1.x alias
       case command
-      when nil, 'snapshot' then SyncRunner.new(config_path: @config_path, shell: @shell, out: @out, err: @err).run
-      when 'jbod' then jbod(@argv.shift, @argv)
-      when '-h', '--help', 'help' then @out.puts USAGE
+      when nil, '-h', '--help', 'help' then @out.puts USAGE
+      when 'sync' then sync(@argv)
+      when 'register-drive' then register_drive(@argv)
+      when 'status' then status
+      when 'history' then history(@argv.first)
+      when 'reassign' then reassign(@argv)
+      when 'pending' then pending
+      when 'plan' then plan(@argv)
+      when 'dashboard' then dashboard
       else
         @err.puts "Unknown command: #{command}\n\n#{USAGE}"
         return 1
@@ -59,9 +61,7 @@ module EasySync
 
     private
 
-    # Global options come before the command: `easy_sync --config x jbod sync`.
-    # Only --config is global, so this is a small hand parser rather than an
-    # OptionParser that would also swallow the subcommands' own flags.
+    # Global options come before the command: `easy_sync --config x sync`.
     def parse_global_options!
       while (arg = @argv.first)
         case arg
@@ -86,7 +86,7 @@ module EasySync
       end
     end
 
-    def settings = config.jbod
+    def settings = config.settings
 
     def manifest
       @manifest ||= Jbod::Manifest.open(settings[:manifest_path])
@@ -96,21 +96,7 @@ module EasySync
       @volume_info ||= Jbod::VolumeInfo.new(mount_root: settings[:mount_root], shell: @shell)
     end
 
-    def jbod(sub, args)
-      case sub
-      when 'sync' then jbod_sync(args)
-      when 'register-drive' then register_drive(args)
-      when 'status' then status
-      when 'history' then history(args.first)
-      when 'reassign' then reassign(args)
-      when 'pending' then pending
-      when 'plan' then plan(args)
-      when 'dashboard' then dashboard
-      else raise Error, "unknown jbod command #{sub.inspect}\n\n#{USAGE}"
-      end
-    end
-
-    def jbod_sync(args)
+    def sync(args)
       opts = { dry_run: false, purge: nil, keep_awake: settings.fetch(:keep_awake, true) }
       OptionParser.new do |o|
         o.on('--dry-run', 'Show what rsync and the purge would do without changing anything') { opts[:dry_run] = true }
@@ -118,11 +104,17 @@ module EasySync
         o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
       end.parse!(args)
       version = Jbod::Mirror.check_version!(@shell)
-      @out.puts "Using rsync #{version}#{' (dry run)' if opts[:dry_run]}"
       Jbod::RunLock.new(settings[:lock_path]).acquire do
-        @out.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
-        Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out,
-                                   dry_run: opts[:dry_run], purge: opts[:purge]).run
+        log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock)
+        begin
+          log.puts "easy_sync #{VERSION} · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')} · rsync #{version}" \
+                   "#{' · DRY RUN' if opts[:dry_run]} · log #{log.path}"
+          log.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
+          Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell.with_out(log),
+                                     out: log, dry_run: opts[:dry_run], purge: opts[:purge], clock: @clock).run
+        ensure
+          log.close
+        end
       end
     end
 
@@ -167,7 +159,7 @@ module EasySync
         @out.puts "  recommend split: #{r.recommend_split.nil? ? '?' : r.recommend_split}  (#{r.reason})"
         @out.puts '  -> CHANGE the config to match' if r.mismatch?
       end
-      @out.puts "\nPaste into :jbod: :sources: :"
+      @out.puts "\nPaste into :sources: :"
       rows.each do |r|
         split = r.recommend_split.nil? ? r.source.split : r.recommend_split
         @out.puts "  - :path: \"#{r.source.path}\"\n    :split: #{split}"
@@ -211,7 +203,7 @@ module EasySync
 
     # --serial wins outright. Otherwise try the hardware serial via smartctl
     # first (a real, stable serial that survives a reformat), falling back to
-    # the APFS Volume UUID smartctl can't reach the drive (no smartctl
+    # the APFS Volume UUID when smartctl can't reach the drive (no smartctl
     # installed, needs elevated privileges, or - common for external USB
     # enclosures - the bridge chip doesn't pass SMART through at all).
     def resolve_serial(explicit, mount_point, uuid)

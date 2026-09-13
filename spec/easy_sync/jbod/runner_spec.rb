@@ -6,7 +6,7 @@ RSpec.describe EasySync::Jbod::Runner do
   let(:tv) { File.join(mount_root, 'tv') }           # split: each show placed on its own
   let(:dashboard_path) { File.join(temp_dir, 'out', 'dashboard.html') }
   let(:settings) do
-    EasySync::Config::JBOD_DEFAULTS.merge(sources: [{ path: photos, split: false }, { path: tv, split: true }],
+    EasySync::Config.defaults.merge(sources: [{ path: photos, split: false }, { path: tv, split: true }],
                                           mount_root: mount_root, dashboard_path: dashboard_path,
                                           exclude_folders: ['#recycle', '@eaDir'])
   end

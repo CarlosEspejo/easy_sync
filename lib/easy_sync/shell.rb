@@ -15,6 +15,9 @@ module EasySync
       @out = out
     end
 
+    # The same shell, echoing to a different destination (a run log tee).
+    def with_out(out) = self.class.new(out: out)
+
     # Runs +argv+ (an Array, never a shell string) and streams its output.
     def run(argv, echo: true)
       lines = []

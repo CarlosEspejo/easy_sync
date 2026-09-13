@@ -4,29 +4,27 @@ require 'yaml'
 require 'fileutils'
 
 module EasySync
-  # Loads ~/.easy_sync/config.yml, generating a sample file on first run.
-  # A config left at the original gem's location, ~/.easy_syncrc.yml, is moved
-  # into place the first time it is looked for.
+  # Loads ~/.easy_sync/config.yml, writing a commented sample on first run.
   #
-  # The file has two independent sections:
-  #   :logging / :tasks  -> the original incremental snapshot mode
-  #   :jbod              -> folder-level mirroring onto JBOD drives
+  # The file is flat: its keys are the settings below. Two older layouts are
+  # still read: a file at ~/.easy_syncrc.yml is moved into place, and a file
+  # with the settings nested under a :jbod: key (with the removed snapshot
+  # mode's :logging:/:tasks: beside it) is unwrapped.
   class Config
     HOME_DIR = File.join(Dir.home, '.easy_sync')
     DEFAULT_FILENAME = 'config.yml'
     LEGACY_PATH = File.join(Dir.home, '.easy_syncrc.yml')
+    LEGACY_KEYS = %i[jbod logging tasks].freeze
 
-    JBOD_DEFAULTS = {
+    DEFAULTS = {
       sources: [
         { path: '/Volumes/photos', split: false },  # the whole share is one unit
         { path: '/Volumes/tv', split: true },       # each show is placed on its own
         { path: '/Volumes/movies', split: true }
       ],
       mount_root: '/Volumes',
-      manifest_path: File.join(HOME_DIR, 'manifest.sqlite3'),
-      dashboard_path: File.join(HOME_DIR, 'dashboard.html'),
-      lock_path: File.join(HOME_DIR, 'jbod.lock'),   # refuses a second concurrent `jbod sync`
       keep_awake: true,     # hold off idle sleep (caffeinate) for the length of a sync, on macOS
+      keep_logs: 20,        # run logs kept under log_dir
       purge: true,          # remove files from the backup once they have been gone from the NAS long enough
       grace_days: 7,        # ...at least this many days
       grace_runs: 2,        # ...and confirmed missing on at least this many separate runs
@@ -38,29 +36,44 @@ module EasySync
       rsync_args: []
     }.freeze
 
+    PATH_KEYS = %i[manifest_path dashboard_path lock_path log_dir mount_root].freeze
+
+    SAMPLE = <<~YAML
+      # easy_sync configuration. Each source is a NAS share mounted on this Mac.
+      # `easy_sync plan` measures them and recommends split true/false for each.
+      :sources:
+      - :path: "/Volumes/photos"
+        :split: false                         # the whole share is one unit on one drive
+      - :path: "/Volumes/tv"
+        :split: true                          # each subfolder is placed on its own
+      - :path: "/Volumes/movies"
+        :split: true
+      :mount_root: "/Volumes"                 # where the backup drives appear
+      :manifest_path: "~/.easy_sync/manifest.sqlite3"
+      :dashboard_path: "~/.easy_sync/dashboard.html"
+      :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent sync
+      :log_dir: "~/.easy_sync/logs"           # one log per sync run
+      :keep_logs: 20
+      :keep_awake: true                       # caffeinate for the length of a sync
+      :purge: true                            # delete from the drives only after...
+      :grace_days: 7                          # ...this many days missing on the NAS
+      :grace_runs: 2                          # ...confirmed on this many separate runs
+      :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
+                         ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
+      :rsync_args: []                         # extra arguments appended to every rsync
+    YAML
+
     def self.default_path
       File.join(HOME_DIR, DEFAULT_FILENAME)
     end
 
-    # JBOD_DEFAULTS with the home-relative paths resolved now rather than at
-    # load time, so HOME_DIR is honoured wherever it points (tests redirect it).
-    def self.jbod_defaults
-      JBOD_DEFAULTS.merge(manifest_path: File.join(HOME_DIR, 'manifest.sqlite3'),
-                          dashboard_path: File.join(HOME_DIR, 'dashboard.html'),
-                          lock_path: File.join(HOME_DIR, 'jbod.lock'))
-    end
-
-    def self.sample
-      {
-        logging: :on,
-        tasks: [{
-          sync_name: 'sample_sync',
-          source: '[/example/path]',
-          destination: '[/example/path]',
-          exclude_file: '[/example/path]'
-        }],
-        jbod: jbod_defaults
-      }
+    # DEFAULTS with the home-relative paths resolved now rather than at load
+    # time, so HOME_DIR is honoured wherever it points (tests redirect it).
+    def self.defaults
+      DEFAULTS.merge(manifest_path: File.join(HOME_DIR, 'manifest.sqlite3'),
+                     dashboard_path: File.join(HOME_DIR, 'dashboard.html'),
+                     lock_path: File.join(HOME_DIR, 'jbod.lock'),
+                     log_dir: File.join(HOME_DIR, 'logs'))
     end
 
     # Loads the config at +path+. If it is missing: moves a legacy
@@ -84,28 +97,24 @@ module EasySync
 
     def self.write_sample(path)
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, sample.to_yaml)
+      File.write(path, SAMPLE)
     end
 
     attr_reader :data, :path
 
+    # +data+ may be the flat layout or the old nested one.
     def initialize(data, path: nil)
-      @data = data
+      @data = data.key?(:jbod) ? data[:jbod].to_h.merge(data.reject { |k, _| LEGACY_KEYS.include?(k) }) : data
+      @data = @data.reject { |k, _| LEGACY_KEYS.include?(k) }
       @path = path
     end
 
-    def [](key) = data[key]
+    def [](key) = settings[key]
 
-    def logging = data.fetch(:logging, :off)
-
-    def tasks = data.fetch(:tasks, [])
-
-    PATH_KEYS = %i[manifest_path dashboard_path lock_path mount_root].freeze
-
-    # Merged JBOD settings with `~` expanded in every path, so a config copied
+    # Merged settings with `~` expanded in every path, so a config copied
     # from the README ("~/.easy_sync/...") never creates a literal "~" directory.
-    def jbod
-      merged = self.class.jbod_defaults.merge(data.fetch(:jbod, {}))
+    def settings
+      merged = self.class.defaults.merge(data)
       PATH_KEYS.each { |k| merged[k] = File.expand_path(merged[k]) if merged[k].is_a?(String) }
       merged[:sources] = Array(merged[:sources]).map do |e|
         e.is_a?(Hash) ? e.merge(path: File.expand_path(e[:path].to_s)) : File.expand_path(e.to_s)

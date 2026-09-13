@@ -27,6 +27,8 @@ class FakeShell
 
   def capture(argv) = run(argv, echo: false)
 
+  def with_out(_out) = self
+
   def calls_to(command) = calls.select { |argv| argv.first == command }
 
   private

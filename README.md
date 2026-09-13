@@ -1,13 +1,14 @@
 easy_sync
 =========
 
-A small Ruby wrapper around `rsync` with two modes:
+Folder-level `rsync` backups from a NAS onto a set of independently mounted
+drives (JBOD, no RAID: different sizes, each used to the full). It mirrors each
+folder of your shares onto one of the drives, keeps a SQLite manifest of which
+folder lives where, waits out a grace period before deleting anything, and
+writes an HTML status dashboard with SMART health after every run.
 
-* **Snapshot mode** (the original): dated, hard-linked incremental snapshots of a
-  source directory, keeping the last five.
-* **JBOD mode** (new): mirrors each top-level folder from a NAS share onto one of
-  several independently mounted drives, keeps a SQLite manifest of which folder
-  lives where, and writes an HTML status dashboard after every run.
+Version 2 dropped the original snapshot mode (dated hard-linked snapshots of
+one directory); it lives on in the 1.x tags.
 
 Requires Ruby 3.3 or newer (4.0 works) and rsync 3.0 or newer (`brew install rsync`; the copy
 macOS ships is too old for the deletion reporting described below).
@@ -20,54 +21,50 @@ macOS ships is too old for the deletion reporting described below).
 ### Configuration
 
 Everything the tool keeps on the Mac lives in `~/.easy_sync/`: `config.yml`,
-`manifest.sqlite3`, `dashboard.html` and the run lock. Running `easy_sync` once
-writes a sample `config.yml` there (a config from the original gem at
-`~/.easy_syncrc.yml` is moved into place automatically). To use
+`manifest.sqlite3`, `dashboard.html`, the run lock, and `logs/` with one log per
+sync. Running any command once writes a commented sample `config.yml` there (a
+1.x config at `~/.easy_syncrc.yml`, or one with the settings nested under
+`:jbod:`, is still read). To use
 a different file (say, one that points at a couple of scratch USB drives while
 you test, without touching the real one), pass `--config PATH` before the
 command, or set `EASY_SYNC_CONFIG`:
 
-    easy_sync --config ~/jbod-test.yml jbod sync
-    EASY_SYNC_CONFIG=~/jbod-test.yml easy_sync jbod status
+    easy_sync --config ~/jbod-test.yml sync
+    EASY_SYNC_CONFIG=~/jbod-test.yml easy_sync status
 
 ```yaml
-:logging: :on
-:tasks:                      # snapshot mode
-- :sync_name: sample_sync
-  :source: "[/example/path]"
-  :destination: "[/example/path]"
-  :exclude_file: "[/example/path]"
-:jbod:                       # JBOD mode
-  :sources:                               # each Synology share, mounted on the Mac
-  - :path: "/Volumes/photos"
-    :split: false                         # the whole share is one unit
-  - :path: "/Volumes/tv"
-    :split: true                          # each subfolder (show) is placed on its own
-  - :path: "/Volumes/movies"
-    :split: true
-  :mount_root: "/Volumes"                 # where the backup drives appear
-  :manifest_path: "~/.easy_sync/manifest.sqlite3"
-  :dashboard_path: "~/.easy_sync/dashboard.html"
-  :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent `jbod sync`
-  :keep_awake: true                       # caffeinate for the length of a sync (macOS)
-  :purge: true                            # remove backed-up files once they have been gone from the NAS...
-  :grace_days: 7                          # ...for at least this many days
-  :grace_runs: 2                          # ...and confirmed missing on this many separate runs
-  :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
-                     ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
-                                          # never placed, and passed to every rsync as --exclude at any depth
-  :rsync_args: []                         # extra arguments appended to every rsync
+:sources:                               # each Synology share, mounted on the Mac
+- :path: "/Volumes/photos"
+  :split: false                         # the whole share is one unit
+- :path: "/Volumes/tv"
+  :split: true                          # each subfolder (show) is placed on its own
+- :path: "/Volumes/movies"
+  :split: true
+:mount_root: "/Volumes"                 # where the backup drives appear
+:manifest_path: "~/.easy_sync/manifest.sqlite3"
+:dashboard_path: "~/.easy_sync/dashboard.html"
+:lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent sync
+:log_dir: "~/.easy_sync/logs"           # one log per sync run
+:keep_logs: 20
+:keep_awake: true                       # caffeinate for the length of a sync (macOS)
+:purge: true                            # remove backed-up files once they have been gone from the NAS...
+:grace_days: 7                          # ...for at least this many days
+:grace_runs: 2                          # ...and confirmed missing on this many separate runs
+:exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
+                   ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
+                                        # never placed, and passed to every rsync as --exclude at any depth
+:rsync_args: []                         # extra arguments appended to every rsync
 ```
 
-### JBOD mode
+### How it works
 
 The drives are plain APFS volumes, no RAID, each used at full capacity. Mount and
 unlock them yourself first; the tool never tries to unlock anything.
 
 **Register each drive once** while it is mounted:
 
-    easy_sync jbod register-drive /Volumes/backup-04-8tb
-    easy_sync jbod register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # override auto-detection
+    easy_sync register-drive /Volumes/backup-04-8tb
+    easy_sync register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # override auto-detection
 
 This records the drive in the manifest (serial number, name, capacity) and
 creates a `.easy_sync/` folder at the root of the volume holding `drive.json`,
@@ -97,7 +94,7 @@ one drive, so each of its subfolders is placed independently and ends up at
 `/Volumes/<drive>/tv/<Show Name>`. Either way the manifest key is the path
 relative to the mount root: `photos`, `tv/Show Name`.
 
-**Not sure whether to split a share?** `easy_sync jbod plan` measures every
+**Not sure whether to split a share?** `easy_sync plan` measures every
 configured share (one `du` per share: seconds for a few thousand single-file
 movie folders, minutes for a share with hundreds of thousands of files)
 and prints a recommendation against the largest drive in the fleet, or against
@@ -114,7 +111,7 @@ dashboard lists it until you move it into a folder on the NAS.
 
 **Sync** whenever you like:
 
-    easy_sync jbod sync             # add --dry-run to see what rsync would do
+    easy_sync sync                  # add --dry-run to see what rsync would do
 
 Each run:
 
@@ -132,7 +129,7 @@ Each run:
    If a folder that's already assigned has since outgrown its drive's free
    space, the sync fails with a distinct "drive full" status (rather than a
    bare rsync error) on both the terminal and the dashboard; move it to a
-   roomier drive with `jbod reassign`.
+   roomier drive with `easy_sync reassign`.
 5. Files that rsync reports as gone from the NAS are noted (see below), and any
    that have been gone long enough are removed from the drives.
 6. Drive usage, every rsync run, and the dashboard are updated.
@@ -141,7 +138,7 @@ Measuring a new folder means a `du` over the network, which can take a while
 per folder on a first run with hundreds of them; the run says how many it has
 to measure up front and names each one as it goes, so it never looks hung.
 
-Only one `jbod sync` runs at a time: a PID file at `lock_path` refuses a second
+Only one `sync` runs at a time: a PID file at `lock_path` refuses a second
 concurrent run (with a clear message naming the running PID) rather than letting
 two syncs race the NAS or the manifest. A stale lock — its process no longer
 running — is reclaimed automatically.
@@ -164,26 +161,33 @@ audit table and shown on the dashboard.
 **The first sync is long.** A 30 TB library over gigabit Ethernet is three to
 four days. Runs are resumable per folder (a folder interrupted mid-copy is simply
 synced again next time, and nothing is ever deleted by the copy), so Ctrl-C is
-safe. The Mac must not sleep, so `jbod sync` keeps it awake itself: it starts
+safe. The Mac must not sleep, so `sync` keeps it awake itself: it starts
 `caffeinate -i -w <its own pid>`, which holds off idle sleep exactly as long as
 the sync runs and exits with it. Turn that off with `--no-keep-awake` or
 `:keep_awake: false`. The display may still lock; on a laptop keep the lid open.
 
-    easy_sync jbod pending          # what is scheduled, and when
-    easy_sync jbod sync --no-purge  # sync without deleting anything this time
-    easy_sync jbod sync --dry-run   # show what rsync and the purge would do
+    easy_sync pending               # what is scheduled, and when
+    easy_sync sync --no-purge       # sync without deleting anything this time
+    easy_sync sync --dry-run        # show what rsync and the purge would do
 
 One folder always lives entirely on one drive, so restoring by hand is just a
 matter of browsing `/Volumes/<drive>/<folder>`.
 
 **Other commands:**
 
-    easy_sync jbod status                          # drives and folders, in the terminal
-    easy_sync jbod history [FOLDER]                # where has this folder lived?
-    easy_sync jbod reassign FOLDER DRIVE_NAME      # record a move you made by hand (moves no data)
-    easy_sync jbod pending                         # deletion candidates and their expiry dates
-    easy_sync jbod plan [--largest-drive 8tb]      # split or whole? measured recommendation per share
-    easy_sync jbod dashboard                       # regenerate the HTML report only
+    easy_sync status                          # drives and folders, in the terminal
+    easy_sync history [FOLDER]                # where has this folder lived?
+    easy_sync reassign FOLDER DRIVE_NAME      # record a move you made by hand (moves no data)
+    easy_sync pending                         # deletion candidates and their expiry dates
+    easy_sync plan [--largest-drive 8tb]      # split or whole? measured recommendation per share
+    easy_sync dashboard                       # regenerate the HTML report only
+
+`easy_sync jbod <command>`, the 1.x spelling, still works.
+
+**Every sync writes a log** to `~/.easy_sync/logs/sync-<timestamp>.log`: the
+same lines you see in the terminal, minus rsync's in-place progress updates,
+so a multi-day run keeps a record even if the terminal is gone. The newest
+`keep_logs` are kept.
 
 ### Dashboard
 
@@ -218,14 +222,6 @@ SQLite, at `manifest_path`. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `sync_runs` | one row per rsync invocation with exit status and `--stats` byte counts |
 | `pending_deletions` | paths rsync reports as gone from the NAS, with `first_missing_at` and `missing_runs` |
 | `deletions` | audit log of everything actually removed from a drive |
-
-### Snapshot mode
-
-    easy_sync            # or: easy_sync snapshot
-
-Runs each task in `:tasks`, creating `destination/YYYY-MM-DD` with
-`--link-dest` against the previous snapshot and pruning to the last five dated
-snapshots after a successful run.
 
 ### Development
 
