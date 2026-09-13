@@ -1,41 +1,43 @@
 easy_sync
 =========
 
-Folder-level `rsync` backups from a NAS onto a set of independently mounted
-drives (JBOD, no RAID: different sizes, each used to the full). It mirrors each
-folder of your shares onto one of the drives, keeps a SQLite manifest of which
-folder lives where, waits out a grace period before deleting anything, and
-writes an HTML status dashboard with SMART health after every run.
+Backs up a NAS onto a set of independent drives, one folder at a time.
 
-Version 2 dropped the original snapshot mode (dated hard-linked snapshots of
-one directory); it lives on in the 1.x tags.
+The drives are plain APFS volumes of different sizes, each used to the full, no
+RAID. `easy_sync` decides which drive each folder lives on, mirrors it there with
+`rsync`, remembers the placement in a SQLite manifest, waits out a grace period
+before deleting anything, and writes an HTML dashboard with each drive's SMART
+health. One folder always lives whole on one drive, so a restore is just
+browsing `/Volumes/<drive>/<folder>` in the Finder.
 
-Requires Ruby 3.3 or newer (4.0 works) and rsync 3.0 or newer (`brew install rsync`; the copy
-macOS ships is too old for the deletion reporting described below).
+Requires macOS, Ruby 3.3 or newer, and rsync 3.0 or newer (`brew install rsync`;
+the copy macOS ships is too old). `smartctl` (`brew install smartmontools`) is
+optional and adds drive health.
 
-### Installation
+Quick start
+-----------
 
-    gem build easy_sync.gemspec
-    gem install ./easy_sync-*.gem
+    gem build easy_sync.gemspec && gem install ./easy_sync-*.gem
 
-### Configuration
+    easy_sync                        # first run writes ~/.easy_sync/config.yml
+    $EDITOR ~/.easy_sync/config.yml  # list your shares under :sources:
+    easy_sync register-drive /Volumes/backup-01-3tb     # once per drive, while mounted
+    easy_sync plan                   # measures each share: split it or keep it whole?
+    easy_sync sync --dry-run         # what would be placed and copied, nothing written
+    easy_sync sync                   # the real thing
+    open ~/.easy_sync/dashboard.html
 
-Everything the tool keeps on the Mac lives in `~/.easy_sync/`: `config.yml`,
-`manifest.sqlite3`, `dashboard.html`, the run lock, and `logs/` with one log per
-sync. Running any command once writes a commented sample `config.yml` there (a
-1.x config at `~/.easy_syncrc.yml`, or one with the settings nested under
-`:jbod:`, is still read). To use
-a different file (say, one that points at a couple of scratch USB drives while
-you test, without touching the real one), pass `--config PATH` before the
-command, or set `EASY_SYNC_CONFIG`:
+Mount and unlock the drives yourself first; the tool never unlocks anything.
 
-    easy_sync --config ~/jbod-test.yml sync
-    EASY_SYNC_CONFIG=~/jbod-test.yml easy_sync status
+Configuration
+-------------
+
+`~/.easy_sync/config.yml`, written with comments on first run:
 
 ```yaml
-:sources:                               # each Synology share, mounted on the Mac
+:sources:                               # each NAS share, as mounted on the Mac
 - :path: "/Volumes/photos"
-  :split: false                         # the whole share is one unit
+  :split: false                         # the whole share is one unit on one drive
 - :path: "/Volumes/tv"
   :split: true                          # each subfolder (show) is placed on its own
 - :path: "/Volumes/movies"
@@ -46,184 +48,193 @@ command, or set `EASY_SYNC_CONFIG`:
 :lock_path: "~/.easy_sync/jbod.lock"    # refuses a second concurrent sync
 :log_dir: "~/.easy_sync/logs"           # one log per sync run
 :keep_logs: 20
-:keep_awake: true                       # caffeinate for the length of a sync (macOS)
-:purge: true                            # remove backed-up files once they have been gone from the NAS...
-:grace_days: 7                          # ...for at least this many days
-:grace_runs: 2                          # ...and confirmed missing on this many separate runs
+:keep_awake: true                       # caffeinate for the length of a sync
+:purge: true                            # delete from the drives only after...
+:grace_days: 7                          # ...this many days missing on the NAS
+:grace_runs: 2                          # ...confirmed on this many separate runs
 :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                    ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
-                                        # never placed, and passed to every rsync as --exclude at any depth
+                                        # never placed, and excluded from every rsync at any depth
 :rsync_args: []                         # extra arguments appended to every rsync
 ```
 
-### How it works
+To keep a test setup apart from the real one, pass `--config PATH` before the
+command or set `EASY_SYNC_CONFIG`:
 
-The drives are plain APFS volumes, no RAID, each used at full capacity. Mount and
-unlock them yourself first; the tool never tries to unlock anything.
+    easy_sync --config ~/jbod-test.yml sync
 
-**Register each drive once** while it is mounted:
+A 1.x config (`~/.easy_syncrc.yml`, or settings nested under `:jbod:`) is still
+read.
+
+Drives
+------
 
     easy_sync register-drive /Volumes/backup-04-8tb
-    easy_sync register-drive /Volumes/backup-01-3tb --serial WD-WX12345678   # override auto-detection
+    easy_sync register-drive /Volumes/backup-01-3tb --name drive-one --serial WD-WX12345678
 
-This records the drive in the manifest (serial number, name, capacity) and
-creates a `.easy_sync/` folder at the root of the volume holding `drive.json`,
-the drive's identity. After every sync that folder also receives a fresh copy of
-the manifest and of the config, so any single surviving drive can rebuild the
-map of where everything lives even if the Mac is gone.
+Registering records the drive's serial, name and capacity in the manifest and
+creates `.easy_sync/` at the root of the volume. The serial comes from `smartctl`
+when the enclosure passes SMART through, otherwise from the APFS Volume UUID;
+`--serial` overrides both.
 
-Without `--serial`, the serial is auto-detected: `register-drive` first tries the
-hardware serial via `smartctl` (a real, stable serial that survives a reformat),
-resolving the volume to its physical disk itself rather than trusting `smartctl`'s
-own exit status, which is inconsistent across device classes. If that doesn't
-resolve — `smartctl` isn't installed, or, common for external USB enclosures, the
-bridge chip doesn't pass SMART through at all — it falls back to the APFS Volume
-UUID from `diskutil info`. Either way it prints which source it used.
+**Drives are recognised by that folder, never by mount path.** Every run scans
+the mount root and matches each drive by the serial in its `.easy_sync/drive.json`.
+If macOS mounts a drive as `/Volumes/backup-02-6tb 1`, or the drives come up in
+a different order, the data still goes to the right one. A volume with no marker,
+or a marker the manifest doesn't know, is never written to.
 
-**Drives are identified by the marker, never by mount path.** On every run the
-mount root is scanned for markers and each registered drive is matched by the
-serial inside it. If macOS mounts `backup-02-6tb` as `/Volumes/backup-02-6tb 1`,
-or the drives come up in a different order, the data still goes to the right
-drive. A volume with no marker, or a marker for an unknown serial, is never
-written to.
+After every sync each mounted drive's `.easy_sync/` also receives a fresh copy
+of the manifest and the config, so any single surviving drive can rebuild the
+map of where everything lives even without the Mac.
 
-**Sources.** Each Synology share is mounted separately on the Mac, so each one is
-listed under `:sources:`. A share with `:split: false` is placed as one unit and
-ends up at `/Volumes/<drive>/photos`. A share with `:split: true` is too big for
-one drive, so each of its subfolders is placed independently and ends up at
-`/Volumes/<drive>/tv/<Show Name>`. Either way the manifest key is the path
-relative to the mount root: `photos`, `tv/Show Name`.
+Sources and placement
+---------------------
 
-**Not sure whether to split a share?** `easy_sync plan` measures every
-configured share (one `du` per share: seconds for a few thousand single-file
-movie folders, minutes for a share with hundreds of thousands of files)
-and prints a recommendation against the largest drive in the fleet, or against
-`--largest-drive 8tb` before any drive is registered: a share bigger than the
-largest drive must be split; one over half that size should be, because a whole
-share can never move and will jam its drive as it grows; a small share is
-simplest whole; a share with loose files at its top level must stay whole. It
-ends with a `:sources:` block ready to paste, and flags any share whose current
+A share with `:split: false` is one unit and lands at `/Volumes/<drive>/photos`.
+A share with `:split: true` is too big for one drive, so each of its subfolders
+is placed independently and lands at `/Volumes/<drive>/tv/<Show Name>`.
+
+A new folder goes to the mounted drive with the most free space, if it fits.
+Once placed, a folder never moves: there is no rebalancing. To move one by hand,
+copy it and then record the move with `easy_sync reassign`.
+
+`easy_sync plan` tells you which setting each share needs. It measures every
+share (seconds for thousands of single-file movie folders, minutes for a share
+with hundreds of thousands of files) and judges it against the largest drive,
+or against `--largest-drive 8tb` before any drive is registered:
+
+| share is | recommendation |
+|---|---|
+| larger than the largest drive | must split |
+| more than half the largest drive | should split: whole, it can never move and will jam its drive |
+| smaller | whole is simplest |
+| has loose files at its top level | must stay whole: only folders are placed |
+
+It ends with a `:sources:` block to paste and flags any share whose current
 setting disagrees. It reads only.
 
-Only folders are placed. A file sitting loose at the top level of a split share
-(say `/Volumes/tv/stray.mkv`) is never backed up; the run warns about it and the
-dashboard lists it until you move it into a folder on the NAS.
+Only folders are placed. A loose file at the top of a split share is never
+backed up; the run warns about it and the dashboard lists it until you move it
+into a folder on the NAS.
 
-**Sync** whenever you like:
+A sync run
+----------
 
-    easy_sync sync                  # add --dry-run to see what rsync would do
+    easy_sync sync                  # --dry-run previews; --no-purge skips deletions this time
 
-Each run:
+1. A share whose mount point is missing or empty is skipped with a warning (a
+   stale mount point left by macOS looks exactly like that). If none is
+   available the run stops.
+2. Each folder already in the manifest is mirrored back to its drive. If the
+   drive isn't mounted the folder is skipped, and the warning says whether the
+   drive is merely locked.
+3. Each new folder is measured with `du`, placed, recorded, then mirrored. The
+   run announces how many it has to measure and names each one as it goes.
+4. Files that rsync reports as gone from the NAS are recorded (see below), and
+   any that have been gone long enough are removed from the drives.
+5. Drive usage and SMART health are recorded, the manifest and config are copied
+   to every mounted drive, and the dashboard is regenerated.
 
-1. Skips any share whose mount point is missing or empty (a stale mount point
-   left behind by macOS looks exactly like that), and refuses to start if none
-   is available.
-2. Lists the folders across the available shares.
-3. Folders already in the manifest are mirrored back to their assigned drive.
-   There is no rebalancing, ever. If that drive is not mounted, the folder is
-   skipped with a warning — one that names the drive as locked, rather than just
-   "not mounted", whenever that's detectable (`diskutil apfs list` shows it as a
-   FileVault volume that's connected but not unlocked).
-4. A folder not yet in the manifest is measured with `du`, assigned to the
-   mounted drive with the most free space (if it fits), recorded, then mirrored.
-   If a folder that's already assigned has since outgrown its drive's free
-   space, the sync fails with a distinct "drive full" status (rather than a
-   bare rsync error) on both the terminal and the dashboard; move it to a
-   roomier drive with `easy_sync reassign`.
-5. Files that rsync reports as gone from the NAS are noted (see below), and any
-   that have been gone long enough are removed from the drives.
-6. Drive usage, every rsync run, and the dashboard are updated.
+A folder that has outgrown its drive gets a distinct "drive full" status rather
+than a bare rsync error; reassign it to a roomier drive.
 
-Measuring a new folder means a `du` over the network, which can take a while
-per folder on a first run with hundreds of them; the run says how many it has
-to measure up front and names each one as it goes, so it never looks hung.
+Deletions have a grace period
+-----------------------------
 
-Only one `sync` runs at a time: a PID file at `lock_path` refuses a second
-concurrent run (with a clear message naming the running PID) rather than letting
-two syncs race the NAS or the manifest. A stale lock — its process no longer
-running — is reclaimed automatically.
-
-**Deletions have a grace period.** rsync itself never deletes anything. Each
-folder gets a copy pass with no deletion flags, then a read-only probe
-(`rsync -n --delete --itemize-changes`) that only *reports* the files on the
-drive that no longer exist on the NAS. Each reported path goes into a
-`pending_deletions` table with the time it was first seen missing and a count of
-the runs that confirmed it. A path is removed from its drive only once it has
-been missing for `grace_days` **and** confirmed on `grace_runs` separate runs,
-so a single bad run (a share that was half-mounted, a reorganisation in
-progress) never causes a deletion. If the file reappears on the NAS its
-candidate row is dropped and the clock starts over. A whole folder that vanishes
-from a mounted share follows the same policy; when it expires the folder is
-removed from the drive, its manifest row is deleted, and a `removed` row goes
-into the placement history. Every actual deletion is written to a `deletions`
+rsync never deletes anything. Each folder gets a copy pass with no deletion
+flags, then a read-only probe that only *reports* files on the drive that no
+longer exist on the NAS. Each reported path becomes a candidate with the time it
+was first seen missing and a count of the runs that confirmed it. A candidate is
+removed only once it has been missing for `grace_days` **and** confirmed on
+`grace_runs` separate runs, so one bad run (a half-mounted share, a
+reorganisation in progress) never deletes anything. A file that reappears is
+forgotten and its clock restarts. A whole folder that vanishes from a mounted
+share follows the same rule; on expiry its manifest row is removed and a
+`removed` entry goes into the placement history. Every removal is written to an
 audit table and shown on the dashboard.
 
-**The first sync is long.** A 30 TB library over gigabit Ethernet is three to
-four days. Runs are resumable per folder (a folder interrupted mid-copy is simply
-synced again next time, and nothing is ever deleted by the copy), so Ctrl-C is
-safe. The Mac must not sleep, so `sync` keeps it awake itself: it starts
-`caffeinate -i -w <its own pid>`, which holds off idle sleep exactly as long as
-the sync runs and exits with it. Turn that off with `--no-keep-awake` or
-`:keep_awake: false`. The display may still lock; on a laptop keep the lid open.
+    easy_sync pending               # every candidate and when it expires
 
-    easy_sync pending               # what is scheduled, and when
-    easy_sync sync --no-purge       # sync without deleting anything this time
-    easy_sync sync --dry-run        # show what rsync and the purge would do
+Long runs
+---------
 
-One folder always lives entirely on one drive, so restoring by hand is just a
-matter of browsing `/Volumes/<drive>/<folder>`.
+A 30 TB library over gigabit Ethernet takes three to four days the first time.
 
-**Other commands:**
+- Runs are resumable per folder: a folder interrupted mid-copy is synced again
+  next time, and the copy pass never deletes, so Ctrl-C is safe.
+- The Mac stays awake by itself: `sync` starts `caffeinate -i -w <its own pid>`,
+  which holds off idle sleep exactly as long as the run lasts. `--no-keep-awake`
+  or `:keep_awake: false` turns that off. Keep a laptop's lid open.
+- Every run is logged to `~/.easy_sync/logs/sync-<timestamp>.log`: the same
+  lines as the terminal, without rsync's in-place progress updates. The newest
+  `keep_logs` are kept.
+- Only one sync runs at a time. A second one is refused with the running PID; a
+  lock left by a dead process is reclaimed automatically.
 
-    easy_sync status                          # drives and folders, in the terminal
-    easy_sync history [FOLDER]                # where has this folder lived?
-    easy_sync reassign FOLDER DRIVE_NAME      # record a move you made by hand (moves no data)
-    easy_sync pending                         # deletion candidates and their expiry dates
-    easy_sync plan [--largest-drive 8tb]      # split or whole? measured recommendation per share
-    easy_sync dashboard                       # regenerate the HTML report only
+Dashboard
+---------
 
-`easy_sync jbod <command>`, the 1.x spelling, still works.
+Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
+is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
+but reallocated, pending or uncorrectable sectors (or an NVMe critical flag) are
+non-zero, so the drive is starting to fail. Red: the self-test failed. Grey: the
+enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
+the page and a warning on the terminal. Health is read on every sync and at
+registration, via `smartctl` on the physical disk, falling back to `diskutil`.
 
-**Every sync writes a log** to `~/.easy_sync/logs/sync-<timestamp>.log`: the
-same lines you see in the terminal, minus rsync's in-place progress updates,
-so a multi-day run keeps a record even if the terminal is gone. The newest
-`keep_logs` are kept.
+Folders are grouped by share so thousands of them stay readable: each drive tile
+shows one line per share with a count and total size, and the folders table has
+a collapsible section per share with a "Needs attention" list on top for
+anything failed, full, missing or unmounted. Pending and completed deletions,
+placement history and recent runs follow.
 
-### Dashboard
+Commands
+--------
 
-Drive tiles are coloured by **SMART health, never by fullness**: a JBOD drive
-sitting at 97% is doing its job. On every sync (and at registration) each
-mounted drive's health is read with `smartctl -a` on its physical disk (plainly,
-then through a SAT USB bridge), falling back to the one-word SMART Status from
-`diskutil info`. Green means the self-assessment passed with no bad-sector
-counters; amber means it passed but reallocated, pending or uncorrectable
-sectors (or an NVMe critical flag) are non-zero, i.e. the drive is starting to
-fail; red means the self-assessment itself failed; grey means the enclosure
-doesn't expose SMART at all. Amber and red drives also get an alert at the top
-of the page and a warning on the terminal, with the counters.
-
-The HTML report groups everything by share so a library of several hundred
-movie and show folders stays readable: each drive tile shows one line per share
-with a folder count and total size (the full list is a click away), and the
-folders table has one collapsible section per share, with a "Needs attention"
-section at the top listing every folder that is not in a good state (failed,
-drive full, missing on the NAS, share or drive not mounted). Shares with a
-handful of folders start expanded; big ones start collapsed.
-
-### Manifest schema
-
-SQLite, at `manifest_path`. Timestamps are ISO 8601 UTC, sizes are bytes.
-
-| table | purpose |
+| command | does |
 |---|---|
-| `drives` | `serial_number` (PK), `friendly_name`, `capacity_bytes`, `added_date`, `volume_uuid`, last seen used/free |
-| `folders` | `folder_path` (PK), `drive_serial` (FK), `size_bytes`, `assigned_at`, `last_synced_at`, `last_sync_status` |
-| `placement_history` | every `assigned` / `reassigned` / `removed` event, so "where did this used to live" is always answerable |
-| `sync_runs` | one row per rsync invocation with exit status and `--stats` byte counts |
-| `pending_deletions` | paths rsync reports as gone from the NAS, with `first_missing_at` and `missing_runs` |
+| `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
+| `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
+| `plan [--largest-drive 8tb]` | measure each share and recommend split or whole |
+| `status` | drives, health and folders, in the terminal |
+| `pending` | deletion candidates and their expiry dates |
+| `history [FOLDER]` | where a folder has lived |
+| `reassign FOLDER DRIVE [--note TEXT]` | record a move you made by hand (moves no data) |
+| `dashboard` | regenerate the HTML report only |
+
+`--config PATH` goes before the command. `easy_sync jbod <command>`, the 1.x
+spelling, still works.
+
+Where things live
+-----------------
+
+| on the Mac, `~/.easy_sync/` | on each drive, `<drive>/.easy_sync/` |
+|---|---|
+| `config.yml` | `drive.json`, the drive's identity |
+| `manifest.sqlite3` | `manifest.sqlite3`, a copy as of the last sync |
+| `dashboard.html` | `config.yml`, a copy as of the last sync |
+| `logs/sync-*.log` | `README.txt` |
+| `jbod.lock` while a sync runs | |
+
+Manifest schema
+---------------
+
+SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
+
+| table | holds |
+|---|---|
+| `drives` | serial (PK), name, capacity, added date, volume UUID, last seen usage, SMART status and detail |
+| `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
+| `placement_history` | every `assigned`, `reassigned` and `removed` event |
+| `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
+| `pending_deletions` | paths gone from the NAS, first seen and runs confirmed |
 | `deletions` | audit log of everything actually removed from a drive |
 
-### Development
+Development
+-----------
 
     bundle install
-    bundle exec rake        # runs the RSpec suite; no real drives or rsync needed
+    bundle exec rake        # RSpec; every external call is faked, no drives or rsync needed
+
+Version 2 removed the original snapshot mode (dated hard-linked snapshots of one
+directory). It lives on in the 1.x tags.
