@@ -297,6 +297,25 @@ module EasySync
         end
       end
 
+      # Audit row for something `clean` removed: excluded junk, gone right away.
+      def record_cleaned(folder_path:, relative_path:, kind:, drive_serial:, at: now)
+        db.execute(<<~SQL, [folder_path, relative_path, kind, drive_serial, at, at])
+          INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        SQL
+      end
+
+      # Drops pending rows whose path has any segment matching one of +patterns+
+      # (shell globs): excluded junk never needs a grace period, on disk or not.
+      def forget_pending_matching(patterns)
+        pending_deletions.each do |p|
+          segments = p.relative_path.split('/')
+          next unless segments.any? { |seg| patterns.any? { |pat| File.fnmatch?(pat, seg, File::FNM_DOTMATCH) } }
+
+          db.execute('DELETE FROM pending_deletions WHERE id = ?', [p.id])
+        end
+      end
+
       def clear_pending(folder_path)
         db.execute('DELETE FROM pending_deletions WHERE folder_path = ?', [folder_path])
       end

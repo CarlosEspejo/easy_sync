@@ -41,15 +41,20 @@ module EasySync
                 @out.puts "  would remove #{folder.folder_path}/#{rel} (#{Placement.format_bytes(size)}) from #{drive.friendly_name}"
                 result.would_remove << [folder.folder_path, rel]
               else
+                kind = File.directory?(path) ? 'dir' : 'file'
                 FileUtils.rm_rf(path)
                 @out.puts "  removed #{folder.folder_path}/#{rel} (#{Placement.format_bytes(size)}) from #{drive.friendly_name}"
                 result.removed << [folder.folder_path, rel]
                 result.bytes += size
-                forget_pending(folder.folder_path, rel)
+                @manifest.record_cleaned(folder_path: folder.folder_path, relative_path: rel, kind: kind,
+                                         drive_serial: drive.serial_number)
               end
             end
           end
         end
+        # Junk that was already gone from the drive (removed by hand, say) may
+        # still have pending rows; those need no grace period either.
+        @manifest.forget_pending_matching(@excludes) unless dry_run
         result
       end
 
@@ -82,14 +87,6 @@ module EasySync
         Dir.glob(File.join(path, '**', '*'), File::FNM_DOTMATCH).sum { |f| File.file?(f) ? File.size(f) : 0 }
       end
 
-      # Pending rows for the removed path and anything beneath it.
-      def forget_pending(folder_path, rel)
-        @manifest.pending_deletions(folder_path: folder_path).each do |p|
-          next unless p.relative_path == rel || p.relative_path.start_with?("#{rel}/")
-
-          @manifest.db.execute('DELETE FROM pending_deletions WHERE id = ?', [p.id])
-        end
-      end
     end
   end
 end

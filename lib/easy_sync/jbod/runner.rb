@@ -61,6 +61,7 @@ module EasySync
         report = Report.new
         folders, available = source_folders(report)
         mounted = refresh_drives(report)
+        copy_state_to_drives(mounted, report)   # at the start too, so an interrupted run still leaves a copy
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         # Free space as placements are made during this run, so two new folders
         # are not both sent to the drive that was emptiest at the start.

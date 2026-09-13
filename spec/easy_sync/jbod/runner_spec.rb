@@ -357,11 +357,11 @@ RSpec.describe EasySync::Jbod::Runner do
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB), mount('backup-05-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
       build_runner(settings.merge(config_path: '/etc/easy.yml')).run
-      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-04-8tb", manifest: manifest, config_path: '/etc/easy.yml')
-      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-05-8tb", manifest: manifest, config_path: '/etc/easy.yml')
+      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-04-8tb", manifest: manifest, config_path: '/etc/easy.yml').twice  # start and end
+      expect(volume_info).to have_received(:copy_state).with("#{mount_root}/backup-05-8tb", manifest: manifest, config_path: '/etc/easy.yml').twice
 
       build_runner(settings, dry_run: true).run
-      expect(volume_info).to have_received(:copy_state).twice   # no new calls
+      expect(volume_info).to have_received(:copy_state).exactly(4).times   # no new calls
     end
 
     it 'warns rather than fails when a drive refuses the state copy' do

@@ -32,6 +32,16 @@ RSpec.describe EasySync::Jbod::Cleaner do
     expect(File).to exist(File.join(root, '.easy_sync', 'drive.json'))
     expect(manifest.pending_deletions.map(&:relative_path)).to eq(['real-missing.txt'])
     expect(out.string).to include('removed pro/#recycle (55 B) from backup-04-8tb')
+    expect(manifest.deletions.map { |d| [d.relative_path, d.kind, d.drive_serial] })
+      .to contain_exactly(['#recycle', 'dir', 'SN-backup-04-8tb'], ['.smbdeleteAAA1', 'file', 'SN-backup-04-8tb'],
+                          ['Course/.DS_Store', 'file', 'SN-backup-04-8tb'])
+  end
+
+  it 'also forgets pending rows for excluded junk that is already gone from the drive' do
+    manifest.reconcile_pending('pro', [['#recycle', 'dir'], ['gone/.DS_Store', 'file'], ['real-missing.txt', 'file']])
+    FileUtils.rm_rf(File.join(root, 'pro', '#recycle'))
+    cleaner.run(mounted_list)
+    expect(manifest.pending_deletions.map(&:relative_path)).to eq(['real-missing.txt'])
   end
 
   it 'in dry-run mode lists but removes nothing' do
