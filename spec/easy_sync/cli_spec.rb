@@ -268,6 +268,72 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'restore' do
+    let(:vol) { make_dirs(mount_root, 'backup-04-8tb').first }
+    let(:tv) { make_dirs(temp_dir, 'nas-tv').first }
+
+    before do
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-04-8tb"}')
+      fake_shell.on('df', output: df_output(vol, capacity_kb: 8_000_000, used_kb: 1_000))
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      File.write(config_path, cfg.merge(sources: [{ path: tv, split: true }]).to_yaml)
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-04-8tb', capacity_bytes: 8 * TB)
+      m.assign_folder('nas-tv/Breaking Bad', 'S1')
+      m.close
+      write_file(File.join(vol, 'nas-tv', 'Breaking Bad', 'S01E01.mp4'), 'x' * 100)
+    end
+
+    it 'rsyncs a folder back onto its NAS share, with --partial and no --delete' do
+      fake_shell.on('rsync', output: rsync_stats)
+      expect(cli('restore', 'nas-tv/Breaking Bad').run).to eq(0)
+      call = fake_shell.calls_to('rsync').first
+      expect(call).to include('-a', '--partial')
+      expect(call).not_to include('--delete')
+      expect(call.last(2)).to eq(["#{File.join(vol, 'nas-tv/Breaking Bad')}/", "#{File.join(tv, 'Breaking Bad')}/"])
+      expect(out.string).to include('Restored 1, skipped 0, failed 0')
+    end
+
+    it 'expands a share name to every folder placed under it' do
+      fake_shell.on('rsync', output: rsync_stats)
+      expect(cli('restore', 'nas-tv').run).to eq(0)
+      expect(fake_shell.calls_to('rsync').size).to eq(1)
+    end
+
+    it 'refuses with no target and no --all' do
+      expect(cli('restore').run).to eq(1)
+      expect(err.string).to include('restore needs a folder or share name')
+    end
+
+    it 'errors on a name matching nothing placed' do
+      expect(cli('restore', 'movies').run).to eq(1)
+      expect(err.string).to include('movies matches no placed folder or share')
+    end
+
+    it '--all restores every folder in the manifest' do
+      m = manifest
+      m.assign_folder('nas-tv/Better Call Saul', 'S1')
+      m.close
+      write_file(File.join(vol, 'nas-tv', 'Better Call Saul', 'S01E01.mp4'))
+      fake_shell.on('rsync', output: rsync_stats)
+      expect(cli('restore', '--all').run).to eq(0)
+      expect(fake_shell.calls_to('rsync').size).to eq(2)
+    end
+
+    it 'takes the sync lock for a real restore but not for --dry-run' do
+      lock_path = File.join(temp_dir, 'jbod.lock')
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      File.write(config_path, cfg.merge(lock_path: lock_path).to_yaml)
+      File.write(lock_path, Process.pid.to_s)
+      fake_shell.on('rsync', output: rsync_stats)
+
+      expect(cli('restore', 'nas-tv', '--dry-run').run).to eq(0)
+      expect(out.string).to include('Would restore 1')
+      expect(cli('restore', 'nas-tv').run).to eq(1)
+      expect(err.string).to include('already running')
+    end
+  end
+
   describe 'clean' do
     it 'removes excluded junk from mounted drives and reports what it freed' do
       vol = make_dirs(mount_root, 'backup-01-3tb').first

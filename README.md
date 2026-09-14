@@ -7,8 +7,10 @@ The drives are plain APFS volumes of different sizes, each used to the full, no
 RAID. `easy_sync` decides which drive each folder lives on, mirrors it there with
 `rsync`, remembers the placement in a SQLite manifest, waits out a grace period
 before deleting anything, and writes an HTML dashboard with each drive's SMART
-health. One folder always lives whole on one drive, so a restore is just
-browsing `/Volumes/<drive>/<folder>` in the Finder.
+health. One folder always lives whole on one drive, so restoring a single
+folder is just browsing `/Volumes/<drive>/<folder>` in the Finder; `easy_sync
+restore` handles the rest (a whole share, or everything) by finding each
+folder wherever it currently lives and copying it back.
 
 **macOS only.** It leans on `diskutil` for APFS volume identity and lock state
 and on `caffeinate` to keep the Mac awake, so it needs macOS 10.13 High Sierra
@@ -208,6 +210,34 @@ Afterwards, in all three cases:
 A retired drive is never placed on or written to again, even if it turns up
 mounted.
 
+Restoring the NAS
+------------------
+
+If a share gets wiped, reformatted, or you're rebuilding the NAS from
+scratch, `restore` copies folders back the other way: from wherever each one
+currently lives on a drive, onto its NAS share. Unlike `sync`, it **never
+deletes anything** — it only adds and updates files on the NAS, so restoring
+onto a share that already has some files on it (a partial wipe, a share you
+rebuilt by hand) is safe.
+
+    easy_sync restore "tv/Breaking Bad"   # one folder
+    easy_sync restore tv                  # every folder placed under the tv share
+    easy_sync restore --all               # everything in the manifest
+    easy_sync restore tv --dry-run        # show what rsync would do first
+
+Because folders for one share can be spread across several drives (unlike
+the single Drobo volume this replaced), a restore plugs in and pulls from
+whichever drives are mounted; a folder whose drive isn't mounted yet is
+skipped with a warning, and running `restore` again once that drive is
+plugged in picks it up. It needs the share's `:sources:` entry to still
+exist (`add-source` it again first if you'd removed it) so it knows where on
+the NAS each folder belongs. A real restore takes the same lock a `sync`
+does, so the two never run at the same time; `--dry-run` doesn't need it.
+
+Restoring a single file or folder you know the location of is still just
+browsing `/Volumes/<drive>/<folder>` in the Finder — `restore` is for when
+you want the tool to find and reassemble more than that.
+
 Deletions have a grace period
 -----------------------------
 
@@ -283,6 +313,7 @@ Commands
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
+| `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
 | `plan [SHARE ...] [--largest-drive 8tb] [--apply]` | measure each share (or just those named) and recommend split or whole; `--apply` writes it |
 | `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |

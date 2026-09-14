@@ -23,6 +23,7 @@ module EasySync
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
+        ['restore FOLDER|SHARE [...] | --all [--dry-run]', 'copy folders back onto the NAS from wherever they live (reverse of sync)'],
         ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
         ['sources', 'list the configured shares']
       ]]
@@ -68,6 +69,7 @@ module EasySync
       when 'sync' then sync(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)
+      when 'restore' then restore(@argv)
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
@@ -389,6 +391,29 @@ module EasySync
       excludes = (settings[:exclude_folders] + [Jbod::DRIVE_DIR]).map { |e| "--exclude=#{e}" }
       result = @shell.run(['rsync', '-a', '--partial', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
       raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
+    end
+
+    # The reverse of `sync`: copies folders from their drives back onto the
+    # NAS. Never deletes anything already on the NAS. A dry run only reads
+    # (rsync --dry-run plus no directory creation), so it may run alongside a
+    # sync; a real restore takes the same lock a sync does.
+    def restore(args)
+      opts = { dry_run: false, all: false }
+      OptionParser.new do |o|
+        o.on('--dry-run', 'Show what would be restored without changing the NAS') { opts[:dry_run] = true }
+        o.on('--all', 'Restore every folder in the manifest') { opts[:all] = true }
+      end.parse!(args)
+      raise Error, "restore needs a folder or share name (e.g. tv or \"tv/Show Name\"), or --all\n\n#{USAGE}" if args.empty? && !opts[:all]
+
+      restorer = Jbod::Restorer.new(settings, manifest: manifest, shell: @shell, out: @out)
+      folders = opts[:all] ? manifest.folders : restorer.resolve(args)
+      raise Error, 'nothing to restore' if folders.empty?
+
+      lock = opts[:dry_run] ? ->(&blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
+      result = nil
+      lock.call { result = restorer.run(folders, volume_info.mounted_drives(manifest.drives), dry_run: opts[:dry_run]) }
+      @out.puts "\n#{opts[:dry_run] ? 'Would restore' : 'Restored'} #{result.restored.size}, " \
+                "skipped #{result.skipped.size}, failed #{result.failed.size}"
     end
 
     # --serial wins outright. Otherwise try the hardware serial via smartctl
