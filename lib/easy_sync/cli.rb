@@ -417,7 +417,8 @@ module EasySync
     def print_drives
       mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
-      manifest.drives.each do |d|
+      manifest.drives.each_with_index do |d, i|
+        @out.puts if i.positive?
         m = mounted[d.serial_number]
         usage = if m
                   "#{Jbod::Placement.format_bytes(m.used_bytes)} used, #{Jbod::Placement.format_bytes(m.free_bytes)} free at #{m.mount_point}"
