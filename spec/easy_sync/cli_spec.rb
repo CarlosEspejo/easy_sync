@@ -131,6 +131,17 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include('Photos')
     end
 
+    it '--all aligns the drive column even when a folder name is longer than the old fixed width' do
+      m = manifest
+      long_name = 'A' * 40
+      m.assign_folder(long_name, 'S2')
+      m.close
+      expect(cli('status', '--all').run).to eq(0)
+      folder_lines = out.string.split("Folders:\n").last.lines
+      drive_columns = folder_lines.grep(/backup-0[12]/).map { |l| l =~ /backup-0[12]/ }
+      expect(drive_columns.uniq.size).to eq(1)
+    end
+
     it 'counts failed folders in the summary, singular and plural' do
       m = manifest
       m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 23)
