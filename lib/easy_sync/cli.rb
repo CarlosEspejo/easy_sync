@@ -14,7 +14,7 @@ module EasySync
       ]],
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
-        ['status', 'whether a sync is running, drives, their health, and folders'],
+        ['status [--all]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder'],
         ['dashboard', 'regenerate the HTML report']
       ]],
       ['Maintain', [
@@ -68,7 +68,7 @@ module EasySync
       when 'sync' then sync(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)
-      when 'status' then status
+      when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
       when 'pending' then pending
@@ -406,8 +406,15 @@ module EasySync
       end
     end
 
-    def status
+    def status(args)
+      all = false
+      OptionParser.new { |o| o.on('--all', 'List every placed folder, one per line (for piping)') { all = true } }.parse!(args)
       print_run_status
+      print_drives
+      all ? print_all_folders : print_folder_summary
+    end
+
+    def print_drives
       mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
       manifest.drives.each do |d|
@@ -424,8 +431,32 @@ module EasySync
       end
       retired = manifest.drives(include_retired: true).select(&:retired?)
       retired.each { |d| @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} retired #{d.retired_at}" }
+    end
+
+    # Counts only: how many folders are placed/not backed up/empty, and
+    # whether any placed folder's last sync failed. The full per-folder
+    # breakdown lives in the dashboard (grouped per drive) or `status --all`.
+    def print_folder_summary
+      folders = manifest.folders
+      inventory = manifest.source_inventory
       @out.puts "\nFolders:"
+      if inventory.empty?
+        @out.puts "  #{folders.size} placed (#{Jbod::Placement.format_bytes(folders.sum { |f| f.size_bytes.to_i })})"
+      else
+        unplaced = inventory.select { |e| e.state == 'unplaced' }
+        empty = inventory.count { |e| e.state == 'empty' }
+        @out.puts "  #{inventory.count { |e| e.state == 'placed' }} placed, " \
+                  "#{unplaced.size} not backed up (#{Jbod::Placement.format_bytes(unplaced.sum { |e| e.size_bytes.to_i })}), " \
+                  "#{empty} empty"
+      end
+      failed = folders.count { |f| f.last_sync_status == 'failed' }
+      @out.puts "  #{failed} folder#{'s' unless failed == 1} failed their last sync" if failed.positive?
+      @out.puts '  (use `status --all` to list every placed folder, or `dashboard` for the full report)'
+    end
+
+    def print_all_folders
       names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.friendly_name] }
+      @out.puts "\nFolders:"
       manifest.folders.each do |f|
         @out.puts "  #{f.folder_path.ljust(30)} #{names.fetch(f.drive_serial, f.drive_serial).ljust(16)} " \
                   "#{Jbod::Placement.format_bytes(f.size_bytes).rjust(10)}  last synced #{f.last_synced_at || 'never'} " \
