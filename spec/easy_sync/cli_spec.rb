@@ -117,12 +117,18 @@ RSpec.describe EasySync::CLI do
       expect(err.string).to include('no drive named backup-99')
     end
 
-    it 'prints status, including SMART health' do
+    it 'prints status, including SMART health, and a folder summary (no per-folder listing by default)' do
       m = manifest
       m.update_drive_health('S2', status: 'warning', detail: 'PASSED · pending 3')
       m.close
       expect(cli('status').run).to eq(0)
-      expect(out.string).to include('backup-01-3tb', 'not mounted', 'Photos', 'SMART unchecked', 'SMART warning: PASSED · pending 3')
+      expect(out.string).to include('backup-01-3tb', 'not mounted', 'SMART unchecked', 'SMART warning: PASSED · pending 3', '1 placed')
+      expect(out.string).not_to include('Photos')
+    end
+
+    it '--all lists every placed folder, for piping' do
+      expect(cli('status', '--all').run).to eq(0)
+      expect(out.string).to include('Photos')
     end
 
     it 'says no sync is running when the lock file is absent' do
