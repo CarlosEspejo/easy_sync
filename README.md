@@ -7,8 +7,10 @@ The drives are plain APFS volumes of different sizes, each used to the full, no
 RAID. `easy_sync` decides which drive each folder lives on, mirrors it there with
 `rsync`, remembers the placement in a SQLite manifest, waits out a grace period
 before deleting anything, and writes an HTML dashboard with each drive's SMART
-health. One folder always lives whole on one drive, so a restore is just
-browsing `/Volumes/<drive>/<folder>` in the Finder.
+health. One folder always lives whole on one drive, so restoring a single
+folder is just browsing `/Volumes/<drive>/<folder>` in the Finder; `easy_sync
+restore` handles the rest (a whole share, or everything) by finding each
+folder wherever it currently lives and copying it back.
 
 **macOS only.** It leans on `diskutil` for APFS volume identity and lock state
 and on `caffeinate` to keep the Mac awake, so it needs macOS 10.13 High Sierra
@@ -283,6 +285,7 @@ Commands
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
+| `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
 | `plan [SHARE ...] [--largest-drive 8tb] [--apply]` | measure each share (or just those named) and recommend split or whole; `--apply` writes it |
 | `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |

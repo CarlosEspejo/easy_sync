@@ -86,6 +86,12 @@ README.md is the user-facing truth; this file is for working on the code.
   optimization — the source is one NAS behind one network link, so concurrent
   rsyncs would contend for the same bandwidth and NAS disks rather than add
   throughput; rsync itself has no `--parallel` flag for exactly this reason.
+- `restore` (the reverse of `sync`, `lib/easy_sync/jbod/restorer.rb`) never
+  passes `--delete`, on purpose: it only adds/updates files on the NAS,
+  mirroring how the old drobo-sync restore scripts worked. It resolves a
+  folder's NAS destination from the *current* `:sources:` config by matching
+  the share name, so a folder whose share was `remove-source`d is skipped
+  with an error telling you to `add-source` it again rather than guessed at.
 
 ## Verify live when you touch the sync path
 
