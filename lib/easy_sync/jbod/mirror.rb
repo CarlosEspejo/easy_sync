@@ -31,8 +31,11 @@ module EasySync
       end
 
       # The copy pass. Extra args (from config, or --dry-run) apply here.
+      # --partial keeps a killed transfer's in-progress file instead of deleting
+      # it, so a multi-GB file interrupted mid-copy resumes next run instead of
+      # restarting from zero.
       def command(source, destination)
-        argv = ['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes', *@excludes]
+        argv = ['rsync', '-a', '--partial', '--stats', '--info=progress2', '--itemize-changes', *@excludes]
         argv += @extra_args
         argv + [with_slash(source), with_slash(destination)]
       end

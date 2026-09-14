@@ -387,7 +387,7 @@ module EasySync
       end
       @out.puts "Copying #{old.friendly_name} -> #{new_drive.friendly_name} (#{Jbod::Placement.format_bytes(src.used_bytes)})..."
       excludes = (settings[:exclude_folders] + [Jbod::DRIVE_DIR]).map { |e| "--exclude=#{e}" }
-      result = @shell.run(['rsync', '-a', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
+      result = @shell.run(['rsync', '-a', '--partial', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
       raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
     end
 

@@ -6,7 +6,7 @@ RSpec.describe EasySync::Jbod::Mirror do
   it 'builds a copy command with no deletion flags, and a separate read-only deletion probe' do
     mirror = described_class.new(shell: fake_shell)
     expect(mirror.command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
-      .to eq(['rsync', '-a', '--stats', '--info=progress2', '--itemize-changes',
+      .to eq(['rsync', '-a', '--partial', '--stats', '--info=progress2', '--itemize-changes',
               '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
     expect(mirror.probe_command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
       .to eq(['rsync', '-an', '--itemize-changes', '--delete', '--delete-excluded', '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
