@@ -131,6 +131,22 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include('Photos')
     end
 
+    it 'counts failed folders in the summary, singular and plural' do
+      m = manifest
+      m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 23)
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('1 folder failed their last sync')
+
+      m = manifest
+      m.assign_folder('Videos', 'S2')
+      m.record_sync(folder_path: 'Videos', drive_serial: 'S2', started_at: 't0', finished_at: 't1', exit_status: 23)
+      m.close
+      out.truncate(0)
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('2 folders failed their last sync')
+    end
+
     it 'says no sync is running when the lock file is absent' do
       expect(cli('status').run).to eq(0)
       expect(out.string).to include('No sync currently running.')
