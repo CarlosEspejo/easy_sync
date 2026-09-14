@@ -457,9 +457,11 @@ module EasySync
 
     def print_all_folders
       names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.friendly_name] }
+      folders = manifest.folders
+      width = folders.map { |f| f.folder_path.length }.max.to_i
       @out.puts "\nFolders:"
-      manifest.folders.each do |f|
-        @out.puts "  #{f.folder_path.ljust(30)} #{names.fetch(f.drive_serial, f.drive_serial).ljust(16)} " \
+      folders.each do |f|
+        @out.puts "  #{f.folder_path.ljust(width)} #{names.fetch(f.drive_serial, f.drive_serial).ljust(16)} " \
                   "#{Jbod::Placement.format_bytes(f.size_bytes).rjust(10)}  last synced #{f.last_synced_at || 'never'} " \
                   "#{f.last_sync_status}"
       end
