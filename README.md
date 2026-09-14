@@ -210,6 +210,34 @@ Afterwards, in all three cases:
 A retired drive is never placed on or written to again, even if it turns up
 mounted.
 
+Restoring the NAS
+------------------
+
+If a share gets wiped, reformatted, or you're rebuilding the NAS from
+scratch, `restore` copies folders back the other way: from wherever each one
+currently lives on a drive, onto its NAS share. Unlike `sync`, it **never
+deletes anything** — it only adds and updates files on the NAS, so restoring
+onto a share that already has some files on it (a partial wipe, a share you
+rebuilt by hand) is safe.
+
+    easy_sync restore "tv/Breaking Bad"   # one folder
+    easy_sync restore tv                  # every folder placed under the tv share
+    easy_sync restore --all               # everything in the manifest
+    easy_sync restore tv --dry-run        # show what rsync would do first
+
+Because folders for one share can be spread across several drives (unlike
+the single Drobo volume this replaced), a restore plugs in and pulls from
+whichever drives are mounted; a folder whose drive isn't mounted yet is
+skipped with a warning, and running `restore` again once that drive is
+plugged in picks it up. It needs the share's `:sources:` entry to still
+exist (`add-source` it again first if you'd removed it) so it knows where on
+the NAS each folder belongs. A real restore takes the same lock a `sync`
+does, so the two never run at the same time; `--dry-run` doesn't need it.
+
+Restoring a single file or folder you know the location of is still just
+browsing `/Volumes/<drive>/<folder>` in the Finder — `restore` is for when
+you want the tool to find and reassemble more than that.
+
 Deletions have a grace period
 -----------------------------
 
