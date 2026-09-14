@@ -7,10 +7,9 @@ The drives are plain APFS volumes of different sizes, each used to the full, no
 RAID. `easy_sync` decides which drive each folder lives on, mirrors it there with
 `rsync`, remembers the placement in a SQLite manifest, waits out a grace period
 before deleting anything, and writes an HTML dashboard with each drive's SMART
-health. One folder always lives whole on one drive, so restoring a single
-folder is just browsing `/Volumes/<drive>/<folder>` in the Finder; `easy_sync
-restore` handles the rest (a whole share, or everything) by finding each
-folder wherever it currently lives and copying it back.
+health. One folder always lives whole on one drive; `easy_sync restore` copies
+folders back the other way, onto the NAS, when you need to repopulate it (see
+"Restoring the NAS" below).
 
 **macOS only.** It leans on `diskutil` for APFS volume identity and lock state
 and on `caffeinate` to keep the Mac awake, so it needs macOS 10.13 High Sierra
@@ -80,8 +79,8 @@ Drives
 Any enclosure works as long as each drive mounts as its own independent APFS
 volume rather than a RAID array — a multi-bay Thunderbolt dock like the
 [OWC ThunderBay 8](https://www.owc.com/solutions/thunderbay-8) run in JBOD
-mode (one volume per bay, no SoftRAID array across them) is a natural fit for
-a fleet that grows one drive at a time.
+("just a bunch of disks") mode, one volume per bay with no SoftRAID array
+across them, is a natural fit for a fleet that grows one drive at a time.
 
 A drive's friendly name defaults to its volume name, so naming the volume
 itself when you erase it (Disk Utility, or `diskutil apfs addVolume`) is
