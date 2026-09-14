@@ -80,6 +80,12 @@ README.md is the user-facing truth; this file is for working on the code.
   about *placed* folders, so with small test drives it quietly showed "94
   movies" and said nothing about the other 2,286 that didn't fit).
 - Anything that shells out is injectable and faked in specs.
+- Sync is intentionally sequential: one rsync process, one folder, at a time
+  (`Runner#run`'s `plan.each { sync_folder }`, and `Shell#run` blocks on
+  `wait.value` before returning). Don't parallelize this as a speed
+  optimization — the source is one NAS behind one network link, so concurrent
+  rsyncs would contend for the same bandwidth and NAS disks rather than add
+  throughput; rsync itself has no `--parallel` flag for exactly this reason.
 
 ## Verify live when you touch the sync path
 
