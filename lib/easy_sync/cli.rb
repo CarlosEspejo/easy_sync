@@ -22,6 +22,7 @@ module EasySync
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
+        ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['restore FOLDER|SHARE [...] | --all [--dry-run]', 'copy folders back onto the NAS from wherever they live (reverse of sync)'],
         ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
@@ -73,6 +74,7 @@ module EasySync
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
+      when 'rename-drive' then rename_drive(@argv)
       when 'pending' then pending
       when 'clean' then clean(@argv)
       when 'plan' then plan(@argv)
@@ -573,6 +575,51 @@ module EasySync
       drive = manifest.drive_by_name(drive_name) or raise Error, "no drive named #{drive_name}"
       manifest.reassign_folder(folder, drive.serial_number, note: opts[:note])
       @out.puts "#{folder} is now recorded on #{drive.friendly_name}. No data was moved."
+    end
+
+    # Only relabels the manifest (and the drive's own marker); the tool never
+    # renames the actual macOS volume itself, the same way it never unlocks
+    # one. friendly_name is UNIQUE, so a name already taken by another
+    # registered drive is treated as "swap these two", not an error.
+    def rename_drive(args)
+      old_name, new_name = args
+      raise Error, "rename-drive needs OLD_NAME and NEW_NAME\n\n#{USAGE}" unless old_name && new_name
+      raise Error, 'old and new name are the same' if old_name == new_name
+
+      old = manifest.drive_by_name(old_name) or raise Error, "no drive named #{old_name}"
+      raise Error, "#{old_name} is retired" if old.retired?
+      target = manifest.drive_by_name(new_name)
+      mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+
+      if target
+        manifest.swap_drive_names(old.serial_number, target.serial_number)
+        @out.puts "Swapped names: #{old_name} <-> #{new_name}."
+        relabel_marker(old.serial_number, new_name, mounted)
+        relabel_marker(target.serial_number, old_name, mounted)
+        rename_volume_hint(old.serial_number, new_name, mounted)
+        rename_volume_hint(target.serial_number, old_name, mounted)
+      else
+        manifest.rename_drive(old.serial_number, new_name)
+        @out.puts "Renamed #{old_name} to #{new_name}."
+        relabel_marker(old.serial_number, new_name, mounted)
+        rename_volume_hint(old.serial_number, new_name, mounted)
+      end
+    end
+
+    # Keeps the drive's own .easy_sync/drive.json readable-by-hand, though
+    # nothing reads its friendly_name back: matching is by serial only.
+    def relabel_marker(serial, new_name, mounted)
+      m = mounted[serial] or return
+      existing = volume_info.read_marker(m.mount_point)
+      registered_at = existing&.fetch(:registered_at, nil) || Time.now.utc.iso8601
+      volume_info.write_marker(m.mount_point, serial_number: serial, friendly_name: new_name, registered_at: registered_at)
+    end
+
+    def rename_volume_hint(serial, new_name, mounted)
+      m = mounted[serial] or return
+
+      @out.puts "  #{m.mount_point} still has its old macOS volume name; to match, rename it yourself: " \
+                "diskutil rename #{m.mount_point} #{new_name}"
     end
 
     def dashboard

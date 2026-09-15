@@ -66,6 +66,27 @@ module EasySync
         db.execute("#{sql} ORDER BY friendly_name").map { |row| row_to_drive(row) }
       end
 
+      # friendly_name is cosmetic (drives are matched by serial, never by
+      # name or mount path), so this is a plain rename.
+      def rename_drive(serial_number, new_name)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [new_name, serial_number])
+        drive(serial_number)
+      end
+
+      # friendly_name is UNIQUE, so exchanging two names needs a temporary
+      # third value to avoid colliding with the other row mid-swap.
+      def swap_drive_names(serial_a, serial_b)
+        a = drive(serial_a) or raise UnknownDrive, "no drive registered with serial #{serial_a}"
+        b = drive(serial_b) or raise UnknownDrive, "no drive registered with serial #{serial_b}"
+        db.transaction do
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', ["__renaming__#{serial_a}", serial_a])
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [a.friendly_name, serial_b])
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [b.friendly_name, serial_a])
+        end
+        [drive(serial_a), drive(serial_b)]
+      end
+
       # Marks a drive retired. Its row and history stay so old placements
       # remain answerable; #drives no longer returns it.
       def retire_drive(serial_number, at: now)

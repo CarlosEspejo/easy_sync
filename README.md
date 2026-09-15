@@ -89,7 +89,13 @@ number, then a size hint) is the convention used throughout this README:
 `backup-01-3tb`, `backup-02-6tb`, `backup-03-8tb`, and so on. The name is
 just a label for `status`, the dashboard and `replace-drive`; drives are
 matched by the serial in `.easy_sync/drive.json` (see below), never by name
-or mount path, so renaming a volume later is safe.
+or mount path, so renaming a volume later is safe. To change the label
+easy_sync itself uses, without touching the volume: `easy_sync rename-drive
+OLD NEW`; naming NEW after another registered drive swaps the two instead of
+erroring, done as one transaction so you never have to pick a temporary name
+yourself. It never renames the actual macOS volume (the tool never mutates
+disk state, the same way it never unlocks one) — it prints the `diskutil
+rename` command to run yourself if you want that to match too.
 
     easy_sync register-drive /Volumes/backup-04-8tb
     easy_sync register-drive /Volumes/backup-01-3tb --name drive-one --serial WD-WX12345678
@@ -319,6 +325,7 @@ Commands
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER DRIVE [--note TEXT]` | record a move you made by hand (moves no data) |
+| `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
 | `dashboard` | regenerate the HTML report only |
 
 `--config PATH` goes before the command.

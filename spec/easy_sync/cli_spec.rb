@@ -217,6 +217,68 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'rename-drive' do
+    def mount(serial, name)
+      vol = make_dirs(mount_root, name).first
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: serial, friendly_name: name }.to_json)
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol }, output: df_output(vol, capacity_kb: 1_000_000, used_kb: 1_000))
+      vol
+    end
+
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-07-2tb', capacity_bytes: 2 * TB)
+      m.register_drive(serial_number: 'S2', friendly_name: 'backup-08-6tb', capacity_bytes: 6 * TB)
+      m.register_drive(serial_number: 'S3', friendly_name: 'backup-09-6tb', capacity_bytes: 6 * TB)
+      m.retire_drive('S3')
+      m.close
+    end
+
+    it 'relabels a single drive when the new name is free' do
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-11-2tb').run).to eq(0)
+      expect(manifest.drive_by_name('backup-11-2tb').serial_number).to eq('S1')
+      expect(out.string).to include('Renamed backup-07-2tb to backup-11-2tb.')
+      expect(out.string).not_to include('Swapped')
+    end
+
+    it 'swaps two names in one operation when the new name is already taken' do
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-08-6tb').run).to eq(0)
+      expect(manifest.drive_by_name('backup-08-6tb').serial_number).to eq('S1')
+      expect(manifest.drive_by_name('backup-07-2tb').serial_number).to eq('S2')
+      expect(out.string).to include('Swapped names: backup-07-2tb <-> backup-08-6tb.')
+    end
+
+    it 'rewrites the marker on any drive that is mounted, keeping the original registered_at' do
+      vol = mount('S1', 'backup-07-2tb')
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE),
+                { serial_number: 'S1', friendly_name: 'backup-07-2tb', registered_at: '2026-01-01T00:00:00Z' }.to_json)
+
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-11-2tb').run).to eq(0)
+      marker = JSON.parse(File.read(File.join(vol, EasySync::Jbod::MARKER_FILE)), symbolize_names: true)
+      expect(marker).to include(serial_number: 'S1', friendly_name: 'backup-11-2tb', registered_at: '2026-01-01T00:00:00Z')
+    end
+
+    it 'suggests the diskutil rename command for each mounted drive involved, and nothing for an unmounted one' do
+      mount('S1', 'backup-07-2tb')
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-08-6tb').run).to eq(0)
+      expect(out.string).to include("diskutil rename #{mount_root}/backup-07-2tb backup-08-6tb")
+      expect(out.string).not_to include("diskutil rename #{mount_root}/backup-08-6tb backup-07-2tb")   # S2 was never mounted
+    end
+
+    it 'never touches the manifest when it cannot rename' do
+      expect(cli('rename-drive', 'nope', 'x').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+
+      expect(cli('rename-drive', 'backup-09-6tb', 'backup-11-2tb').run).to eq(1)
+      expect(err.string).to include('backup-09-6tb is retired')
+
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-07-2tb').run).to eq(1)
+      expect(err.string).to include('same')
+
+      expect(manifest.drives.map(&:friendly_name)).to contain_exactly('backup-07-2tb', 'backup-08-6tb')
+    end
+  end
+
   describe 'replace-drive' do
     let(:old_vol) { make_dirs(mount_root, 'backup-04-8tb').first }
     let(:new_vol) { make_dirs(mount_root, 'backup-08-12tb').first }

@@ -110,6 +110,48 @@ RSpec.describe EasySync::Jbod::Manifest do
     end
   end
 
+  describe '#rename_drive' do
+    it 'relabels a drive by serial' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'old-name', capacity_bytes: 3 * TB)
+      drive = manifest.rename_drive('SN1', 'new-name')
+      expect(drive.friendly_name).to eq('new-name')
+      expect(manifest.drive_by_name('new-name').serial_number).to eq('SN1')
+      expect(manifest.drive_by_name('old-name')).to be_nil
+    end
+
+    it 'rejects an unknown serial' do
+      expect { manifest.rename_drive('nope', 'x') }.to raise_error(described_class::UnknownDrive)
+    end
+
+    it 'rejects a name already taken by another drive (use #swap_drive_names for that)' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'a', capacity_bytes: 1)
+      manifest.register_drive(serial_number: 'SN2', friendly_name: 'b', capacity_bytes: 1)
+      expect { manifest.rename_drive('SN1', 'b') }.to raise_error(SQLite3::ConstraintException)
+      expect(manifest.drive('SN1').friendly_name).to eq('a')   # untouched by the failed attempt
+    end
+  end
+
+  describe '#swap_drive_names' do
+    it 'exchanges two names without a UNIQUE collision in between' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-07-2tb', capacity_bytes: 2 * TB)
+      manifest.register_drive(serial_number: 'SN2', friendly_name: 'backup-08-6tb', capacity_bytes: 6 * TB)
+
+      a, b = manifest.swap_drive_names('SN1', 'SN2')
+      expect(a).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-08-6tb')
+      expect(b).to have_attributes(serial_number: 'SN2', friendly_name: 'backup-07-2tb')
+      expect(manifest.drive_by_name('backup-07-2tb').serial_number).to eq('SN2')
+      expect(manifest.drive_by_name('backup-08-6tb').serial_number).to eq('SN1')
+      # no leftover temp name
+      expect(manifest.drives.map(&:friendly_name)).to contain_exactly('backup-07-2tb', 'backup-08-6tb')
+    end
+
+    it 'rejects an unknown serial on either side, leaving both names untouched' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'a', capacity_bytes: 1)
+      expect { manifest.swap_drive_names('SN1', 'nope') }.to raise_error(described_class::UnknownDrive)
+      expect(manifest.drive('SN1').friendly_name).to eq('a')
+    end
+  end
+
   describe '#update_drive_usage' do
     before { register_fleet(manifest) }
 
