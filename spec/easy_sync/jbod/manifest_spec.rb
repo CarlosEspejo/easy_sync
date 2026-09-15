@@ -31,15 +31,63 @@ RSpec.describe EasySync::Jbod::Manifest do
       m.close
       expect(described_class.open(path).drives.map(&:friendly_name)).to eq(['backup-01-3tb'])
     end
+
+    it 'upgrades a real schema-v1 database (drives table with no model column) in place' do
+      db = SQLite3::Database.new(':memory:')
+      db.execute_batch(<<~SQL)
+        CREATE TABLE drives (
+          serial_number   TEXT PRIMARY KEY,
+          friendly_name   TEXT NOT NULL UNIQUE,
+          capacity_bytes  INTEGER NOT NULL,
+          added_date      TEXT NOT NULL,
+          volume_uuid     TEXT,
+          last_seen_at    TEXT,
+          last_used_bytes INTEGER,
+          last_free_bytes INTEGER,
+          smart_status    TEXT,
+          smart_detail    TEXT,
+          smart_checked_at TEXT,
+          retired_at      TEXT
+        );
+      SQL
+      db.execute("INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date) VALUES ('SN1', 'backup-01-3tb', ?, '2026-01-01T00:00:00Z')",
+                 [3 * TB])
+      db.execute('PRAGMA user_version = 1')
+
+      m = described_class.new(db, clock: clock)
+      expect(m.schema_version).to eq(described_class::SCHEMA_VERSION)
+      expect(m.drives.first).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb', model: nil)
+    end
+
+    it 'still adds the model column when a pre-2.0 build stamped the database user_version 5 (the real manifest)' do
+      db = SQLite3::Database.new(':memory:')
+      db.execute('CREATE TABLE drives (serial_number TEXT PRIMARY KEY, friendly_name TEXT NOT NULL UNIQUE, ' \
+                 'capacity_bytes INTEGER NOT NULL, added_date TEXT NOT NULL, volume_uuid TEXT, last_seen_at TEXT, ' \
+                 'last_used_bytes INTEGER, last_free_bytes INTEGER, smart_status TEXT, smart_detail TEXT, ' \
+                 'smart_checked_at TEXT, retired_at TEXT)')
+      db.execute("INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date) VALUES ('SN1', 'a', 1, 'x')")
+      db.execute('PRAGMA user_version = 5')
+
+      m = described_class.new(db, clock: clock)
+      expect(m.update_drive_model('SN1', model: 'WDC WD80EFZZ').model).to eq('WDC WD80EFZZ')
+      expect(m.schema_version).to eq(5)   # never stamped downward
+      expect { described_class.new(db, clock: clock) }.not_to raise_error   # reopening is a no-op
+    end
   end
 
   describe '#register_drive' do
     it 'stores a drive keyed by serial number' do
       drive = manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-01-3tb',
-                                      capacity_bytes: 3 * TB, volume_uuid: 'UUID-1')
+                                      capacity_bytes: 3 * TB, volume_uuid: 'UUID-1', model: 'WDC WD80EFZZ-68BTXN0')
       expect(drive).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb',
                                        capacity_bytes: 3 * TB, volume_uuid: 'UUID-1',
+                                       model: 'WDC WD80EFZZ-68BTXN0',
                                        added_date: '2026-09-13T12:00:00Z')
+    end
+
+    it 'defaults model to nil when the enclosure hides it' do
+      drive = manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      expect(drive.model).to be_nil
     end
 
     it 'rejects a duplicate serial number' do

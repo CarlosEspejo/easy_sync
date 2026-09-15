@@ -9,7 +9,7 @@
     color-scheme: light dark;
     --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --hairline: #e1e0d9; --ring: rgba(11,11,11,0.10);
-    --accent: #2a78d6; --track: #cde2fb;
+    --accent: #2a78d6; --track: #e6e5df;
     --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
     --warning-track: #fdebc2; --critical-track: #f6cfcf;
   }
@@ -17,14 +17,14 @@
     :root:not([data-theme="light"]) {
       --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
       --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
-      --accent: #3987e5; --track: #184f95;
+      --accent: #3987e5; --track: #333331;
       --warning-track: #4a3708; --critical-track: #4a1717;
     }
   }
   :root[data-theme="dark"] {
     --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
     --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
-    --accent: #3987e5; --track: #184f95;
+    --accent: #3987e5; --track: #333331;
     --warning-track: #4a3708; --critical-track: #4a1717;
   }
   * { box-sizing: border-box; }
@@ -43,9 +43,11 @@
   .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 14px 16px; }
   .tile.unmounted { opacity: 0.7; }
   .tile .name { font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .tile .serial { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .tile .serial { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .tile .value { font-size: 26px; font-weight: 600; margin: 8px 0 2px; }
+  .tile .value .unit { font-size: 14px; font-weight: 400; color: var(--ink-2); }
   .tile .sub { color: var(--ink-2); }
+  .tile .sub.muted { color: var(--muted); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); margin: 10px 0 8px; overflow: hidden; }
   .meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
   .tile.warning { border-color: var(--warning); box-shadow: inset 4px 0 0 var(--warning); }
@@ -124,7 +126,7 @@
     <div class="alert <%= d.level %>">
       <strong><%= h d.drive.friendly_name %></strong> <%= d.level == :critical ? 'is FAILING' : 'is starting to fail' %>:
       SMART says <%= h d.drive.smart_detail %> (checked <%= when_(d.drive.smart_checked_at) %>).
-      Plan to replace it and move its folders with <code>jbod reassign</code>.
+      Plan to replace it: register a new drive, then <code>easy_sync replace-drive <%= h d.drive.friendly_name %> --to NEW_NAME --copy</code>.
     </div>
   <%- end -%>
   </div>
@@ -132,19 +134,26 @@
 
   <h2>Drives</h2>
 <%- if drives.empty? -%>
-  <p class="empty">No drives registered. Run <code>easy_sync jbod register-drive</code>.</p>
+  <p class="empty">No drives registered. Run <code>easy_sync register-drive /Volumes/&lt;drive&gt;</code>.</p>
 <%- else -%>
   <div class="tiles">
   <%- drives.each do |d| -%>
     <div class="tile <%= d.level %><%= d.mounted ? '' : ' unmounted' %>">
       <div class="name"><span><%= h d.drive.friendly_name %></span>
-        <span class="badge <%= d.mounted ? 'ok' : 'unknown' %>"><%= d.mounted ? 'mounted' : 'not mounted' %></span></div>
-      <div class="serial"><%= h d.drive.serial_number %></div>
-      <div class="value"><%= percent(d.used_fraction) %> <span class="sub" style="font-size:14px;font-weight:400">used</span></div>
+      <%- unless d.mounted -%>
+        <span class="badge unknown">not mounted</span>
+      <%- end -%>
+      </div>
+      <div class="serial"><%= h d.drive.serial_number %><%- if d.drive.model -%> · <%= h d.drive.model %><%- end -%></div>
+      <div class="value"><%= bytes(d.free_bytes) %> <span class="unit">free</span></div>
       <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
-      <div class="sub"><%= bytes(d.used_bytes) %> used · <%= bytes(d.free_bytes) %> free · <%= bytes(d.capacity_bytes) %> total</div>
-      <div class="sub" style="color:var(--muted)"><%= d.mounted ? "at #{h d.mount_point}" : "last seen #{when_(d.drive.last_seen_at)}" %></div>
-      <div class="health <%= d.health %>"><%= health_label(d.health) %><%- if d.drive.smart_detail -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
+      <div class="sub"><%= bytes(d.used_bytes) %> of <%= bytes(d.capacity_bytes) %> used · <%= percent(d.used_fraction) %></div>
+    <%- if !d.mounted -%>
+      <div class="sub muted">last seen <%= when_(d.drive.last_seen_at) %></div>
+    <%- elsif unexpected_mount?(d) -%>
+      <div class="sub muted">at <%= h d.mount_point %></div>
+    <%- end -%>
+      <div class="health <%= d.health %>" title="<%= h d.drive.smart_detail %>"><%= h health_line(d) %><%- if health_detail_shown?(d) -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>
@@ -197,7 +206,7 @@
   <details class="share attention">
     <summary>
       <span class="share-name">Not backed up</span>
-      <span class="share-problems"><%= unplaced_all.size %> folders · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
+      <span class="share-problems"><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %> · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
     </summary>
     <table>
       <thead><tr><th>Folder</th><th class="num">Size</th><th>Why</th><th>Seen</th></tr></thead>

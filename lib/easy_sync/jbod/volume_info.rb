@@ -125,6 +125,22 @@ module EasySync
         nil
       end
 
+      # The hardware model from smartctl (manufacturer + model number, e.g.
+      # "WDC WD80EFZZ-68BTXN0"), or nil under the same conditions as
+      # #smartctl_serial. ATA drives report "Device Model:", NVMe drives
+      # "Model Number:"; either is a real make/model, unlike the friendly
+      # name or serial, which carry no manufacturer information.
+      def smartctl_model(mount_point)
+        disk = physical_disk_for(mount_point) or return nil
+        self.class.parse_smartctl_model(@shell.capture(['smartctl', '-a', "/dev/#{disk}"]).output)
+      rescue Errno::ENOENT
+        nil
+      end
+
+      def self.parse_smartctl_model(out)
+        out[/^Device Model:\s*(.+?)\s*$/, 1] || out[/^Model Number:\s*(.+?)\s*$/, 1] || out[/^Model Family:\s*(.+?)\s*$/, 1]
+      end
+
       # SMART health for the drive under +mount_point+. Tries smartctl on the
       # physical disk (plainly, then through a SAT USB bridge), and when that
       # yields nothing falls back to the one-word SMART Status that

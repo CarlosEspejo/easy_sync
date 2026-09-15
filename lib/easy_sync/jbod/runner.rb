@@ -180,6 +180,7 @@ module EasySync
           unless @dry_run
             manifest.update_drive_usage(m.serial_number, used_bytes: m.used_bytes, free_bytes: m.free_bytes,
                                                          capacity_bytes: m.capacity_bytes)
+            backfill_model(m) if m.drive.model.nil?
           end
           if m.mount_point != File.join(settings[:mount_root], m.friendly_name) && !quiet
             warn(report, "#{m.friendly_name} is mounted at #{m.mount_point} (matched by serial, not by name)")
@@ -195,6 +196,15 @@ module EasySync
         mounted
       end
 
+      # Drives registered before the model field existed (or whose enclosure
+      # didn't expose smartctl at registration time) get it filled in here,
+      # once per drive: after the first success the drive's model is no
+      # longer nil, so this stops asking smartctl on every subsequent run.
+      def backfill_model(mounted_drive)
+        model = @volume_info.smartctl_model(mounted_drive.mount_point)
+        manifest.update_drive_model(mounted_drive.serial_number, model: model) if model
+      end
+
       # Reads SMART once per run for each mounted drive and records it. A
       # drive that is starting to fail is the one thing worth shouting about.
       def check_health(mounted_drive, report)
@@ -205,7 +215,8 @@ module EasySync
         report.unhealthy << [mounted_drive.friendly_name, health.status]
         verb = health.status == 'failing' ? 'is FAILING' : 'is starting to fail'
         warn(report, "drive #{mounted_drive.friendly_name} #{verb}: SMART says #{health.detail}. " \
-                     'Plan to replace it and move its folders with `jbod reassign`.')
+                     "Plan to replace it: register a new drive, then " \
+                     "`easy_sync replace-drive #{mounted_drive.friendly_name} --to NEW_NAME --copy`.")
       end
 
       # Best-effort: says *why* a drive isn't mounted when it's detectably a
@@ -272,7 +283,7 @@ module EasySync
           manifest.mark_folder_status(folder.key, 'drive_full') unless @dry_run
           warn(report, "#{folder.key} did not fully sync: #{target.friendly_name} is full " \
                        "(#{Placement.format_bytes(target.free_bytes)} free before this run). " \
-                       "Move it to a drive with more room with `jbod reassign`.")
+                       "Move it to a drive with more room: `easy_sync reassign #{folder.key} DRIVE_NAME`, then sync.")
           report.drive_full << folder.key
         else
           warn(report, "rsync for #{folder.key} exited with status #{result.exit_status}")

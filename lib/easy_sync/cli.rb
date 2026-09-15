@@ -324,14 +324,15 @@ module EasySync
       serial or raise Error, 'could not determine a serial via smartctl or diskutil; pass --serial'
       @out.puts "Using #{source} as the serial number." unless opts[:serial]
       usage = volume_info.usage(mount_point)
+      model = volume_info.smartctl_model(mount_point)
 
-      drive = manifest.register_drive(serial_number: serial, friendly_name: name,
+      drive = manifest.register_drive(serial_number: serial, friendly_name: name, model: model,
                                       capacity_bytes: usage.capacity_bytes, volume_uuid: uuid)
       manifest.update_drive_usage(serial, used_bytes: usage.used_bytes, free_bytes: usage.free_bytes)
       health = volume_info.smart_health(mount_point)
       manifest.update_drive_health(serial, status: health.status, detail: health.detail)
       volume_info.write_marker(mount_point, serial_number: serial, friendly_name: name)
-      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}), " \
+      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}#{model ? ", #{model}" : ''}), " \
                 "#{Jbod::Placement.format_bytes(drive.capacity_bytes)} at #{mount_point}"
       @out.puts "SMART: #{health.status} (#{health.detail})"
     end
@@ -440,23 +441,61 @@ module EasySync
     end
 
     def print_drives
-      mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+      drives = manifest.drives
+      mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
-      manifest.drives.each_with_index do |d, i|
-        @out.puts if i.positive?
-        m = mounted[d.serial_number]
-        usage = if m
-                  "#{Jbod::Placement.format_bytes(m.used_bytes)} used, #{Jbod::Placement.format_bytes(m.free_bytes)} free at #{m.mount_point}"
-                elsif volume_info.locked?(d.friendly_name)
-                  "connected but LOCKED (unlock it: diskutil apfs unlockVolume #{d.friendly_name})"
-                else
-                  "not mounted (last seen #{d.last_seen_at || 'never'})"
-                end
-        @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} #{usage}"
-        @out.puts "  #{' ' * 16} SMART #{d.smart_status || 'unchecked'}#{d.smart_detail ? ": #{d.smart_detail}" : ''}"
+      unless drives.empty?
+        rows = drives.map do |d|
+          m = mounted[d.serial_number]
+          [d.friendly_name, d.serial_number,
+           m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
+           m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
+           smart_summary(d), drive_note(d, m)]
+        end
+        print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
       end
       retired = manifest.drives(include_retired: true).select(&:retired?)
-      retired.each { |d| @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} retired #{d.retired_at}" }
+      return if retired.empty?
+
+      @out.puts if drives.any?
+      @out.puts "  Retired: #{retired.map { |d| "#{d.friendly_name} (#{local_time(d.retired_at, '%Y-%m-%d')})" }.join(', ')}"
+    end
+
+    def print_table(header, rows, right: [])
+      all = [header] + rows
+      widths = header.each_index.map { |i| all.map { |r| r[i].to_s.length }.max }
+      all.each do |r|
+        cells = r.each_with_index.map { |c, i| right.include?(i) ? c.to_s.rjust(widths[i]) : c.to_s.ljust(widths[i]) }
+        @out.puts "  #{cells.join('  ')}".rstrip
+      end
+    end
+
+    # The verdict plus only what's worth reading: zero counters and the
+    # PASSED verdict (implied by ok/warning) are dropped; ok keeps just the temperature.
+    def smart_summary(drive)
+      return 'unchecked' unless drive.smart_status
+      return 'n/a' if drive.smart_status == 'unknown'
+
+      parts = drive.smart_detail.to_s.split(' · ').reject { |p| p == 'PASSED' || p.match?(/\A[a-z ]+ 0\z/) }
+      parts = parts.grep(/°C\z/) if drive.smart_status == 'ok'
+      [drive.smart_status, *parts].join(' · ')
+    end
+
+    # Only the unusual: not mounted, locked, or mounted somewhere other than under its own name.
+    def drive_note(drive, mounted)
+      if mounted
+        File.basename(mounted.mount_point) == drive.friendly_name ? '' : "at #{mounted.mount_point}"
+      elsif volume_info.locked?(drive.friendly_name)
+        "connected but LOCKED (unlock it: diskutil apfs unlockVolume #{drive.friendly_name})"
+      else
+        "not mounted (last seen #{drive.last_seen_at ? local_time(drive.last_seen_at, '%Y-%m-%d %H:%M') : 'never'})"
+      end
+    end
+
+    def local_time(iso, format)
+      Time.parse(iso).localtime.strftime(format)
+    rescue ArgumentError, TypeError
+      iso
     end
 
     # Counts only: how many folders are placed/not backed up/empty, and

@@ -4,7 +4,7 @@ require 'time'
 
 module EasySync
   module Jbod
-    Drive = Struct.new(:serial_number, :friendly_name, :capacity_bytes, :added_date, :volume_uuid,
+    Drive = Struct.new(:serial_number, :friendly_name, :capacity_bytes, :added_date, :volume_uuid, :model,
                        :last_seen_at, :last_used_bytes, :last_free_bytes,
                        :smart_status, :smart_detail, :smart_checked_at, :retired_at, keyword_init: true) do
       def retired? = !retired_at.nil?

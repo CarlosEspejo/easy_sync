@@ -32,11 +32,14 @@ RSpec.describe EasySync::Jbod::Dashboard do
       mounted(drives['backup-06-8tb'], free: 7 * TB, used: 1 * TB),
       mounted(drives['backup-07-8tb'], free: 4 * TB, used: 4 * TB)       # never checked
     ])
-    expect(html).to match(/class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?100% used[\s\S]*?SMART ok/)
+    expect(html).to match(/class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?used · 100%[\s\S]*?SMART ok · 36°C</)
     expect(html).to match(/class="tile warning"[\s\S]*?backup-05-8tb[\s\S]*?SMART: starting to fail/)
     expect(html).to match(/class="tile critical"[\s\S]*?backup-06-8tb[\s\S]*?SMART: FAILING/)
     expect(html).to match(/class="tile unknown"[\s\S]*?backup-07-8tb[\s\S]*?SMART n\/a/)
     expect(html).to include('<strong>backup-05-8tb</strong> is starting to fail', 'reallocated 12 · pending 3')
+    expect(html).to include('<small>PASSED · reallocated 12 · pending 3</small>')   # counters shown only when they matter
+    expect(html).to include('easy_sync replace-drive backup-05-8tb --to NEW_NAME --copy')
+    expect(html).not_to include('jbod reassign')
     expect(html).to include('<strong>backup-06-8tb</strong> is FAILING')
     expect(html).not_to include('is 100% full')
     expect(html).to include('drive colours show SMART health, not fullness')
@@ -45,8 +48,36 @@ RSpec.describe EasySync::Jbod::Dashboard do
   it 'shows last-known numbers for drives that are not mounted, without alarm' do
     html = dashboard.render(mounted: [])
     expect(html).to include('not mounted')
-    expect(html).to match(/backup-01-3tb[\s\S]*?33% used[\s\S]*?1\.0 TB used · 2\.0 TB free · 3\.0 TB total/)
+    expect(html).to match(%r{backup-01-3tb[\s\S]*?2\.0 TB <span class="unit">free</span>[\s\S]*?1\.0 TB of 3\.0 TB used · 33%})
     expect(html).not_to include('class="alert')
+  end
+
+  it 'keeps a healthy mounted tile quiet: no mounted badge, no mount path, no zero counters' do
+    manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · reallocated 0 · pending 0 · 36°C')
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+    expect(html).not_to include('class="badge ok"')
+    expect(html).not_to include('at /Volumes/backup-04-8tb')
+    expect(html).to include('title="PASSED · reallocated 0 · pending 0 · 36°C">SMART ok · 36°C</div>')
+    expect(html).not_to include('<small>PASSED · reallocated 0')
+  end
+
+  it 'shows the mount path only when macOS mounted the drive under a different name' do
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, mount_point: '/Volumes/backup-04-8tb 1')])
+    expect(html).to include('at /Volumes/backup-04-8tb 1')
+  end
+
+  it 'says "1 folder", not "1 folders", when a single folder is not backed up' do
+    manifest.replace_source_inventory([{ folder_path: 'synology', size_bytes: 2 * TB, state: 'unplaced', detail: 'no drive has room' }])
+    html = dashboard.render(mounted: [])
+    expect(html).to include('1 folder · 2.0 TB · no drive has room')
+  end
+
+  it 'shows the drive model next to the serial when known, and nothing extra when not' do
+    manifest.register_drive(serial_number: 'SN-with-model', friendly_name: 'backup-08-8tb', capacity_bytes: 8 * TB,
+                            model: 'WDC WD80EFZZ-68BTXN0')
+    html = dashboard.render(mounted: [])
+    expect(html).to match(%r{<div class="serial">SN-with-model · WDC WD80EFZZ-68BTXN0</div>})
+    expect(html).to match(%r{<div class="serial">SN-backup-01-3tb</div>})
   end
 
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do

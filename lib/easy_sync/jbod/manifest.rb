@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 1
+      SCHEMA_VERSION = 2
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -51,10 +51,10 @@ module EasySync
 
       # -- drives ---------------------------------------------------------
 
-      def register_drive(serial_number:, friendly_name:, capacity_bytes:, volume_uuid: nil, added_date: now)
-        db.execute(<<~SQL, [serial_number, friendly_name, capacity_bytes, added_date, volume_uuid])
-          INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date, volume_uuid)
-          VALUES (?, ?, ?, ?, ?)
+      def register_drive(serial_number:, friendly_name:, capacity_bytes:, volume_uuid: nil, model: nil, added_date: now)
+        db.execute(<<~SQL, [serial_number, friendly_name, capacity_bytes, added_date, volume_uuid, model])
+          INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date, volume_uuid, model)
+          VALUES (?, ?, ?, ?, ?, ?)
         SQL
         drive(serial_number)
       end
@@ -115,6 +115,14 @@ module EasySync
         ensure_drive!(serial_number)
         db.execute('UPDATE drives SET smart_status = ?, smart_detail = ?, smart_checked_at = ? WHERE serial_number = ?',
                    [status, detail, checked_at, serial_number])
+        drive(serial_number)
+      end
+
+      # Backfills the model for a drive registered before this field existed,
+      # or one whose enclosure didn't expose it at registration time.
+      def update_drive_model(serial_number, model:)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET model = ? WHERE serial_number = ?', [model, serial_number])
         drive(serial_number)
       end
 
@@ -368,9 +376,22 @@ module EasySync
         row.to_h.transform_keys(&:to_sym)
       end
 
+      # Columns added after v1 are applied by checking for them, never by
+      # comparing user_version: the real manifest was stamped 5 by pre-2.0
+      # builds, so a version-gated ALTER silently never ran on it.
       def migrate!
-        return if schema_version >= SCHEMA_VERSION
+        migrate_to_v1! if schema_version < 1
+        add_column('drives', 'model', 'TEXT')
+        db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
+      end
 
+      def add_column(table, name, type)
+        return if db.execute("PRAGMA table_info(#{table})").any? { |c| c['name'] == name }
+
+        db.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{type}")
+      end
+
+      def migrate_to_v1!
         db.transaction do
           db.execute_batch(<<~SQL)
             CREATE TABLE IF NOT EXISTS drives (
@@ -448,7 +469,7 @@ module EasySync
               deleted_at       TEXT NOT NULL
             );
           SQL
-          db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
+          db.execute('PRAGMA user_version = 1')
         end
       end
 

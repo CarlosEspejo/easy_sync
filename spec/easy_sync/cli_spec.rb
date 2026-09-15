@@ -45,11 +45,12 @@ RSpec.describe EasySync::CLI do
       expect(drive.smart_status).to eq('unknown')
     end
 
-    it 'records SMART health at registration when the enclosure exposes it' do
+    it 'records SMART health and the drive model at registration when the enclosure exposes it' do
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\nVolume UUID: ABCD-1234\n")
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
       fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: <<~OUT)
         Serial Number:    WD-WX12345
+        Device Model:     WDC WD80EFZZ-68BTXN0
         SMART overall-health self-assessment test result: PASSED
         ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
           5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
@@ -57,8 +58,17 @@ RSpec.describe EasySync::CLI do
       OUT
       cli('register-drive', vol).run
       expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', smart_status: 'ok',
-                                                       smart_detail: 'PASSED · reallocated 0 · 36°C')
-      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)')
+                                                       smart_detail: 'PASSED · reallocated 0 · 36°C',
+                                                       model: 'WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)', 'WDC WD80EFZZ-68BTXN0')
+    end
+
+    it 'leaves the model nil when smartctl exposes no model line' do
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\nVolume UUID: ABCD-1234\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: "Serial Number:    WD-WX12345\n")
+      cli('register-drive', vol).run
+      expect(manifest.drives.first.model).to be_nil
     end
 
     it 'prefers an explicit --serial and --name' do
@@ -119,11 +129,15 @@ RSpec.describe EasySync::CLI do
 
     it 'prints status, including SMART health, and a folder summary (no per-folder listing by default)' do
       m = manifest
-      m.update_drive_health('S2', status: 'warning', detail: 'PASSED · pending 3')
+      m.update_drive_health('S1', status: 'ok', detail: 'PASSED · reallocated 0 · pending 0 · uncorrectable 0 · 44°C')
+      m.update_drive_health('S2', status: 'warning', detail: 'PASSED · reallocated 0 · pending 3 · 39°C')
       m.close
       expect(cli('status').run).to eq(0)
-      expect(out.string).to include('backup-01-3tb', 'not mounted', 'SMART unchecked', 'SMART warning: PASSED · pending 3', '1 placed')
+      expect(out.string).to include('DRIVE', 'backup-01-3tb', 'not mounted', 'ok · 44°C', 'warning · pending 3 · 39°C', '1 placed')
       expect(out.string).not_to include('Photos')
+      expect(out.string).not_to include('reallocated 0', 'PASSED')   # zero counters and the implied verdict are noise
+      rows = out.string.lines.grep(/backup-0[12]-/)
+      expect(rows.map { |l| l.index(/ok ·|warning ·/) }.uniq.size).to eq(1)   # SMART column lines up
     end
 
     it '--all lists every placed folder, for piping' do
@@ -261,7 +275,8 @@ RSpec.describe EasySync::CLI do
       cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run
       out.truncate(0)
       cli('status').run
-      expect(out.string).to include('backup-04-8tb', 'retired 20')
+      expect(out.string).to include('Retired: backup-00 (20', 'backup-04-8tb (20')
+      expect(out.string).to match(/unchecked[^\n]*\n\n  Retired: /)   # blank line before the retired group
       out.truncate(0)
       cli('history', 'movies/A').run
       expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')
