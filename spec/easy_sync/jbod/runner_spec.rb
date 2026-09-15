@@ -198,13 +198,15 @@ RSpec.describe EasySync::Jbod::Runner do
     it 'records SMART health for each mounted drive and warns about one starting to fail' do
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB), mount('backup-05-8tb', free: 1 * TB)])
       allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-04-8tb")
-        .and_return(EasySync::Jbod::Health.new(status: 'ok', detail: 'PASSED · reallocated 0 · 34°C', source: 'smartctl'))
+        .and_return(EasySync::Jbod::Health.new(status: 'ok', detail: 'PASSED · reallocated 0 · 34°C', source: 'smartctl',
+                                               power_on_hours: 10_432))
       allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-05-8tb")
         .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 12 · pending 3 · 41°C', source: 'smartctl'))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(smart_status: 'ok', smart_checked_at: '2026-09-13T12:00:00Z')
+      expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(smart_status: 'ok', smart_checked_at: '2026-09-13T12:00:00Z',
+                                                                     power_on_hours: 10_432)
       expect(manifest.drive('SN-backup-05-8tb').smart_status).to eq('warning')
       expect(report.unhealthy).to eq([['backup-05-8tb', 'warning']])
       expect(report.warnings).to include(a_string_matching(/backup-05-8tb is starting to fail: SMART says PASSED · reallocated 12 · pending 3/))

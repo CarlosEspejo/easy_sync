@@ -100,6 +100,13 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(%r{<div class="serial" title="SN-long-model · Western Digital WD80EFZZ-68BTXN0">SN-long-model · Western Digital WD8…</div>})
   end
 
+  it 'shows powered-on runtime next to the health line when smartctl reported it, and nothing when it never has' do
+    manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · 36°C', power_on_hours: 10_432)
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+    expect(html).to match(%r{backup-04-8tb[\s\S]*?runtime 1\.2 yrs \(10432 hrs\)})
+    expect(html).not_to match(/backup-05-8tb[\s\S]{0,200}runtime/)
+  end
+
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do
     60.times { |i| manifest.assign_folder("movies/Film #{i}", 'SN-backup-05-8tb', size_bytes: TB / 100) }
     manifest.assign_folder('tv/Show A', 'SN-backup-05-8tb', size_bytes: TB / 10)

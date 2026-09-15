@@ -56,7 +56,9 @@ RSpec.describe EasySync::Jbod::Manifest do
 
       m = described_class.new(db, clock: clock)
       expect(m.schema_version).to eq(described_class::SCHEMA_VERSION)
-      expect(m.drives.first).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb', model: nil)
+      expect(m.drives.first).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb', model: nil,
+                                                power_on_hours: nil)
+      expect(m.update_drive_health('SN1', status: 'ok', detail: 'PASSED', power_on_hours: 500).power_on_hours).to eq(500)
     end
 
     it 'still adds the model column when a pre-2.0 build stamped the database user_version 5 (the real manifest)' do
@@ -171,6 +173,21 @@ RSpec.describe EasySync::Jbod::Manifest do
     it 'raises for an unknown drive' do
       expect { manifest.update_drive_usage('nope', used_bytes: 1, free_bytes: 1) }
         .to raise_error(described_class::UnknownDrive)
+    end
+  end
+
+  describe '#update_drive_health' do
+    before { register_fleet(manifest) }
+
+    it 'records the SMART status, detail, and power-on hours' do
+      drive = manifest.update_drive_health('SN-backup-01-3tb', status: 'ok', detail: 'PASSED', power_on_hours: 10_432)
+      expect(drive).to have_attributes(smart_status: 'ok', smart_detail: 'PASSED', power_on_hours: 10_432)
+    end
+
+    it 'keeps the last known power-on hours when a health source has none to report' do
+      manifest.update_drive_health('SN-backup-01-3tb', status: 'ok', detail: 'PASSED', power_on_hours: 10_432)
+      drive = manifest.update_drive_health('SN-backup-01-3tb', status: 'ok', detail: 'diskutil: Verified')
+      expect(drive.power_on_hours).to eq(10_432)
     end
   end
 

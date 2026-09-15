@@ -5,6 +5,11 @@ RSpec.describe EasySync::Jbod::Drive do
     described_class.new(serial_number: 'SN1', friendly_name: 'backup-01-8tb', capacity_bytes: 8 * TB, model: model)
   end
 
+  def drive_with_runtime(power_on_hours)
+    described_class.new(serial_number: 'SN1', friendly_name: 'backup-01-8tb', capacity_bytes: 8 * TB,
+                        power_on_hours: power_on_hours)
+  end
+
   describe '#manufacturer' do
     it 'recognises Seagate models by their ST-number convention, with no separate brand token to find' do
       expect(drive('ST8000VN004-2M2101').manufacturer).to eq('Seagate')
@@ -44,6 +49,22 @@ RSpec.describe EasySync::Jbod::Drive do
 
     it 'is nil when there is no model at all' do
       expect(drive(nil).branded_model).to be_nil
+    end
+  end
+
+  describe '#runtime_label' do
+    it 'shows actual powered-on time, not calendar age' do
+      # the whole point: a drive can be old on the calendar but barely used
+      expect(drive_with_runtime(100).runtime_label).to eq('4 days (100 hrs)')
+    end
+
+    it 'switches to years once power-on time crosses a year' do
+      expect(drive_with_runtime(8_760).runtime_label).to eq('1.0 yrs (8760 hrs)')
+      expect(drive_with_runtime(30_000).runtime_label).to eq('3.4 yrs (30000 hrs)')
+    end
+
+    it 'is nil when smartctl never reported an hour count' do
+      expect(drive_with_runtime(nil).runtime_label).to be_nil
     end
   end
 end

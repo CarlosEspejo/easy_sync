@@ -209,7 +209,10 @@ module EasySync
       # drive that is starting to fail is the one thing worth shouting about.
       def check_health(mounted_drive, report)
         health = @volume_info.smart_health(mounted_drive.mount_point) or return
-        manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail) unless @dry_run
+        unless @dry_run
+          manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail,
+                                                                     power_on_hours: health.power_on_hours)
+        end
         return if %w[ok unknown].include?(health.status)
 
         report.unhealthy << [mounted_drive.friendly_name, health.status]

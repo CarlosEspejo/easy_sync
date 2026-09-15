@@ -293,6 +293,11 @@ enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
 the page and a warning on the terminal. Health is read on every sync and at
 registration, via `smartctl` on the physical disk, falling back to `diskutil`.
 
+When `smartctl` reports it, each tile also shows the drive's actual powered-on
+runtime (SMART's Power_On_Hours), not calendar age — a 5-year-old drive that
+sat on a shelf can show far fewer hours than one bought last year and run
+around the clock.
+
 The header says how many folders the NAS holds, how many are backed up and,
 in red, how many are **not**, because no mounted drive has room. That is the
 one number that matters, so it also raises an alert at the top and a "Not
@@ -348,7 +353,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 
 | table | holds |
 |---|---|
-| `drives` | serial (PK), name, capacity, added date, volume UUID, last seen usage, SMART status and detail, retired date |
+| `drives` | serial (PK), name, capacity, added date, volume UUID, model, last seen usage, SMART status/detail/power-on hours, retired date |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
 | `placement_history` | every `assigned`, `reassigned` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
