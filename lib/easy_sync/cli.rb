@@ -447,7 +447,7 @@ module EasySync
       unless drives.empty?
         rows = drives.map do |d|
           m = mounted[d.serial_number]
-          [d.friendly_name, d.serial_number,
+          [d.friendly_name, d.model ? "#{d.serial_number} · #{d.model}" : d.serial_number,
            m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
            m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
            smart_summary(d), drive_note(d, m)]

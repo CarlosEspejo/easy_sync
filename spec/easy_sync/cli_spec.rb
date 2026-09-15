@@ -140,6 +140,15 @@ RSpec.describe EasySync::CLI do
       expect(rows.map { |l| l.index(/ok ·|warning ·/) }.uniq.size).to eq(1)   # SMART column lines up
     end
 
+    it 'shows the drive model next to the serial when known, and nothing extra when not' do
+      manifest.register_drive(serial_number: 'S3', friendly_name: 'backup-03-8tb', capacity_bytes: 8 * TB,
+                              model: 'WDC WD80EFZZ-68BTXN0')
+      manifest.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('S3 · WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to match(/\bS1(?! ·)/)
+    end
+
     it '--all lists every placed folder, for piping' do
       expect(cli('status', '--all').run).to eq(0)
       expect(out.string).to include('Photos')
