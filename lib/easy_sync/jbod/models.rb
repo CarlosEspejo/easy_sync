@@ -14,6 +14,36 @@ module EasySync
 
         last_used_bytes.to_f / capacity_bytes
       end
+
+      # smartctl's Device Model has no separate "vendor" field for ATA/NVMe
+      # drives (that's a SCSI/USB-bridge thing); the maker is only ever
+      # visible as a token baked into the model string itself, or - for
+      # Seagate - not spelled out at all, just implied by the "ST" model
+      # prefix every Seagate drive uses.
+      BRANDS = {
+        'WDC' => 'Western Digital', 'WD' => 'Western Digital', 'TOSHIBA' => 'Toshiba', 'HGST' => 'HGST',
+        'SAMSUNG' => 'Samsung', 'HITACHI' => 'Hitachi', 'APPLE' => 'Apple', 'SEAGATE' => 'Seagate',
+        'CRUCIAL' => 'Crucial', 'KINGSTON' => 'Kingston', 'INTEL' => 'Intel'
+      }.freeze
+
+      def manufacturer
+        return nil unless model
+
+        token = model[/\A[A-Za-z]+/]
+        return BRANDS[token.upcase] if token && BRANDS.key?(token.upcase)
+
+        'Seagate' if model.match?(/\AST\d/i)
+      end
+
+      # model, with the manufacturer spelled out plainly instead of a raw
+      # token (or, for Seagate, added - its model numbers don't carry one).
+      def branded_model
+        return nil unless model
+        return model unless manufacturer
+
+        rest = model.sub(/\A(?:WDC|WD|TOSHIBA|HGST|SAMSUNG|HITACHI|APPLE|SEAGATE|CRUCIAL|KINGSTON|INTEL)[\s-]+/i, '')
+        "#{manufacturer} #{rest}"
+      end
     end
 
     Folder = Struct.new(:folder_path, :drive_serial, :size_bytes, :assigned_at,
