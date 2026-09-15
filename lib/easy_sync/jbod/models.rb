@@ -49,7 +49,7 @@ module EasySync
       # SMART's Power_On_Hours counts only time actually spinning/powered,
       # unlike calendar age: a 5-year-old drive that sat on a shelf can show
       # a fraction of the wear of one bought last year and run constantly.
-      def runtime_label
+      def power_on_label
         return nil unless power_on_hours
 
         years = power_on_hours / 24.0 / 365

@@ -293,10 +293,10 @@ enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
 the page and a warning on the terminal. Health is read on every sync and at
 registration, via `smartctl` on the physical disk, falling back to `diskutil`.
 
-When `smartctl` reports it, each tile also shows the drive's actual powered-on
-runtime (SMART's Power_On_Hours), not calendar age — a 5-year-old drive that
-sat on a shelf can show far fewer hours than one bought last year and run
-around the clock.
+When `smartctl` reports it, each tile also shows how long the drive has
+actually been powered on (SMART's Power_On_Hours), not calendar age — a
+5-year-old drive that sat on a shelf can show far fewer hours than one bought
+last year and run around the clock.
 
 The header says how many folders the NAS holds, how many are backed up and,
 in red, how many are **not**, because no mounted drive has room. That is the
