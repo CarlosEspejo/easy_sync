@@ -150,7 +150,8 @@
         <span class="badge unknown">not mounted</span>
       <%- end -%>
       </div>
-      <div class="serial"><%= h d.drive.serial_number %><%- if d.drive.branded_model -%> · <%= h d.drive.branded_model %><%- end -%></div>
+      <%- serial_text, serial_full = serial_line(d.drive) -%>
+      <div class="serial"<%= serial_full ? %( title="#{h serial_full}") : '' %>><%= h serial_text %></div>
       <div class="value"><%= bytes(d.free_bytes) %> <span class="unit">free</span></div>
       <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
       <div class="sub"><%= bytes(d.used_bytes) %> of <%= bytes(d.capacity_bytes) %> used · <%= percent(d.used_fraction) %></div>
