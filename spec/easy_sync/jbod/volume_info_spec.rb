@@ -194,6 +194,39 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
     end
   end
 
+  describe '#smartctl_model' do
+    it 'reads Device Model from an ATA drive' do
+      fake_shell.on(->(argv) { argv[0..1] == ['diskutil', 'info'] && argv.last == '/Volumes/backup-04-8tb' },
+                    output: "Part of Whole: disk3\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv == ['smartctl', '-a', '/dev/disk0s2'] },
+                    output: "Device Model:     WDC WD80EFZZ-68BTXN0\nSerial Number:    WD-WX12345\n")
+      expect(info.smartctl_model('/Volumes/backup-04-8tb')).to eq('WDC WD80EFZZ-68BTXN0')
+    end
+
+    it 'falls back to Model Number for an NVMe drive' do
+      fake_shell.on(->(argv) { argv[0..1] == ['diskutil', 'info'] }, output: "Part of Whole: disk3\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv == ['smartctl', '-a', '/dev/disk0s2'] },
+                    output: "Model Number:                       APPLE SSD AP2048Z\n")
+      expect(info.smartctl_model('/Volumes/x')).to eq('APPLE SSD AP2048Z')
+    end
+
+    it 'returns nil when smartctl reports no model line (unsupported device)' do
+      fake_shell.on(->(argv) { argv[0..1] == ['diskutil', 'info'] }, output: "Part of Whole: disk7\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk7'] }, output: "APFS Physical Store: disk7\n")
+      fake_shell.on(->(argv) { argv[0] == 'smartctl' },
+                    output: "Smartctl open device: /dev/disk7 failed: Operation not supported by device\n", status: 2)
+      expect(info.smartctl_model('/Volumes/external')).to be_nil
+    end
+
+    it 'returns nil without calling smartctl when the physical disk cannot be resolved' do
+      fake_shell.on('diskutil', output: '', status: 1)
+      expect(info.smartctl_model('/Volumes/x')).to be_nil
+      expect(fake_shell.calls_to('smartctl')).to be_empty
+    end
+  end
+
   describe '.parse_smartctl' do
     ata = <<~OUT
       === START OF INFORMATION SECTION ===

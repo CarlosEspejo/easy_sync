@@ -32,6 +32,11 @@ README.md is the user-facing truth; this file is for working on the code.
 - Physical disk for smartctl: `diskutil info <mount>` -> "Part of Whole" ->
   `diskutil info <that>` -> "APFS Physical Store".
 - `caffeinate -i -w <pid>` exits on its own when the pid does; spawn it detached.
+- The real `~/.easy_sync/manifest.sqlite3` is stamped `user_version` 5 (left over
+  from pre-2.0 builds) although 2.0's schema counts from 1. Add columns by
+  checking `PRAGMA table_info`, never by comparing version numbers: a
+  version-gated `ALTER TABLE` was skipped on the real manifest and crashed the
+  first sync after it (`no such column: model`).
 - `du` over SMB: seconds for thousands of single-file movie folders, minutes for a
   share with hundreds of thousands of files. rsync's read-only walk of an
   unchanged folder is ~0.15 s.

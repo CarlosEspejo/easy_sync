@@ -38,6 +38,8 @@ module EasySync
           history: manifest.history(limit: 50),
           runs: manifest.sync_runs(limit: 30),
           generated_at: @clock.now,
+          total_capacity_bytes: drives.sum { |d| d.capacity_bytes.to_i },
+          total_free_bytes: drives.sum { |d| d.free_bytes.to_i },
           warnings: drives.select { |d| %i[warning critical].include?(d.level) },
           source_status: source_status,
           loose_files: loose_files,
@@ -72,6 +74,19 @@ module EasySync
                         'unknown' => 'SMART n/a' }.freeze
 
       def health_label(status) = HEALTH_LABELS.fetch(status, 'SMART n/a')
+
+      # A healthy tile shows only its temperature; the sector counters matter
+      # only once something is wrong (they stay in the tooltip otherwise).
+      def health_line(view)
+        temp = view.drive.smart_detail.to_s[/\d+°C/] if view.health == 'ok'
+        [health_label(view.health), temp].compact.join(' · ')
+      end
+
+      def health_detail_shown?(view) = %w[warning failing].include?(view.health) && view.drive.smart_detail
+
+      # The mount path is only news when macOS mounted the drive somewhere
+      # other than under its own name (e.g. "backup-02-6tb 1").
+      def unexpected_mount?(view) = view.mounted && File.basename(view.mount_point) != view.drive.friendly_name
 
       # Inventory rows for one share, by state.
       def inventory_for(inventory, share)

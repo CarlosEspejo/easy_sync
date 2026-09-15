@@ -54,6 +54,7 @@ RSpec.describe EasySync::Jbod::Runner do
     allow(volume_info).to receive(:smart_health).and_return(
       EasySync::Jbod::Health.new(status: 'unknown', detail: 'not exposed', source: 'none')
     )
+    allow(volume_info).to receive(:smartctl_model).and_return(nil)
   end
 
   describe '#sources' do
@@ -382,6 +383,35 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(html).to include('backup-04-8tb', 'photos', '88%')
       expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(smart_status: 'unknown', smart_detail: 'not exposed')
       expect(out.string).to include("Dashboard written to #{dashboard_path}")
+    end
+
+    it 'backfills a drive model that smartctl can now provide but the manifest never recorded' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
+      allow(volume_info).to receive(:smartctl_model).with("#{mount_root}/backup-04-8tb").and_return('WDC WD80EFZZ-68BTXN0')
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      runner.run
+      expect(manifest.drive('SN-backup-04-8tb').model).to eq('WDC WD80EFZZ-68BTXN0')
+    end
+
+    it 'stops asking smartctl for a model once the drive already has one' do
+      manifest.update_drive_model('SN-backup-04-8tb', model: 'WDC WD80EFZZ-68BTXN0')
+      fresh_drive = manifest.drive('SN-backup-04-8tb')   # drives[...] was cached before the update above
+      allow(volume_info).to receive(:mounted_drives)
+        .and_return([mounted(fresh_drive, free: 1 * TB, used: 7 * TB, mount_point: "#{mount_root}/backup-04-8tb")])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      runner.run
+      expect(volume_info).not_to have_received(:smartctl_model)
+    end
+
+    it 'never backfills a model in dry-run' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
+      allow(volume_info).to receive(:smartctl_model).and_return('WDC WD80EFZZ-68BTXN0')
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      build_runner(settings, dry_run: true).run
+      expect(manifest.drive('SN-backup-04-8tb').model).to be_nil
     end
 
     it 'lists loose files on the dashboard' do

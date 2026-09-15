@@ -45,11 +45,12 @@ RSpec.describe EasySync::CLI do
       expect(drive.smart_status).to eq('unknown')
     end
 
-    it 'records SMART health at registration when the enclosure exposes it' do
+    it 'records SMART health and the drive model at registration when the enclosure exposes it' do
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\nVolume UUID: ABCD-1234\n")
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
       fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: <<~OUT)
         Serial Number:    WD-WX12345
+        Device Model:     WDC WD80EFZZ-68BTXN0
         SMART overall-health self-assessment test result: PASSED
         ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
           5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
@@ -57,8 +58,17 @@ RSpec.describe EasySync::CLI do
       OUT
       cli('register-drive', vol).run
       expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', smart_status: 'ok',
-                                                       smart_detail: 'PASSED · reallocated 0 · 36°C')
-      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)')
+                                                       smart_detail: 'PASSED · reallocated 0 · 36°C',
+                                                       model: 'WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)', 'WDC WD80EFZZ-68BTXN0')
+    end
+
+    it 'leaves the model nil when smartctl exposes no model line' do
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\nVolume UUID: ABCD-1234\n")
+      fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+      fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: "Serial Number:    WD-WX12345\n")
+      cli('register-drive', vol).run
+      expect(manifest.drives.first.model).to be_nil
     end
 
     it 'prefers an explicit --serial and --name' do
@@ -119,11 +129,48 @@ RSpec.describe EasySync::CLI do
 
     it 'prints status, including SMART health, and a folder summary (no per-folder listing by default)' do
       m = manifest
-      m.update_drive_health('S2', status: 'warning', detail: 'PASSED · pending 3')
+      m.update_drive_health('S1', status: 'ok', detail: 'PASSED · reallocated 0 · pending 0 · uncorrectable 0 · 44°C')
+      m.update_drive_health('S2', status: 'warning', detail: 'PASSED · reallocated 0 · pending 3 · 39°C')
       m.close
       expect(cli('status').run).to eq(0)
-      expect(out.string).to include('backup-01-3tb', 'not mounted', 'SMART unchecked', 'SMART warning: PASSED · pending 3', '1 placed')
+      expect(out.string).to include('DRIVE', 'backup-01-3tb', 'not mounted', 'ok · 44°C', 'warning · pending 3 · 39°C', '1 placed')
       expect(out.string).not_to include('Photos')
+      expect(out.string).not_to include('reallocated 0', 'PASSED')   # zero counters and the implied verdict are noise
+      rows = out.string.lines.grep(/backup-0[12]-/)
+      expect(rows.map { |l| l.index(/ok ·|warning ·/) }.uniq.size).to eq(1)   # SMART column lines up
+    end
+
+    it 'sums capacity and free space across all drives, live numbers where mounted, last-known otherwise' do
+      m = manifest
+      m.update_drive_usage('S1', used_bytes: 1 * TB, free_bytes: 2 * TB)   # S1 stays unmounted: falls back to this
+      m.close
+      vol = make_dirs(mount_root, 'backup-02-6tb').first
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S2', friendly_name: 'backup-02-6tb' }.to_json)
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol },
+                    output: df_output(vol, capacity_kb: 4 * 1024**3, used_kb: 0))   # 4 TB free, live
+
+      expect(cli('status').run).to eq(0)
+      # capacity: registered 3 TB (S1) + 6 TB (S2) = 9 TB, regardless of mount state
+      # free: S1's last-known 2 TB + S2's live 4 TB = 6 TB
+      expect(out.string).to include('Total: 9.0 TB capacity, 6.0 TB free right now')
+    end
+
+    it 'omits the total line when no drives are registered' do
+      m = manifest
+      m.retire_drive('S1')
+      m.retire_drive('S2')
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).not_to include('Total:')
+    end
+
+    it 'shows the drive model next to the serial when known, and nothing extra when not' do
+      manifest.register_drive(serial_number: 'S3', friendly_name: 'backup-03-8tb', capacity_bytes: 8 * TB,
+                              model: 'WDC WD80EFZZ-68BTXN0')
+      manifest.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('S3 · WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to match(/\bS1(?! ·)/)
     end
 
     it '--all lists every placed folder, for piping' do
@@ -158,6 +205,25 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include('2 folders failed their last sync')
     end
 
+    it 'caps the retired list to the most recent, newest first, with the rest behind --all' do
+      m = manifest
+      6.times do |i|
+        m.register_drive(serial_number: "OLD#{i}", friendly_name: "old-#{i}", capacity_bytes: 1 * TB)
+        m.retire_drive("OLD#{i}", at: "2026-01-0#{i + 1}T12:00:00Z")   # noon UTC so it doesn't roll back a day in local time
+      end
+      m.close
+
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('Retired: old-5 (2026-01-06), old-4 (2026-01-05), old-3 (2026-01-04), ' \
+                                    'old-2 (2026-01-03), old-1 (2026-01-02) · 1 more (see `status --all`)')
+      expect(out.string).not_to include('old-0')
+
+      out.truncate(0)
+      expect(cli('status', '--all').run).to eq(0)
+      expect(out.string).to include('old-0 (2026-01-01)')
+      expect(out.string).not_to include('more (see')
+    end
+
     it 'says no sync is running when the lock file is absent' do
       expect(cli('status').run).to eq(0)
       expect(out.string).to include('No sync currently running.')
@@ -172,6 +238,143 @@ RSpec.describe EasySync::CLI do
 
       expect(cli('status', clock: double('clock', now: started + (2 * 3600) + (34 * 60))).run).to eq(0)
       expect(out.string).to include("Sync running: pid #{Process.pid}", '2h 34m ago')
+    end
+
+    it 'shows elapsed time in days once a run has been going that long' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, Process.pid.to_s)
+      started = Time.utc(2026, 9, 10, 10, 0, 0)
+      File.utime(started, started, lock_path)
+
+      expect(cli('status', clock: double('clock', now: started + (3 * 86_400) + (5 * 3600))).run).to eq(0)
+      expect(out.string).to include('3d 5h ago')
+    end
+
+    describe 'estimating time remaining for a sync in progress' do
+      let(:lock_path) { File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock') }
+      let(:started) { Time.utc(2026, 9, 15, 8, 0, 0) }
+
+      before do
+        FileUtils.mkdir_p(File.dirname(lock_path))
+        File.write(lock_path, Process.pid.to_s)
+        File.utime(started, started, lock_path)
+      end
+
+      it 'says it is waiting when nothing has finished yet this run' do
+        expect(cli('status', clock: double('clock', now: started + 5)).run).to eq(0)
+        expect(out.string).to include('Estimating time remaining: waiting for the first folder to finish this run...')
+      end
+
+      it 'combines the observed transfer rate and verify time into one estimate' do
+        m = manifest
+        m.assign_folder('Movies/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
+        m.assign_folder('Movies/B', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
+                      finished_at: '2026-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
+        # synced before this run, not yet re-touched -> remains as "to re-verify"
+        m.assign_folder('Movies/C', 'S1', size_bytes: 200 * GB)
+        # a real transfer this run: 20 GB in 20s = 1 GB/s
+        m.record_sync(folder_path: 'Movies/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
+                      finished_at: '2026-09-15T08:00:30Z', exit_status: 0, bytes_transferred: 20 * GB, total_size_bytes: 200 * GB)
+        m.assign_folder('Movies/D', 'S1', size_bytes: 10 * GB)
+        # a verify-only run this run: 2s, nothing transferred
+        m.record_sync(folder_path: 'Movies/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
+                      finished_at: '2026-09-15T08:00:33Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10 * GB)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 40)).run).to eq(0)
+        # remaining never-synced: Photos (from the outer before) + Movies/A = 2, at 1 GB/s that's 100s
+        # remaining to re-verify: Movies/B = 1, at the observed 2s each
+        expect(out.string).to include('About 1m 42s remaining (2 folders never synced, 1 to re-verify) - ' \
+                                      'rough estimate, NAS/network speed varies.')
+      end
+
+      it 'says it is waiting for a first real transfer when only verifies have finished so far this run' do
+        m = manifest
+        m.assign_folder('Movies/Y', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
+                      finished_at: '2020-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
+                      finished_at: '2026-09-15T08:00:06Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 50 * GB)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 10)).run).to eq(0)
+        # Photos (from the outer before) is the only folder never synced
+        expect(out.string).to include('1 folder never synced (0 B); still waiting for one to finish before estimating their time.')
+      end
+
+      it 'shows no estimate once every folder has been touched this run' do
+        m = manifest
+        m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: '2026-09-15T08:00:01Z',
+                      finished_at: '2026-09-15T08:00:02Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 5)).run).to eq(0)
+        expect(out.string).not_to include('remaining', 'Estimating', 'waiting')
+      end
+    end
+  end
+
+  describe 'rename-drive' do
+    def mount(serial, name)
+      vol = make_dirs(mount_root, name).first
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: serial, friendly_name: name }.to_json)
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol }, output: df_output(vol, capacity_kb: 1_000_000, used_kb: 1_000))
+      vol
+    end
+
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-07-2tb', capacity_bytes: 2 * TB)
+      m.register_drive(serial_number: 'S2', friendly_name: 'backup-08-6tb', capacity_bytes: 6 * TB)
+      m.register_drive(serial_number: 'S3', friendly_name: 'backup-09-6tb', capacity_bytes: 6 * TB)
+      m.retire_drive('S3')
+      m.close
+    end
+
+    it 'relabels a single drive when the new name is free' do
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-11-2tb').run).to eq(0)
+      expect(manifest.drive_by_name('backup-11-2tb').serial_number).to eq('S1')
+      expect(out.string).to include('Renamed backup-07-2tb to backup-11-2tb.')
+      expect(out.string).not_to include('Swapped')
+    end
+
+    it 'swaps two names in one operation when the new name is already taken' do
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-08-6tb').run).to eq(0)
+      expect(manifest.drive_by_name('backup-08-6tb').serial_number).to eq('S1')
+      expect(manifest.drive_by_name('backup-07-2tb').serial_number).to eq('S2')
+      expect(out.string).to include('Swapped names: backup-07-2tb <-> backup-08-6tb.')
+    end
+
+    it 'rewrites the marker on any drive that is mounted, keeping the original registered_at' do
+      vol = mount('S1', 'backup-07-2tb')
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE),
+                { serial_number: 'S1', friendly_name: 'backup-07-2tb', registered_at: '2026-01-01T00:00:00Z' }.to_json)
+
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-11-2tb').run).to eq(0)
+      marker = JSON.parse(File.read(File.join(vol, EasySync::Jbod::MARKER_FILE)), symbolize_names: true)
+      expect(marker).to include(serial_number: 'S1', friendly_name: 'backup-11-2tb', registered_at: '2026-01-01T00:00:00Z')
+    end
+
+    it 'suggests the diskutil rename command for each mounted drive involved, and nothing for an unmounted one' do
+      mount('S1', 'backup-07-2tb')
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-08-6tb').run).to eq(0)
+      expect(out.string).to include("diskutil rename #{mount_root}/backup-07-2tb backup-08-6tb")
+      expect(out.string).not_to include("diskutil rename #{mount_root}/backup-08-6tb backup-07-2tb")   # S2 was never mounted
+    end
+
+    it 'never touches the manifest when it cannot rename' do
+      expect(cli('rename-drive', 'nope', 'x').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+
+      expect(cli('rename-drive', 'backup-09-6tb', 'backup-11-2tb').run).to eq(1)
+      expect(err.string).to include('backup-09-6tb is retired')
+
+      expect(cli('rename-drive', 'backup-07-2tb', 'backup-07-2tb').run).to eq(1)
+      expect(err.string).to include('same')
+
+      expect(manifest.drives.map(&:friendly_name)).to contain_exactly('backup-07-2tb', 'backup-08-6tb')
     end
   end
 
@@ -261,7 +464,8 @@ RSpec.describe EasySync::CLI do
       cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run
       out.truncate(0)
       cli('status').run
-      expect(out.string).to include('backup-04-8tb', 'retired 20')
+      expect(out.string).to include('Retired: backup-04-8tb (20', 'backup-00 (20')   # newest retirement first
+      expect(out.string).to match(/unchecked[^\n]*\n {2}Total: [^\n]*\n\n {2}Retired: /)   # blank line before the retired group
       out.truncate(0)
       cli('history', 'movies/A').run
       expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')

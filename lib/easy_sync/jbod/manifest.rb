@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 1
+      SCHEMA_VERSION = 2
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -51,10 +51,10 @@ module EasySync
 
       # -- drives ---------------------------------------------------------
 
-      def register_drive(serial_number:, friendly_name:, capacity_bytes:, volume_uuid: nil, added_date: now)
-        db.execute(<<~SQL, [serial_number, friendly_name, capacity_bytes, added_date, volume_uuid])
-          INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date, volume_uuid)
-          VALUES (?, ?, ?, ?, ?)
+      def register_drive(serial_number:, friendly_name:, capacity_bytes:, volume_uuid: nil, model: nil, added_date: now)
+        db.execute(<<~SQL, [serial_number, friendly_name, capacity_bytes, added_date, volume_uuid, model])
+          INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date, volume_uuid, model)
+          VALUES (?, ?, ?, ?, ?, ?)
         SQL
         drive(serial_number)
       end
@@ -64,6 +64,27 @@ module EasySync
         sql = 'SELECT * FROM drives'
         sql += ' WHERE retired_at IS NULL' unless include_retired
         db.execute("#{sql} ORDER BY friendly_name").map { |row| row_to_drive(row) }
+      end
+
+      # friendly_name is cosmetic (drives are matched by serial, never by
+      # name or mount path), so this is a plain rename.
+      def rename_drive(serial_number, new_name)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [new_name, serial_number])
+        drive(serial_number)
+      end
+
+      # friendly_name is UNIQUE, so exchanging two names needs a temporary
+      # third value to avoid colliding with the other row mid-swap.
+      def swap_drive_names(serial_a, serial_b)
+        a = drive(serial_a) or raise UnknownDrive, "no drive registered with serial #{serial_a}"
+        b = drive(serial_b) or raise UnknownDrive, "no drive registered with serial #{serial_b}"
+        db.transaction do
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', ["__renaming__#{serial_a}", serial_a])
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [a.friendly_name, serial_b])
+          db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [b.friendly_name, serial_a])
+        end
+        [drive(serial_a), drive(serial_b)]
       end
 
       # Marks a drive retired. Its row and history stay so old placements
@@ -115,6 +136,14 @@ module EasySync
         ensure_drive!(serial_number)
         db.execute('UPDATE drives SET smart_status = ?, smart_detail = ?, smart_checked_at = ? WHERE serial_number = ?',
                    [status, detail, checked_at, serial_number])
+        drive(serial_number)
+      end
+
+      # Backfills the model for a drive registered before this field existed,
+      # or one whose enclosure didn't expose it at registration time.
+      def update_drive_model(serial_number, model:)
+        ensure_drive!(serial_number)
+        db.execute('UPDATE drives SET model = ? WHERE serial_number = ?', [model, serial_number])
         drive(serial_number)
       end
 
@@ -231,6 +260,14 @@ module EasySync
         sql += ' ORDER BY id DESC LIMIT ?'
         params << limit
         db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row)) }
+      end
+
+      # Every successful sync_run since +since+ (ISO8601), oldest first, no
+      # LIMIT: for estimating a run in progress, which can touch thousands
+      # of folders, unlike #sync_runs' recent-activity display.
+      def sync_runs_since(since)
+        db.execute('SELECT * FROM sync_runs WHERE started_at >= ? AND exit_status = 0 ORDER BY id', [since])
+          .map { |row| SyncRun.new(**symbolize(row)) }
       end
 
       # -- source inventory ----------------------------------------------
@@ -368,9 +405,22 @@ module EasySync
         row.to_h.transform_keys(&:to_sym)
       end
 
+      # Columns added after v1 are applied by checking for them, never by
+      # comparing user_version: the real manifest was stamped 5 by pre-2.0
+      # builds, so a version-gated ALTER silently never ran on it.
       def migrate!
-        return if schema_version >= SCHEMA_VERSION
+        migrate_to_v1! if schema_version < 1
+        add_column('drives', 'model', 'TEXT')
+        db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
+      end
 
+      def add_column(table, name, type)
+        return if db.execute("PRAGMA table_info(#{table})").any? { |c| c['name'] == name }
+
+        db.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{type}")
+      end
+
+      def migrate_to_v1!
         db.transaction do
           db.execute_batch(<<~SQL)
             CREATE TABLE IF NOT EXISTS drives (
@@ -448,7 +498,7 @@ module EasySync
               deleted_at       TEXT NOT NULL
             );
           SQL
-          db.execute("PRAGMA user_version = #{SCHEMA_VERSION}")
+          db.execute('PRAGMA user_version = 1')
         end
       end
 

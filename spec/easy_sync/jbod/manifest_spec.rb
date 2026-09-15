@@ -31,15 +31,63 @@ RSpec.describe EasySync::Jbod::Manifest do
       m.close
       expect(described_class.open(path).drives.map(&:friendly_name)).to eq(['backup-01-3tb'])
     end
+
+    it 'upgrades a real schema-v1 database (drives table with no model column) in place' do
+      db = SQLite3::Database.new(':memory:')
+      db.execute_batch(<<~SQL)
+        CREATE TABLE drives (
+          serial_number   TEXT PRIMARY KEY,
+          friendly_name   TEXT NOT NULL UNIQUE,
+          capacity_bytes  INTEGER NOT NULL,
+          added_date      TEXT NOT NULL,
+          volume_uuid     TEXT,
+          last_seen_at    TEXT,
+          last_used_bytes INTEGER,
+          last_free_bytes INTEGER,
+          smart_status    TEXT,
+          smart_detail    TEXT,
+          smart_checked_at TEXT,
+          retired_at      TEXT
+        );
+      SQL
+      db.execute("INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date) VALUES ('SN1', 'backup-01-3tb', ?, '2026-01-01T00:00:00Z')",
+                 [3 * TB])
+      db.execute('PRAGMA user_version = 1')
+
+      m = described_class.new(db, clock: clock)
+      expect(m.schema_version).to eq(described_class::SCHEMA_VERSION)
+      expect(m.drives.first).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb', model: nil)
+    end
+
+    it 'still adds the model column when a pre-2.0 build stamped the database user_version 5 (the real manifest)' do
+      db = SQLite3::Database.new(':memory:')
+      db.execute('CREATE TABLE drives (serial_number TEXT PRIMARY KEY, friendly_name TEXT NOT NULL UNIQUE, ' \
+                 'capacity_bytes INTEGER NOT NULL, added_date TEXT NOT NULL, volume_uuid TEXT, last_seen_at TEXT, ' \
+                 'last_used_bytes INTEGER, last_free_bytes INTEGER, smart_status TEXT, smart_detail TEXT, ' \
+                 'smart_checked_at TEXT, retired_at TEXT)')
+      db.execute("INSERT INTO drives (serial_number, friendly_name, capacity_bytes, added_date) VALUES ('SN1', 'a', 1, 'x')")
+      db.execute('PRAGMA user_version = 5')
+
+      m = described_class.new(db, clock: clock)
+      expect(m.update_drive_model('SN1', model: 'WDC WD80EFZZ').model).to eq('WDC WD80EFZZ')
+      expect(m.schema_version).to eq(5)   # never stamped downward
+      expect { described_class.new(db, clock: clock) }.not_to raise_error   # reopening is a no-op
+    end
   end
 
   describe '#register_drive' do
     it 'stores a drive keyed by serial number' do
       drive = manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-01-3tb',
-                                      capacity_bytes: 3 * TB, volume_uuid: 'UUID-1')
+                                      capacity_bytes: 3 * TB, volume_uuid: 'UUID-1', model: 'WDC WD80EFZZ-68BTXN0')
       expect(drive).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-01-3tb',
                                        capacity_bytes: 3 * TB, volume_uuid: 'UUID-1',
+                                       model: 'WDC WD80EFZZ-68BTXN0',
                                        added_date: '2026-09-13T12:00:00Z')
+    end
+
+    it 'defaults model to nil when the enclosure hides it' do
+      drive = manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      expect(drive.model).to be_nil
     end
 
     it 'rejects a duplicate serial number' do
@@ -59,6 +107,48 @@ RSpec.describe EasySync::Jbod::Manifest do
       expect(manifest.drive('SN-backup-04-8tb').friendly_name).to eq('backup-04-8tb')
       expect(manifest.drive_by_name('backup-04-8tb').serial_number).to eq('SN-backup-04-8tb')
       expect(manifest.drive('nope')).to be_nil
+    end
+  end
+
+  describe '#rename_drive' do
+    it 'relabels a drive by serial' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'old-name', capacity_bytes: 3 * TB)
+      drive = manifest.rename_drive('SN1', 'new-name')
+      expect(drive.friendly_name).to eq('new-name')
+      expect(manifest.drive_by_name('new-name').serial_number).to eq('SN1')
+      expect(manifest.drive_by_name('old-name')).to be_nil
+    end
+
+    it 'rejects an unknown serial' do
+      expect { manifest.rename_drive('nope', 'x') }.to raise_error(described_class::UnknownDrive)
+    end
+
+    it 'rejects a name already taken by another drive (use #swap_drive_names for that)' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'a', capacity_bytes: 1)
+      manifest.register_drive(serial_number: 'SN2', friendly_name: 'b', capacity_bytes: 1)
+      expect { manifest.rename_drive('SN1', 'b') }.to raise_error(SQLite3::ConstraintException)
+      expect(manifest.drive('SN1').friendly_name).to eq('a')   # untouched by the failed attempt
+    end
+  end
+
+  describe '#swap_drive_names' do
+    it 'exchanges two names without a UNIQUE collision in between' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'backup-07-2tb', capacity_bytes: 2 * TB)
+      manifest.register_drive(serial_number: 'SN2', friendly_name: 'backup-08-6tb', capacity_bytes: 6 * TB)
+
+      a, b = manifest.swap_drive_names('SN1', 'SN2')
+      expect(a).to have_attributes(serial_number: 'SN1', friendly_name: 'backup-08-6tb')
+      expect(b).to have_attributes(serial_number: 'SN2', friendly_name: 'backup-07-2tb')
+      expect(manifest.drive_by_name('backup-07-2tb').serial_number).to eq('SN2')
+      expect(manifest.drive_by_name('backup-08-6tb').serial_number).to eq('SN1')
+      # no leftover temp name
+      expect(manifest.drives.map(&:friendly_name)).to contain_exactly('backup-07-2tb', 'backup-08-6tb')
+    end
+
+    it 'rejects an unknown serial on either side, leaving both names untouched' do
+      manifest.register_drive(serial_number: 'SN1', friendly_name: 'a', capacity_bytes: 1)
+      expect { manifest.swap_drive_names('SN1', 'nope') }.to raise_error(described_class::UnknownDrive)
+      expect(manifest.drive('SN1').friendly_name).to eq('a')
     end
   end
 
@@ -190,6 +280,28 @@ RSpec.describe EasySync::Jbod::Manifest do
                              started_at: "t#{i}", finished_at: "t#{i}", exit_status: 0)
       end
       expect(manifest.sync_runs(limit: 2).map(&:started_at)).to eq(%w[t2 t1])
+    end
+  end
+
+  describe '#sync_runs_since' do
+    before { register_fleet(manifest) }
+
+    it 'returns every successful run at or after the given time, oldest first, with no limit' do
+      manifest.assign_folder('Photos', 'SN-backup-04-8tb', size_bytes: 10)
+      manifest.record_sync(folder_path: 'Photos', drive_serial: 'SN-backup-04-8tb',
+                           started_at: '2026-09-15T07:00:00Z', finished_at: '2026-09-15T07:00:01Z', exit_status: 0)
+      manifest.record_sync(folder_path: 'Photos', drive_serial: 'SN-backup-04-8tb',
+                           started_at: '2026-09-15T09:00:00Z', finished_at: '2026-09-15T09:00:01Z', exit_status: 23)
+      base = Time.utc(2026, 9, 15, 8, 0, 0)
+      101.times do |i|
+        manifest.assign_folder("Movies/#{i}", 'SN-backup-04-8tb', size_bytes: 1)
+        manifest.record_sync(folder_path: "Movies/#{i}", drive_serial: 'SN-backup-04-8tb',
+                             started_at: (base + i).iso8601, finished_at: 't1', exit_status: 0)
+      end
+
+      runs = manifest.sync_runs_since(base.iso8601)
+      expect(runs.size).to eq(101)   # excludes the 07:00 run (too early) and the 09:00 one (failed)
+      expect(runs.first.started_at).to eq(base.iso8601)
     end
   end
 end

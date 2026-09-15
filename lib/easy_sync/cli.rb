@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'optparse'
+require 'time'
 
 module EasySync
   # Command-line entry point.
@@ -22,6 +23,7 @@ module EasySync
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
+        ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['restore FOLDER|SHARE [...] | --all [--dry-run]', 'copy folders back onto the NAS from wherever they live (reverse of sync)'],
         ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
@@ -73,6 +75,7 @@ module EasySync
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
+      when 'rename-drive' then rename_drive(@argv)
       when 'pending' then pending
       when 'clean' then clean(@argv)
       when 'plan' then plan(@argv)
@@ -324,14 +327,15 @@ module EasySync
       serial or raise Error, 'could not determine a serial via smartctl or diskutil; pass --serial'
       @out.puts "Using #{source} as the serial number." unless opts[:serial]
       usage = volume_info.usage(mount_point)
+      model = volume_info.smartctl_model(mount_point)
 
-      drive = manifest.register_drive(serial_number: serial, friendly_name: name,
+      drive = manifest.register_drive(serial_number: serial, friendly_name: name, model: model,
                                       capacity_bytes: usage.capacity_bytes, volume_uuid: uuid)
       manifest.update_drive_usage(serial, used_bytes: usage.used_bytes, free_bytes: usage.free_bytes)
       health = volume_info.smart_health(mount_point)
       manifest.update_drive_health(serial, status: health.status, detail: health.detail)
       volume_info.write_marker(mount_point, serial_number: serial, friendly_name: name)
-      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}), " \
+      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}#{model ? ", #{model}" : ''}), " \
                 "#{Jbod::Placement.format_bytes(drive.capacity_bytes)} at #{mount_point}"
       @out.puts "SMART: #{health.status} (#{health.detail})"
     end
@@ -435,28 +439,75 @@ module EasySync
       all = false
       OptionParser.new { |o| o.on('--all', 'List every placed folder, one per line (for piping)') { all = true } }.parse!(args)
       print_run_status
-      print_drives
+      print_drives(all)
       all ? print_all_folders : print_folder_summary
     end
 
-    def print_drives
-      mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+    RETIRED_SHOWN = 5   # most recent; older ones are still in the manifest, just not printed by default
+
+    def print_drives(all = false)
+      drives = manifest.drives
+      mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
-      manifest.drives.each_with_index do |d, i|
-        @out.puts if i.positive?
-        m = mounted[d.serial_number]
-        usage = if m
-                  "#{Jbod::Placement.format_bytes(m.used_bytes)} used, #{Jbod::Placement.format_bytes(m.free_bytes)} free at #{m.mount_point}"
-                elsif volume_info.locked?(d.friendly_name)
-                  "connected but LOCKED (unlock it: diskutil apfs unlockVolume #{d.friendly_name})"
-                else
-                  "not mounted (last seen #{d.last_seen_at || 'never'})"
-                end
-        @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} #{usage}"
-        @out.puts "  #{' ' * 16} SMART #{d.smart_status || 'unchecked'}#{d.smart_detail ? ": #{d.smart_detail}" : ''}"
+      unless drives.empty?
+        rows = drives.map do |d|
+          m = mounted[d.serial_number]
+          [d.friendly_name, d.model ? "#{d.serial_number} · #{d.model}" : d.serial_number,
+           m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
+           m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
+           smart_summary(d), drive_note(d, m)]
+        end
+        print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
+        total_capacity = drives.sum(&:capacity_bytes)
+        total_free = drives.sum { |d| (mounted[d.serial_number]&.free_bytes || d.last_free_bytes).to_i }
+        @out.puts "  Total: #{bytes(total_capacity)} capacity, #{bytes(total_free)} free right now"
       end
-      retired = manifest.drives(include_retired: true).select(&:retired?)
-      retired.each { |d| @out.puts "  #{d.friendly_name.ljust(16)} #{d.serial_number.ljust(38)} retired #{d.retired_at}" }
+      retired = manifest.drives(include_retired: true).select(&:retired?).sort_by(&:retired_at).reverse
+      return if retired.empty?
+
+      shown = all ? retired : retired.first(RETIRED_SHOWN)
+      hidden = retired.size - shown.size
+      line = "  Retired: #{shown.map { |d| "#{d.friendly_name} (#{local_time(d.retired_at, '%Y-%m-%d')})" }.join(', ')}"
+      line += " · #{hidden} more (see `status --all`)" if hidden.positive?
+      @out.puts if drives.any?
+      @out.puts line
+    end
+
+    def print_table(header, rows, right: [])
+      all = [header] + rows
+      widths = header.each_index.map { |i| all.map { |r| r[i].to_s.length }.max }
+      all.each do |r|
+        cells = r.each_with_index.map { |c, i| right.include?(i) ? c.to_s.rjust(widths[i]) : c.to_s.ljust(widths[i]) }
+        @out.puts "  #{cells.join('  ')}".rstrip
+      end
+    end
+
+    # The verdict plus only what's worth reading: zero counters and the
+    # PASSED verdict (implied by ok/warning) are dropped; ok keeps just the temperature.
+    def smart_summary(drive)
+      return 'unchecked' unless drive.smart_status
+      return 'n/a' if drive.smart_status == 'unknown'
+
+      parts = drive.smart_detail.to_s.split(' · ').reject { |p| p == 'PASSED' || p.match?(/\A[a-z ]+ 0\z/) }
+      parts = parts.grep(/°C\z/) if drive.smart_status == 'ok'
+      [drive.smart_status, *parts].join(' · ')
+    end
+
+    # Only the unusual: not mounted, locked, or mounted somewhere other than under its own name.
+    def drive_note(drive, mounted)
+      if mounted
+        File.basename(mounted.mount_point) == drive.friendly_name ? '' : "at #{mounted.mount_point}"
+      elsif volume_info.locked?(drive.friendly_name)
+        "connected but LOCKED (unlock it: diskutil apfs unlockVolume #{drive.friendly_name})"
+      else
+        "not mounted (last seen #{drive.last_seen_at ? local_time(drive.last_seen_at, '%Y-%m-%d %H:%M') : 'never'})"
+      end
+    end
+
+    def local_time(iso, format)
+      Time.parse(iso).localtime.strftime(format)
+    rescue ArgumentError, TypeError
+      iso
     end
 
     # Counts only: how many folders are placed/not backed up/empty, and
@@ -496,21 +547,63 @@ module EasySync
     # the same way RunLock itself would reclaim it on the next `sync`.
     def print_run_status
       run = Jbod::RunLock.new(settings[:lock_path]).status
-      @out.puts(run ? "Sync running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
-                      "(#{format_elapsed(@clock.now - run.started_at)} ago)" \
-                    : 'No sync currently running.')
+      if run
+        @out.puts "Sync running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
+                  "(#{format_elapsed(@clock.now - run.started_at)} ago)"
+        eta = sync_eta(run.started_at)
+        @out.puts eta if eta
+      else
+        @out.puts 'No sync currently running.'
+      end
       @out.puts
     end
 
-    # "2h 34m", "45m", or "12s".
+    # "3d 4h", "2h 34m", "45m", or "12s".
     def format_elapsed(seconds)
-      hours, rem = seconds.to_i.divmod(3600)
+      days, rem = seconds.to_i.divmod(86_400)
+      hours, rem = rem.divmod(3600)
       minutes, secs = rem.divmod(60)
+      return "#{days}d #{hours}h" if days.positive?
       return "#{hours}h #{minutes}m" if hours.positive?
       return "#{minutes}m #{secs}s" if minutes.positive?
 
       "#{secs}s"
     end
+
+    # A rough estimate for the run in progress, from what it has actually
+    # done so far this run: folders it copied real bytes for (their rate
+    # extrapolates to every not-yet-synced folder still queued) plus folders
+    # it merely re-verified (their average time extrapolates to every
+    # already-synced folder not yet touched this run). The two behave
+    # nothing alike - an unchanged folder verifies in under a second,
+    # a first-time folder moves real bytes over the network - so averaging
+    # them together would be meaningless; this keeps them separate instead.
+    def sync_eta(started_at)
+      since = started_at.utc.iso8601
+      runs = manifest.sync_runs_since(since)
+      return '  Estimating time remaining: waiting for the first folder to finish this run...' if runs.empty?
+
+      transfers, verifies = runs.partition { |r| r.bytes_transferred.to_i.positive? }
+      transfer_seconds = duration_of(transfers)
+      transfer_rate = transfer_seconds.positive? ? transfers.sum { |r| r.bytes_transferred.to_i } / transfer_seconds : nil
+      avg_verify_seconds = verifies.empty? ? duration_of(runs) / runs.size : duration_of(verifies) / verifies.size
+
+      folders = manifest.folders
+      never_synced = folders.select { |f| f.last_synced_at.nil? }
+      to_reverify = folders.count { |f| f.last_synced_at && f.last_synced_at < since }
+      return nil if never_synced.empty? && to_reverify.zero?
+      return "  #{never_synced.size} folder#{'s' if never_synced.size != 1} never synced (#{bytes(never_synced.sum { |f| f.size_bytes.to_i })}); " \
+             'still waiting for one to finish before estimating their time.' if never_synced.any? && transfer_rate.nil?
+
+      transfer_part = transfer_rate ? never_synced.sum { |f| f.size_bytes.to_i } / transfer_rate : 0
+      eta_seconds = transfer_part + (to_reverify * avg_verify_seconds)
+      "  About #{format_elapsed(eta_seconds)} remaining (#{never_synced.size} folder#{'s' if never_synced.size != 1} never synced, " \
+        "#{to_reverify} to re-verify) - rough estimate, NAS/network speed varies."
+    end
+
+    def duration_of(runs) = runs.sum { |r| Time.parse(r.finished_at) - Time.parse(r.started_at) }
+
+    def bytes(value) = Jbod::Placement.format_bytes(value)
 
     def history(folder)
       names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.friendly_name] }
@@ -528,6 +621,51 @@ module EasySync
       drive = manifest.drive_by_name(drive_name) or raise Error, "no drive named #{drive_name}"
       manifest.reassign_folder(folder, drive.serial_number, note: opts[:note])
       @out.puts "#{folder} is now recorded on #{drive.friendly_name}. No data was moved."
+    end
+
+    # Only relabels the manifest (and the drive's own marker); the tool never
+    # renames the actual macOS volume itself, the same way it never unlocks
+    # one. friendly_name is UNIQUE, so a name already taken by another
+    # registered drive is treated as "swap these two", not an error.
+    def rename_drive(args)
+      old_name, new_name = args
+      raise Error, "rename-drive needs OLD_NAME and NEW_NAME\n\n#{USAGE}" unless old_name && new_name
+      raise Error, 'old and new name are the same' if old_name == new_name
+
+      old = manifest.drive_by_name(old_name) or raise Error, "no drive named #{old_name}"
+      raise Error, "#{old_name} is retired" if old.retired?
+      target = manifest.drive_by_name(new_name)
+      mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+
+      if target
+        manifest.swap_drive_names(old.serial_number, target.serial_number)
+        @out.puts "Swapped names: #{old_name} <-> #{new_name}."
+        relabel_marker(old.serial_number, new_name, mounted)
+        relabel_marker(target.serial_number, old_name, mounted)
+        rename_volume_hint(old.serial_number, new_name, mounted)
+        rename_volume_hint(target.serial_number, old_name, mounted)
+      else
+        manifest.rename_drive(old.serial_number, new_name)
+        @out.puts "Renamed #{old_name} to #{new_name}."
+        relabel_marker(old.serial_number, new_name, mounted)
+        rename_volume_hint(old.serial_number, new_name, mounted)
+      end
+    end
+
+    # Keeps the drive's own .easy_sync/drive.json readable-by-hand, though
+    # nothing reads its friendly_name back: matching is by serial only.
+    def relabel_marker(serial, new_name, mounted)
+      m = mounted[serial] or return
+      existing = volume_info.read_marker(m.mount_point)
+      registered_at = existing&.fetch(:registered_at, nil) || Time.now.utc.iso8601
+      volume_info.write_marker(m.mount_point, serial_number: serial, friendly_name: new_name, registered_at: registered_at)
+    end
+
+    def rename_volume_hint(serial, new_name, mounted)
+      m = mounted[serial] or return
+
+      @out.puts "  #{m.mount_point} still has its old macOS volume name; to match, rename it yourself: " \
+                "diskutil rename #{m.mount_point} #{new_name}"
     end
 
     def dashboard
