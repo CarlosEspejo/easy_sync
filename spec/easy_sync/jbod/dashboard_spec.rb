@@ -85,12 +85,19 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('1 folder · 2.0 TB · no drive has room')
   end
 
-  it 'shows the drive model next to the serial when known, and nothing extra when not' do
+  it 'shows the drive manufacturer and model next to the serial when known, and nothing extra when not' do
     manifest.register_drive(serial_number: 'SN-with-model', friendly_name: 'backup-08-8tb', capacity_bytes: 8 * TB,
+                            model: 'TOSHIBA HDWE160')
+    html = dashboard.render(mounted: [])
+    expect(html).to match(%r{<div class="serial">SN-with-model · Toshiba HDWE160</div>})
+    expect(html).to match(%r{<div class="serial">SN-backup-01-3tb</div>})
+  end
+
+  it 'truncates a long branded model with an ellipsis, carrying the full string in a title attribute' do
+    manifest.register_drive(serial_number: 'SN-long-model', friendly_name: 'backup-08-8tb', capacity_bytes: 8 * TB,
                             model: 'WDC WD80EFZZ-68BTXN0')
     html = dashboard.render(mounted: [])
-    expect(html).to match(%r{<div class="serial">SN-with-model · WDC WD80EFZZ-68BTXN0</div>})
-    expect(html).to match(%r{<div class="serial">SN-backup-01-3tb</div>})
+    expect(html).to match(%r{<div class="serial" title="SN-long-model · Western Digital WD80EFZZ-68BTXN0">SN-long-model · Western Digital WD8…</div>})
   end
 
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do

@@ -335,7 +335,7 @@ module EasySync
       health = volume_info.smart_health(mount_point)
       manifest.update_drive_health(serial, status: health.status, detail: health.detail)
       volume_info.write_marker(mount_point, serial_number: serial, friendly_name: name)
-      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}#{model ? ", #{model}" : ''}), " \
+      @out.puts "Registered #{drive.friendly_name} (#{drive.serial_number}#{drive.branded_model ? ", #{drive.branded_model}" : ''}), " \
                 "#{Jbod::Placement.format_bytes(drive.capacity_bytes)} at #{mount_point}"
       @out.puts "SMART: #{health.status} (#{health.detail})"
     end
@@ -452,7 +452,7 @@ module EasySync
       unless drives.empty?
         rows = drives.map do |d|
           m = mounted[d.serial_number]
-          [d.friendly_name, d.model ? "#{d.serial_number} · #{d.model}" : d.serial_number,
+          [d.friendly_name, d.branded_model ? "#{d.serial_number} · #{d.branded_model}" : d.serial_number,
            m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
            m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
            smart_summary(d), drive_note(d, m)]

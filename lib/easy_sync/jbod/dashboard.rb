@@ -88,6 +88,20 @@ module EasySync
       # other than under its own name (e.g. "backup-02-6tb 1").
       def unexpected_mount?(view) = view.mounted && File.basename(view.mount_point) != view.drive.friendly_name
 
+      MODEL_SHOWN = 20   # branded_model past this wraps the tile onto two lines
+
+      # [text to show, full string for a title attribute (nil when nothing
+      # was cut, so no tooltip appears for text that's already complete)].
+      def serial_line(drive)
+        model = drive.branded_model
+        return [drive.serial_number, nil] unless model
+
+        full = "#{drive.serial_number} · #{model}"
+        return [full, nil] if model.length <= MODEL_SHOWN
+
+        ["#{drive.serial_number} · #{model[0, MODEL_SHOWN - 1].rstrip}…", full]
+      end
+
       # Inventory rows for one share, by state.
       def inventory_for(inventory, share)
         rows = inventory.select { |e| e.share == share }

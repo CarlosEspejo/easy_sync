@@ -60,7 +60,7 @@ RSpec.describe EasySync::CLI do
       expect(manifest.drives.first).to have_attributes(serial_number: 'WD-WX12345', smart_status: 'ok',
                                                        smart_detail: 'PASSED · reallocated 0 · 36°C',
                                                        model: 'WDC WD80EFZZ-68BTXN0')
-      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)', 'WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to include('SMART: ok (PASSED · reallocated 0 · 36°C)', 'Western Digital WD80EFZZ-68BTXN0')
     end
 
     it 'leaves the model nil when smartctl exposes no model line' do
@@ -164,12 +164,12 @@ RSpec.describe EasySync::CLI do
       expect(out.string).not_to include('Total:')
     end
 
-    it 'shows the drive model next to the serial when known, and nothing extra when not' do
+    it 'shows the drive manufacturer and model next to the serial when known, and nothing extra when not' do
       manifest.register_drive(serial_number: 'S3', friendly_name: 'backup-03-8tb', capacity_bytes: 8 * TB,
                               model: 'WDC WD80EFZZ-68BTXN0')
       manifest.close
       expect(cli('status').run).to eq(0)
-      expect(out.string).to include('S3 · WDC WD80EFZZ-68BTXN0')
+      expect(out.string).to include('S3 · Western Digital WD80EFZZ-68BTXN0')
       expect(out.string).to match(/\bS1(?! ·)/)
     end
 
