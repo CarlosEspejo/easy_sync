@@ -234,6 +234,7 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       SMART overall-health self-assessment test result: PASSED
       ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
         5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
+        9 Power_On_Hours          0x0032   095   095   000    Old_age   Always       -       10432
       194 Temperature_Celsius     0x0022   036   049   000    Old_age   Always       -       36 (Min/Max 20/45)
       197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
       198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
@@ -241,7 +242,7 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
 
     it 'reads a healthy ATA drive' do
       h = described_class.parse_smartctl(ata)
-      expect(h).to have_attributes(status: 'ok', source: 'smartctl',
+      expect(h).to have_attributes(status: 'ok', source: 'smartctl', power_on_hours: 10_432,
                                    detail: 'PASSED · reallocated 0 · pending 0 · uncorrectable 0 · 36°C')
     end
 
@@ -264,9 +265,10 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
         Available Spare:                    100%
         Percentage Used:                    6%
         Media and Data Integrity Errors:    0
+        Power On Hours:                     2,318
       OUT
       expect(described_class.parse_smartctl(nvme)).to have_attributes(
-        status: 'ok', detail: 'PASSED · media errors 0 · 6% of rated life used · 49°C'
+        status: 'ok', power_on_hours: 2318, detail: 'PASSED · media errors 0 · 6% of rated life used · 49°C'
       )
       expect(described_class.parse_smartctl(nvme.sub('0x00', '0x04')).status).to eq('warning')
     end

@@ -161,6 +161,9 @@
       <div class="sub muted">at <%= h d.mount_point %></div>
     <%- end -%>
       <div class="health <%= d.health %>" title="<%= h d.drive.smart_detail %>"><%= h health_line(d) %><%- if health_detail_shown?(d) -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
+    <%- if d.drive.power_on_label -%>
+      <div class="sub muted">powered on <%= h d.drive.power_on_label %></div>
+    <%- end -%>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>

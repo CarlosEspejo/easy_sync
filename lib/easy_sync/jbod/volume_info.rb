@@ -174,6 +174,8 @@ module EasySync
         pct_used = out[/^Percentage Used:\s*(\d+)%/, 1]
         temp = out[/^\s*\d+\s+Temperature_Celsius\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\d+)/, 1] ||
                out[/^Temperature:\s*(\d+)\s*Celsius/, 1]
+        power_on_hours = out[/^\s*\d+\s+Power_On_Hours\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\d+)/, 1] ||
+                         out[/^Power On Hours:\s*([\d,]+)/, 1]&.delete(',')
 
         bad = counters.values_at('Reallocated_Sector_Ct', 'Current_Pending_Sector', 'Offline_Uncorrectable').compact.sum
         bad += media_errors.to_i
@@ -190,7 +192,8 @@ module EasySync
         parts << "media errors #{media_errors}" if media_errors
         parts << "#{pct_used}% of rated life used" if pct_used
         parts << "#{temp}°C" if temp
-        Health.new(status: status, detail: parts.join(' · '), source: 'smartctl')
+        Health.new(status: status, detail: parts.join(' · '), source: 'smartctl',
+                   power_on_hours: power_on_hours&.to_i)
       end
 
       def diskutil_health(mount_point)

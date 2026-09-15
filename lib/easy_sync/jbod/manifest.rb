@@ -132,10 +132,17 @@ module EasySync
         drive(serial_number)
       end
 
-      def update_drive_health(serial_number, status:, detail:, checked_at: now)
+      # power_on_hours is only ever COALESCEd in, never cleared: not every
+      # health source reports it (the diskutil fallback can't), and a health
+      # check that happens not to find it shouldn't erase a value read before.
+      def update_drive_health(serial_number, status:, detail:, power_on_hours: nil, checked_at: now)
         ensure_drive!(serial_number)
-        db.execute('UPDATE drives SET smart_status = ?, smart_detail = ?, smart_checked_at = ? WHERE serial_number = ?',
-                   [status, detail, checked_at, serial_number])
+        db.execute(<<~SQL, [status, detail, checked_at, power_on_hours, serial_number])
+          UPDATE drives
+             SET smart_status = ?, smart_detail = ?, smart_checked_at = ?,
+                 power_on_hours = COALESCE(?, power_on_hours)
+           WHERE serial_number = ?
+        SQL
         drive(serial_number)
       end
 
@@ -411,6 +418,7 @@ module EasySync
       def migrate!
         migrate_to_v1! if schema_version < 1
         add_column('drives', 'model', 'TEXT')
+        add_column('drives', 'power_on_hours', 'INTEGER')
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
       end
 

@@ -6,7 +6,8 @@ module EasySync
   module Jbod
     Drive = Struct.new(:serial_number, :friendly_name, :capacity_bytes, :added_date, :volume_uuid, :model,
                        :last_seen_at, :last_used_bytes, :last_free_bytes,
-                       :smart_status, :smart_detail, :smart_checked_at, :retired_at, keyword_init: true) do
+                       :smart_status, :smart_detail, :smart_checked_at, :power_on_hours, :retired_at,
+                       keyword_init: true) do
       def retired? = !retired_at.nil?
 
       def used_fraction
@@ -43,6 +44,18 @@ module EasySync
 
         rest = model.sub(/\A(?:WDC|WD|TOSHIBA|HGST|SAMSUNG|HITACHI|APPLE|SEAGATE|CRUCIAL|KINGSTON|INTEL)[\s-]+/i, '')
         "#{manufacturer} #{rest}"
+      end
+
+      # SMART's Power_On_Hours counts only time actually spinning/powered,
+      # unlike calendar age: a 5-year-old drive that sat on a shelf can show
+      # a fraction of the wear of one bought last year and run constantly.
+      def power_on_label
+        return nil unless power_on_hours
+
+        years = power_on_hours / 24.0 / 365
+        return format('%d days (%d hrs)', (power_on_hours / 24.0).round, power_on_hours) if years < 1
+
+        format('%.1f yrs (%d hrs)', years, power_on_hours)
       end
     end
 
@@ -85,7 +98,7 @@ module EasySync
     # but reallocated/pending/uncorrectable sectors or an NVMe critical flag:
     # the drive is starting to fail), 'failing' (self-assessment FAILED), or
     # 'unknown' (SMART not exposed by the enclosure, smartctl missing, etc.).
-    Health = Struct.new(:status, :detail, :source, keyword_init: true)
+    Health = Struct.new(:status, :detail, :source, :power_on_hours, keyword_init: true)
 
     # A registered drive that is currently mounted, with live usage numbers.
     MountedDrive = Struct.new(:drive, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,
