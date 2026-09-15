@@ -465,7 +465,7 @@ RSpec.describe EasySync::CLI do
       out.truncate(0)
       cli('status').run
       expect(out.string).to include('Retired: backup-04-8tb (20', 'backup-00 (20')   # newest retirement first
-      expect(out.string).to match(/unchecked[^\n]*\n {2}Total: [^\n]*\n\n {2}Retired: /)   # blank line before the retired group
+      expect(out.string).to match(/unchecked[^\n]*\n\nTotal: [^\n]*\n\n {2}Retired: /)   # blank lines set the total and retired groups apart
       out.truncate(0)
       cli('history', 'movies/A').run
       expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')
