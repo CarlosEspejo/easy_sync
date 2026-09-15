@@ -22,6 +22,19 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('7 drives, 1 mounted', '1 folders tracked')
   end
 
+  it 'shows total capacity and free space across all drives, live where mounted, last-known otherwise' do
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
+    # capacity: registered 3+6+6+8+8+8+8 = 47 TB, regardless of mount state
+    # free: backup-04's live 1 TB + backup-01's last-known 2 TB (from the outer before) = 3 TB
+    expect(html).to match(%r{<p class="capacity"><strong>47\.0 TB</strong> total capacity ·\s*<strong>3\.0 TB</strong> free right now</p>})
+  end
+
+  it 'omits the capacity line when no drives are registered' do
+    empty_manifest = memory_manifest(clock: clock)
+    html = described_class.new(empty_manifest, clock: clock).render
+    expect(html).not_to include('class="capacity"')
+  end
+
   it 'colours tiles by SMART health and never by fullness' do
     manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · reallocated 0 · 36°C')
     manifest.update_drive_health('SN-backup-05-8tb', status: 'warning', detail: 'PASSED · reallocated 12 · pending 3')

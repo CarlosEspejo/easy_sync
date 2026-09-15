@@ -458,6 +458,9 @@ module EasySync
            smart_summary(d), drive_note(d, m)]
         end
         print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
+        total_capacity = drives.sum(&:capacity_bytes)
+        total_free = drives.sum { |d| (mounted[d.serial_number]&.free_bytes || d.last_free_bytes).to_i }
+        @out.puts "  Total: #{bytes(total_capacity)} capacity, #{bytes(total_free)} free right now"
       end
       retired = manifest.drives(include_retired: true).select(&:retired?).sort_by(&:retired_at).reverse
       return if retired.empty?

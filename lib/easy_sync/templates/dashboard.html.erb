@@ -33,6 +33,8 @@
   main { max-width: 1100px; margin: 0 auto; padding-block: 32px; padding-inline: 20px; }
   h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
   h2 { font-size: 15px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  .capacity { color: var(--ink-2); font-size: 16px; margin: 0 0 6px; }
+  .capacity strong { color: var(--ink); font-weight: 600; }
   .meta { color: var(--muted); margin: 0 0 20px; }
   .alerts { display: grid; gap: 8px; margin: 0 0 20px; }
   .alert { border: 1px solid var(--ring); border-left: 4px solid var(--warning); background: var(--surface);
@@ -101,6 +103,10 @@
 <body>
 <main>
   <h1>Easy Sync Backup Status</h1>
+<%- if drives.any? -%>
+  <p class="capacity"><strong><%= bytes(total_capacity_bytes) %></strong> total capacity ·
+    <strong><%= bytes(total_free_bytes) %></strong> free right now</p>
+<%- end -%>
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>

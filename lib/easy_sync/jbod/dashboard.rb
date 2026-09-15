@@ -38,6 +38,8 @@ module EasySync
           history: manifest.history(limit: 50),
           runs: manifest.sync_runs(limit: 30),
           generated_at: @clock.now,
+          total_capacity_bytes: drives.sum { |d| d.capacity_bytes.to_i },
+          total_free_bytes: drives.sum { |d| d.free_bytes.to_i },
           warnings: drives.select { |d| %i[warning critical].include?(d.level) },
           source_status: source_status,
           loose_files: loose_files,

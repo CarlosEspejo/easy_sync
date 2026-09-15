@@ -140,6 +140,30 @@ RSpec.describe EasySync::CLI do
       expect(rows.map { |l| l.index(/ok ·|warning ·/) }.uniq.size).to eq(1)   # SMART column lines up
     end
 
+    it 'sums capacity and free space across all drives, live numbers where mounted, last-known otherwise' do
+      m = manifest
+      m.update_drive_usage('S1', used_bytes: 1 * TB, free_bytes: 2 * TB)   # S1 stays unmounted: falls back to this
+      m.close
+      vol = make_dirs(mount_root, 'backup-02-6tb').first
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S2', friendly_name: 'backup-02-6tb' }.to_json)
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol },
+                    output: df_output(vol, capacity_kb: 4 * 1024**3, used_kb: 0))   # 4 TB free, live
+
+      expect(cli('status').run).to eq(0)
+      # capacity: registered 3 TB (S1) + 6 TB (S2) = 9 TB, regardless of mount state
+      # free: S1's last-known 2 TB + S2's live 4 TB = 6 TB
+      expect(out.string).to include('Total: 9.0 TB capacity, 6.0 TB free right now')
+    end
+
+    it 'omits the total line when no drives are registered' do
+      m = manifest
+      m.retire_drive('S1')
+      m.retire_drive('S2')
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).not_to include('Total:')
+    end
+
     it 'shows the drive model next to the serial when known, and nothing extra when not' do
       manifest.register_drive(serial_number: 'S3', friendly_name: 'backup-03-8tb', capacity_bytes: 8 * TB,
                               model: 'WDC WD80EFZZ-68BTXN0')
@@ -441,7 +465,7 @@ RSpec.describe EasySync::CLI do
       out.truncate(0)
       cli('status').run
       expect(out.string).to include('Retired: backup-04-8tb (20', 'backup-00 (20')   # newest retirement first
-      expect(out.string).to match(/unchecked[^\n]*\n\n  Retired: /)   # blank line before the retired group
+      expect(out.string).to match(/unchecked[^\n]*\n {2}Total: [^\n]*\n\n {2}Retired: /)   # blank line before the retired group
       out.truncate(0)
       cli('history', 'movies/A').run
       expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')
