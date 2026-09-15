@@ -262,6 +262,14 @@ module EasySync
         db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row)) }
       end
 
+      # Every successful sync_run since +since+ (ISO8601), oldest first, no
+      # LIMIT: for estimating a run in progress, which can touch thousands
+      # of folders, unlike #sync_runs' recent-activity display.
+      def sync_runs_since(since)
+        db.execute('SELECT * FROM sync_runs WHERE started_at >= ? AND exit_status = 0 ORDER BY id', [since])
+          .map { |row| SyncRun.new(**symbolize(row)) }
+      end
+
       # -- source inventory ----------------------------------------------
 
       # Replaces the inventory with what this run saw. +rows+ are hashes with

@@ -215,6 +215,81 @@ RSpec.describe EasySync::CLI do
       expect(cli('status', clock: double('clock', now: started + (2 * 3600) + (34 * 60))).run).to eq(0)
       expect(out.string).to include("Sync running: pid #{Process.pid}", '2h 34m ago')
     end
+
+    it 'shows elapsed time in days once a run has been going that long' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, Process.pid.to_s)
+      started = Time.utc(2026, 9, 10, 10, 0, 0)
+      File.utime(started, started, lock_path)
+
+      expect(cli('status', clock: double('clock', now: started + (3 * 86_400) + (5 * 3600))).run).to eq(0)
+      expect(out.string).to include('3d 5h ago')
+    end
+
+    describe 'estimating time remaining for a sync in progress' do
+      let(:lock_path) { File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock') }
+      let(:started) { Time.utc(2026, 9, 15, 8, 0, 0) }
+
+      before do
+        FileUtils.mkdir_p(File.dirname(lock_path))
+        File.write(lock_path, Process.pid.to_s)
+        File.utime(started, started, lock_path)
+      end
+
+      it 'says it is waiting when nothing has finished yet this run' do
+        expect(cli('status', clock: double('clock', now: started + 5)).run).to eq(0)
+        expect(out.string).to include('Estimating time remaining: waiting for the first folder to finish this run...')
+      end
+
+      it 'combines the observed transfer rate and verify time into one estimate' do
+        m = manifest
+        m.assign_folder('Movies/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
+        m.assign_folder('Movies/B', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
+                      finished_at: '2026-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
+        # synced before this run, not yet re-touched -> remains as "to re-verify"
+        m.assign_folder('Movies/C', 'S1', size_bytes: 200 * GB)
+        # a real transfer this run: 20 GB in 20s = 1 GB/s
+        m.record_sync(folder_path: 'Movies/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
+                      finished_at: '2026-09-15T08:00:30Z', exit_status: 0, bytes_transferred: 20 * GB, total_size_bytes: 200 * GB)
+        m.assign_folder('Movies/D', 'S1', size_bytes: 10 * GB)
+        # a verify-only run this run: 2s, nothing transferred
+        m.record_sync(folder_path: 'Movies/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
+                      finished_at: '2026-09-15T08:00:33Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10 * GB)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 40)).run).to eq(0)
+        # remaining never-synced: Photos (from the outer before) + Movies/A = 2, at 1 GB/s that's 100s
+        # remaining to re-verify: Movies/B = 1, at the observed 2s each
+        expect(out.string).to include('About 1m 42s remaining (2 folders never synced, 1 to re-verify) - ' \
+                                      'rough estimate, NAS/network speed varies.')
+      end
+
+      it 'says it is waiting for a first real transfer when only verifies have finished so far this run' do
+        m = manifest
+        m.assign_folder('Movies/Y', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
+                      finished_at: '2020-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
+                      finished_at: '2026-09-15T08:00:06Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 50 * GB)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 10)).run).to eq(0)
+        # Photos (from the outer before) is the only folder never synced
+        expect(out.string).to include('1 folder never synced (0 B); still waiting for one to finish before estimating their time.')
+      end
+
+      it 'shows no estimate once every folder has been touched this run' do
+        m = manifest
+        m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: '2026-09-15T08:00:01Z',
+                      finished_at: '2026-09-15T08:00:02Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10)
+        m.close
+
+        expect(cli('status', clock: double('clock', now: started + 5)).run).to eq(0)
+        expect(out.string).not_to include('remaining', 'Estimating', 'waiting')
+      end
+    end
   end
 
   describe 'rename-drive' do

@@ -282,6 +282,28 @@ RSpec.describe EasySync::Jbod::Manifest do
       expect(manifest.sync_runs(limit: 2).map(&:started_at)).to eq(%w[t2 t1])
     end
   end
+
+  describe '#sync_runs_since' do
+    before { register_fleet(manifest) }
+
+    it 'returns every successful run at or after the given time, oldest first, with no limit' do
+      manifest.assign_folder('Photos', 'SN-backup-04-8tb', size_bytes: 10)
+      manifest.record_sync(folder_path: 'Photos', drive_serial: 'SN-backup-04-8tb',
+                           started_at: '2026-09-15T07:00:00Z', finished_at: '2026-09-15T07:00:01Z', exit_status: 0)
+      manifest.record_sync(folder_path: 'Photos', drive_serial: 'SN-backup-04-8tb',
+                           started_at: '2026-09-15T09:00:00Z', finished_at: '2026-09-15T09:00:01Z', exit_status: 23)
+      base = Time.utc(2026, 9, 15, 8, 0, 0)
+      101.times do |i|
+        manifest.assign_folder("Movies/#{i}", 'SN-backup-04-8tb', size_bytes: 1)
+        manifest.record_sync(folder_path: "Movies/#{i}", drive_serial: 'SN-backup-04-8tb',
+                             started_at: (base + i).iso8601, finished_at: 't1', exit_status: 0)
+      end
+
+      runs = manifest.sync_runs_since(base.iso8601)
+      expect(runs.size).to eq(101)   # excludes the 07:00 run (too early) and the 09:00 one (failed)
+      expect(runs.first.started_at).to eq(base.iso8601)
+    end
+  end
 end
 
 RSpec.describe EasySync::Jbod::Manifest, 'source inventory' do
