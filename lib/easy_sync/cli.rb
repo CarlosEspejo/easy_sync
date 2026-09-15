@@ -436,11 +436,13 @@ module EasySync
       all = false
       OptionParser.new { |o| o.on('--all', 'List every placed folder, one per line (for piping)') { all = true } }.parse!(args)
       print_run_status
-      print_drives
+      print_drives(all)
       all ? print_all_folders : print_folder_summary
     end
 
-    def print_drives
+    RETIRED_SHOWN = 5   # most recent; older ones are still in the manifest, just not printed by default
+
+    def print_drives(all = false)
       drives = manifest.drives
       mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
@@ -454,11 +456,15 @@ module EasySync
         end
         print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
       end
-      retired = manifest.drives(include_retired: true).select(&:retired?)
+      retired = manifest.drives(include_retired: true).select(&:retired?).sort_by(&:retired_at).reverse
       return if retired.empty?
 
+      shown = all ? retired : retired.first(RETIRED_SHOWN)
+      hidden = retired.size - shown.size
+      line = "  Retired: #{shown.map { |d| "#{d.friendly_name} (#{local_time(d.retired_at, '%Y-%m-%d')})" }.join(', ')}"
+      line += " · #{hidden} more (see `status --all`)" if hidden.positive?
       @out.puts if drives.any?
-      @out.puts "  Retired: #{retired.map { |d| "#{d.friendly_name} (#{local_time(d.retired_at, '%Y-%m-%d')})" }.join(', ')}"
+      @out.puts line
     end
 
     def print_table(header, rows, right: [])

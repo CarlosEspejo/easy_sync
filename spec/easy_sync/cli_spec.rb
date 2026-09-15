@@ -181,6 +181,25 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include('2 folders failed their last sync')
     end
 
+    it 'caps the retired list to the most recent, newest first, with the rest behind --all' do
+      m = manifest
+      6.times do |i|
+        m.register_drive(serial_number: "OLD#{i}", friendly_name: "old-#{i}", capacity_bytes: 1 * TB)
+        m.retire_drive("OLD#{i}", at: "2026-01-0#{i + 1}T12:00:00Z")   # noon UTC so it doesn't roll back a day in local time
+      end
+      m.close
+
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('Retired: old-5 (2026-01-06), old-4 (2026-01-05), old-3 (2026-01-04), ' \
+                                    'old-2 (2026-01-03), old-1 (2026-01-02) · 1 more (see `status --all`)')
+      expect(out.string).not_to include('old-0')
+
+      out.truncate(0)
+      expect(cli('status', '--all').run).to eq(0)
+      expect(out.string).to include('old-0 (2026-01-01)')
+      expect(out.string).not_to include('more (see')
+    end
+
     it 'says no sync is running when the lock file is absent' do
       expect(cli('status').run).to eq(0)
       expect(out.string).to include('No sync currently running.')
@@ -284,7 +303,7 @@ RSpec.describe EasySync::CLI do
       cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run
       out.truncate(0)
       cli('status').run
-      expect(out.string).to include('Retired: backup-00 (20', 'backup-04-8tb (20')
+      expect(out.string).to include('Retired: backup-04-8tb (20', 'backup-00 (20')   # newest retirement first
       expect(out.string).to match(/unchecked[^\n]*\n\n  Retired: /)   # blank line before the retired group
       out.truncate(0)
       cli('history', 'movies/A').run
