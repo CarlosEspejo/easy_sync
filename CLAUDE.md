@@ -141,12 +141,25 @@ assumptions, they cannot check them.
 ## Open items
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
-- The real fleet has arrived and a first real `sync` (not a test-drive run) is
-  in progress against the real library (`tv` 17.7 TB/~308 folders, `movies`
+- Bit-rot detection: see docs/integrity-scan.md (designed, not built). Key
+  measured fact, don't re-derive: rsync prints a per-file checksum for free via
+  `--out-format='%i %C %l %n'` (no `--checksum` needed) and the value is stable
+  across runs, so it works as a stored baseline. Default is xxh128 (not in Ruby
+  stdlib); `--checksum-choice=md5` gives a real MD5. On Apple Silicon
+  Digest::SHA256 is ~3x faster than MD5 (2514 vs 763 MB/s) — the disk is always
+  the bottleneck, never the hash.
+- **The OWC enclosure has replaced the Drobo and is what's in use now.** The
+  real fleet is 8 active drives, 44.59 TB total: 4 × 7.28 TB, 2 × 5.46 TB,
+  1 × 2.73 TB, 1 × 1.82 TB (the two 235 GB `jbod-test` drives are retired in
+  the manifest, not deleted). A first real `sync` (not a test-drive run) is in
+  progress against the real library (`tv` 17.7 TB/~308 folders, `movies`
   12.3 TB/~2,379 folders, `synology` 1.9 TB/16 folders + loose top-level files
-  so it must stay `split: false`, `pro` 35.6 GB/4 folders). Check
-  `easy_sync status` / the dashboard for current placement once it finishes;
-  don't assume the two 235 GB test drives' old partial-fit numbers still apply.
+  so it must stay `split: false`, `pro` 35.6 GB/4 folders) — about 31.9 TB
+  against 44.59 TB of capacity. Check `easy_sync status` / the dashboard for
+  current placement; don't assume the old test-drive partial-fit numbers apply.
+  Per-drive read speed across the OWC's single USB-C link is still unmeasured,
+  which is the number `docs/integrity-scan.md` needs before a scan budget can
+  be set.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.
