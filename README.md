@@ -298,6 +298,10 @@ actually been powered on (SMART's Power_On_Hours), not calendar age — a
 5-year-old drive that sat on a shelf can show far fewer hours than one bought
 last year and run around the clock.
 
+Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
+shows a rough estimate of time remaining, from what that run has actually
+copied so far — the same estimate either command shows, worded the same way.
+
 The header says how many folders the NAS holds, how many are backed up and,
 in red, how many are **not**, because no mounted drive has room. That is the
 one number that matters, so it also raises an alert at the top and a "Not

@@ -47,6 +47,19 @@ module EasySync
         end
         unit.zero? ? "#{bytes} B" : format('%.1f %s', value, UNITS[unit])
       end
+
+      # "3d 4h", "2h 34m", "45m", or "12s". Shared by `status` and the
+      # dashboard so an elapsed/remaining time reads the same everywhere.
+      def self.format_duration(seconds)
+        days, rem = seconds.to_i.divmod(86_400)
+        hours, rem = rem.divmod(3600)
+        minutes, secs = rem.divmod(60)
+        return "#{days}d #{hours}h" if days.positive?
+        return "#{hours}h #{minutes}m" if hours.positive?
+        return "#{minutes}m #{secs}s" if minutes.positive?
+
+        "#{secs}s"
+      end
     end
   end
 end

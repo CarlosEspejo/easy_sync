@@ -28,7 +28,9 @@ module EasySync
       # +mounted+ is the list of MountedDrive structs from the current run;
       # drives not in it are rendered with their last known numbers.
       # +source_status+ maps folder_path => :present | :missing for folders seen on the NAS.
-      def render(mounted: [], source_status: {}, loose_files: [])
+      # +started_at+ is the running sync's start time (from RunLock), or nil
+      # when nothing is running - only then is an ETA estimated and shown.
+      def render(mounted: [], source_status: {}, loose_files: [], started_at: nil)
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         drives = manifest.drives.map { |d| drive_view(d, by_serial[d.serial_number]) }
         locals = {
@@ -45,7 +47,8 @@ module EasySync
           loose_files: loose_files,
           pending: manifest.pending_deletions,
           inventory: manifest.source_inventory,
-          deletions: manifest.deletions(limit: 30)
+          deletions: manifest.deletions(limit: 30),
+          eta: started_at ? SyncEta.for(manifest, started_at) : nil
         }
         scope = binding
         locals.each { |name, value| scope.local_variable_set(name, value) }
@@ -83,6 +86,23 @@ module EasySync
       end
 
       def health_detail_shown?(view) = %w[warning failing].include?(view.health) && view.drive.smart_detail
+
+      # Renders a SyncEta::Estimate the same way `status` phrases it, for the
+      # banner shown while a sync is running. nil (nothing running, or
+      # nothing left to estimate) means the caller shows nothing at all.
+      def eta_line(eta)
+        case eta&.status
+        when nil then nil
+        when :waiting_for_first_folder
+          'Estimating time remaining: waiting for the first folder to finish this run...'
+        when :waiting_for_first_transfer
+          "#{eta.never_synced_count} folder#{'s' if eta.never_synced_count != 1} never synced (#{bytes(eta.never_synced_bytes)}); " \
+            'still waiting for one to finish before estimating their time.'
+        when :estimate
+          "About #{Placement.format_duration(eta.seconds)} remaining (#{eta.never_synced_count} folder#{'s' if eta.never_synced_count != 1} never synced, " \
+            "#{eta.to_reverify} to re-verify) - rough estimate, NAS/network speed varies."
+        end
+      end
 
       # The mount path is only news when macOS mounted the drive somewhere
       # other than under its own name (e.g. "backup-02-6tb 1").
