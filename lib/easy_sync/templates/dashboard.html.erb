@@ -152,9 +152,9 @@
       </div>
       <%- serial_text, serial_full = serial_line(d.drive) -%>
       <div class="serial"<%= serial_full ? %( title="#{h serial_full}") : '' %>><%= h serial_text %></div>
-      <div class="value"><%= bytes(d.free_bytes) %> <span class="unit">free</span></div>
+      <div class="value"><%= percent(d.used_fraction) %> <span class="unit">full</span></div>
       <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
-      <div class="sub"><%= bytes(d.used_bytes) %> of <%= bytes(d.capacity_bytes) %> used · <%= percent(d.used_fraction) %></div>
+      <div class="sub"><%= bytes(d.free_bytes) %> free · <%= bytes(d.used_bytes) %> of <%= bytes(d.capacity_bytes) %> used</div>
     <%- if !d.mounted -%>
       <div class="sub muted">last seen <%= when_(d.drive.last_seen_at) %></div>
     <%- elsif unexpected_mount?(d) -%>
