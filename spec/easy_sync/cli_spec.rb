@@ -316,6 +316,26 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'dashboard' do
+    let(:dashboard_path) { File.join(temp_dir, 'dashboard.html') }
+
+    it 'writes the file with no ETA banner when no sync is running' do
+      expect(cli('dashboard').run).to eq(0)
+      expect(out.string).to include("Dashboard written to #{dashboard_path}")
+      expect(File.read(dashboard_path)).not_to include('class="eta"')
+    end
+
+    it 'includes an ETA banner, phrased the same way as `status`, while a sync is running' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, Process.pid.to_s)
+      File.utime(Time.now, Time.now, lock_path)
+
+      expect(cli('dashboard').run).to eq(0)
+      expect(File.read(dashboard_path)).to include('<p class="eta">Sync in progress: Estimating time remaining: waiting for the first folder to finish this run...</p>')
+    end
+  end
+
   describe 'rename-drive' do
     def mount(serial, name)
       vol = make_dirs(mount_root, name).first

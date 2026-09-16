@@ -559,50 +559,24 @@ module EasySync
       @out.puts
     end
 
-    # "3d 4h", "2h 34m", "45m", or "12s".
-    def format_elapsed(seconds)
-      days, rem = seconds.to_i.divmod(86_400)
-      hours, rem = rem.divmod(3600)
-      minutes, secs = rem.divmod(60)
-      return "#{days}d #{hours}h" if days.positive?
-      return "#{hours}h #{minutes}m" if hours.positive?
-      return "#{minutes}m #{secs}s" if minutes.positive?
+    def format_elapsed(seconds) = Jbod::Placement.format_duration(seconds)
 
-      "#{secs}s"
-    end
-
-    # A rough estimate for the run in progress, from what it has actually
-    # done so far this run: folders it copied real bytes for (their rate
-    # extrapolates to every not-yet-synced folder still queued) plus folders
-    # it merely re-verified (their average time extrapolates to every
-    # already-synced folder not yet touched this run). The two behave
-    # nothing alike - an unchanged folder verifies in under a second,
-    # a first-time folder moves real bytes over the network - so averaging
-    # them together would be meaningless; this keeps them separate instead.
+    # Formats a Jbod::SyncEta::Estimate as the one-line message `status` shows
+    # under the running-sync line.
     def sync_eta(started_at)
-      since = started_at.utc.iso8601
-      runs = manifest.sync_runs_since(since)
-      return '  Estimating time remaining: waiting for the first folder to finish this run...' if runs.empty?
-
-      transfers, verifies = runs.partition { |r| r.bytes_transferred.to_i.positive? }
-      transfer_seconds = duration_of(transfers)
-      transfer_rate = transfer_seconds.positive? ? transfers.sum { |r| r.bytes_transferred.to_i } / transfer_seconds : nil
-      avg_verify_seconds = verifies.empty? ? duration_of(runs) / runs.size : duration_of(verifies) / verifies.size
-
-      folders = manifest.folders
-      never_synced = folders.select { |f| f.last_synced_at.nil? }
-      to_reverify = folders.count { |f| f.last_synced_at && f.last_synced_at < since }
-      return nil if never_synced.empty? && to_reverify.zero?
-      return "  #{never_synced.size} folder#{'s' if never_synced.size != 1} never synced (#{bytes(never_synced.sum { |f| f.size_bytes.to_i })}); " \
-             'still waiting for one to finish before estimating their time.' if never_synced.any? && transfer_rate.nil?
-
-      transfer_part = transfer_rate ? never_synced.sum { |f| f.size_bytes.to_i } / transfer_rate : 0
-      eta_seconds = transfer_part + (to_reverify * avg_verify_seconds)
-      "  About #{format_elapsed(eta_seconds)} remaining (#{never_synced.size} folder#{'s' if never_synced.size != 1} never synced, " \
-        "#{to_reverify} to re-verify) - rough estimate, NAS/network speed varies."
+      e = Jbod::SyncEta.for(manifest, started_at)
+      case e&.status
+      when nil then nil
+      when :waiting_for_first_folder
+        '  Estimating time remaining: waiting for the first folder to finish this run...'
+      when :waiting_for_first_transfer
+        "  #{e.never_synced_count} folder#{'s' if e.never_synced_count != 1} never synced (#{bytes(e.never_synced_bytes)}); " \
+          'still waiting for one to finish before estimating their time.'
+      when :estimate
+        "  About #{format_elapsed(e.seconds)} remaining (#{e.never_synced_count} folder#{'s' if e.never_synced_count != 1} never synced, " \
+          "#{e.to_reverify} to re-verify) - rough estimate, NAS/network speed varies."
+      end
     end
-
-    def duration_of(runs) = runs.sum { |r| Time.parse(r.finished_at) - Time.parse(r.started_at) }
 
     def bytes(value) = Jbod::Placement.format_bytes(value)
 
@@ -671,8 +645,9 @@ module EasySync
 
     def dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
+      run = Jbod::RunLock.new(settings[:lock_path]).status
       path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days])
-                            .write(settings[:dashboard_path], mounted: mounted)
+                            .write(settings[:dashboard_path], mounted: mounted, started_at: run&.started_at)
       @out.puts "Dashboard written to #{path}"
     end
   end

@@ -29,6 +29,17 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(%r{<p class="capacity"><strong>47\.0 TB</strong> total capacity ·\s*<strong>3\.0 TB</strong> free right now</p>})
   end
 
+  it 'shows no ETA banner when no sync is running' do
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
+    expect(html).not_to include('class="eta"', 'Sync in progress')
+  end
+
+  it 'shows the ETA banner, phrased the same way as `status`, while a sync is running' do
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)],
+                            started_at: Time.utc(2026, 9, 13, 11, 45, 0))   # after Photos synced, nothing yet this run
+    expect(html).to include('<p class="eta">Sync in progress: Estimating time remaining: waiting for the first folder to finish this run...</p>')
+  end
+
   it 'omits the capacity line when no drives are registered' do
     empty_manifest = memory_manifest(clock: clock)
     html = described_class.new(empty_manifest, clock: clock).render

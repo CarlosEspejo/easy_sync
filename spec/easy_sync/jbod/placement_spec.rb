@@ -69,4 +69,13 @@ RSpec.describe EasySync::Jbod::Placement do
       expect(described_class.format_bytes(8 * TB)).to eq('8.0 TB')
     end
   end
+
+  describe '.format_duration' do
+    it 'picks the coarsest unit that fits, dropping ones that would be zero' do
+      expect(described_class.format_duration(12)).to eq('12s')
+      expect(described_class.format_duration(45 * 60)).to eq('45m 0s')
+      expect(described_class.format_duration((2 * 3600) + (34 * 60))).to eq('2h 34m')
+      expect(described_class.format_duration((3 * 86_400) + (5 * 3600))).to eq('3d 5h')
+    end
+  end
 end

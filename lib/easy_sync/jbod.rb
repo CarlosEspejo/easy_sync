@@ -12,6 +12,7 @@ require_relative 'jbod/run_lock'
 require_relative 'jbod/keep_awake'
 require_relative 'jbod/planner'
 require_relative 'jbod/run_log'
+require_relative 'jbod/sync_eta'
 require_relative 'jbod/dashboard'
 require_relative 'jbod/runner'
 

@@ -36,6 +36,7 @@
   .capacity { color: var(--ink-2); font-size: 16px; margin: 0 0 6px; }
   .capacity strong { color: var(--ink); font-weight: 600; }
   .meta { color: var(--muted); margin: 0 0 20px; }
+  .eta { color: var(--ink-2); margin: -12px 0 20px; }
   .alerts { display: grid; gap: 8px; margin: 0 0 20px; }
   .alert { border: 1px solid var(--ring); border-left: 4px solid var(--warning); background: var(--surface);
            border-radius: 6px; padding: 10px 14px; }
@@ -111,6 +112,9 @@
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
     <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> backed up<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
+<%- if (eta_text = eta_line(eta)) -%>
+  <p class="eta">Sync in progress: <%= h eta_text %></p>
+<%- end -%>
 
 <%- unless warnings.empty? && loose_files.empty? && unplaced_all.empty? -%>
   <div class="alerts">
