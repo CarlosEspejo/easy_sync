@@ -45,7 +45,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
       mounted(drives['backup-06-8tb'], free: 7 * TB, used: 1 * TB),
       mounted(drives['backup-07-8tb'], free: 4 * TB, used: 4 * TB)       # never checked
     ])
-    expect(html).to match(/class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?used · 100%[\s\S]*?SMART ok · 36°C</)
+    expect(html).to match(%r{class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?100% <span class="unit">full</span>[\s\S]*?SMART ok · 36°C<})
     expect(html).to match(/class="tile warning"[\s\S]*?backup-05-8tb[\s\S]*?SMART: starting to fail/)
     expect(html).to match(/class="tile critical"[\s\S]*?backup-06-8tb[\s\S]*?SMART: FAILING/)
     expect(html).to match(/class="tile unknown"[\s\S]*?backup-07-8tb[\s\S]*?SMART n\/a/)
@@ -61,7 +61,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
   it 'shows last-known numbers for drives that are not mounted, without alarm' do
     html = dashboard.render(mounted: [])
     expect(html).to include('not mounted')
-    expect(html).to match(%r{backup-01-3tb[\s\S]*?2\.0 TB <span class="unit">free</span>[\s\S]*?1\.0 TB of 3\.0 TB used · 33%})
+    expect(html).to match(%r{backup-01-3tb[\s\S]*?33% <span class="unit">full</span>[\s\S]*?2\.0 TB free · 1\.0 TB of 3\.0 TB used})
     expect(html).not_to include('class="alert')
   end
 
