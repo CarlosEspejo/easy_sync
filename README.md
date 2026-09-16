@@ -288,10 +288,22 @@ Dashboard
 Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
 is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
 but reallocated, pending or uncorrectable sectors (or an NVMe critical flag) are
-non-zero, so the drive is starting to fail. Red: the self-test failed. Grey: the
+non-zero *and growing*, so the drive is starting to fail. Blue: reallocated
+sectors are non-zero but haven't grown since they were first seen (or since the
+last `verify-drive` checkpoint) - old, stable wear rather than an active
+failure in progress; pending/uncorrectable sectors, media errors, or a critical
+flag always stay amber regardless of trend. Red: the self-test failed. Grey: the
 enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
-the page and a warning on the terminal. Health is read on every sync and at
-registration, via `smartctl` on the physical disk, falling back to `diskutil`.
+the page and a warning on the terminal; blue does not. Health is read on every
+sync and at registration, via `smartctl` on the physical disk, falling back to
+`diskutil`; every read's reallocated-sector count is kept in `smart_checks` so
+growth can be told apart from a number that just sits there.
+
+If an independent full-surface scan (SpinRite, `badblocks`, etc.) confirms a
+flagged drive has zero new defects, `easy_sync verify-drive NAME [--note TEXT]`
+records that as a checkpoint: future checks compare against today's count, not
+whatever it was before, and an active `warning` on reallocated sectors alone
+drops to the stable blue state immediately.
 
 When `smartctl` reports it, each tile also shows how long the drive has
 actually been powered on (SMART's Power_On_Hours), not calendar age — a
@@ -358,6 +370,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | table | holds |
 |---|---|
 | `drives` | serial (PK), name, capacity, added date, volume UUID, model, last seen usage, SMART status/detail/power-on hours, retired date |
+| `smart_checks` | one row per SMART read: drive serial, timestamp, reallocated-sector count, whether it's a manually verified checkpoint |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
 | `placement_history` | every `assigned`, `reassigned` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |

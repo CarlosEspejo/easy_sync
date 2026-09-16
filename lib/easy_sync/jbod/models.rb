@@ -98,7 +98,14 @@ module EasySync
     # but reallocated/pending/uncorrectable sectors or an NVMe critical flag:
     # the drive is starting to fail), 'failing' (self-assessment FAILED), or
     # 'unknown' (SMART not exposed by the enclosure, smartctl missing, etc.).
-    Health = Struct.new(:status, :detail, :source, :power_on_hours, keyword_init: true)
+    # reallocated_sector_ct is the raw counter, tracked separately over time
+    # (see Manifest#record_smart_check) so a drive whose count is old and
+    # unchanging can be told apart from one that's actively climbing.
+    # other_bad is true when pending/uncorrectable sectors, media errors, or
+    # an NVMe critical-warning flag also contributed to a 'warning' status -
+    # those are never downgraded by reallocated-count history.
+    Health = Struct.new(:status, :detail, :source, :power_on_hours, :reallocated_sector_ct, :other_bad,
+                        keyword_init: true)
 
     # A registered drive that is currently mounted, with live usage numbers.
     MountedDrive = Struct.new(:drive, :mount_point, :capacity_bytes, :used_bytes, :free_bytes,

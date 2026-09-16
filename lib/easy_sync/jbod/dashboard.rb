@@ -15,7 +15,10 @@ module EasySync
 
       # Tile colour comes from SMART health only. Fullness is shown as a number;
       # a JBOD drive at 97% is healthy by design and must not look like a problem.
-      HEALTH_LEVELS = { 'ok' => :ok, 'warning' => :warning, 'failing' => :critical }.freeze
+      # 'degraded_stable' (nonzero reallocated sectors that haven't grown since
+      # the last verified checkpoint) gets its own :stable level, distinct from
+      # :warning, so old non-progressing wear doesn't read as an active failure.
+      HEALTH_LEVELS = { 'ok' => :ok, 'degraded_stable' => :stable, 'warning' => :warning, 'failing' => :critical }.freeze
 
       attr_reader :manifest, :grace_days
 
@@ -73,7 +76,8 @@ module EasySync
                       folders: manifest.folders_on(drive.serial_number))
       end
 
-      HEALTH_LABELS = { 'ok' => 'SMART ok', 'warning' => 'SMART: starting to fail', 'failing' => 'SMART: FAILING',
+      HEALTH_LABELS = { 'ok' => 'SMART ok', 'degraded_stable' => 'SMART: historical wear, stable',
+                        'warning' => 'SMART: starting to fail', 'failing' => 'SMART: FAILING',
                         'unknown' => 'SMART n/a' }.freeze
 
       def health_label(status) = HEALTH_LABELS.fetch(status, 'SMART n/a')
@@ -85,7 +89,7 @@ module EasySync
         [health_label(view.health), temp].compact.join(' · ')
       end
 
-      def health_detail_shown?(view) = %w[warning failing].include?(view.health) && view.drive.smart_detail
+      def health_detail_shown?(view) = %w[degraded_stable warning failing].include?(view.health) && view.drive.smart_detail
 
       # Renders a SyncEta::Estimate the same way `status` phrases it, for the
       # banner shown while a sync is running. nil (nothing running, or
@@ -94,7 +98,7 @@ module EasySync
         case eta&.status
         when nil then nil
         when :waiting_for_first_folder
-          'Estimating time remaining: waiting for the first folder to finish this run...'
+          'Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...'
         when :waiting_for_first_transfer
           "#{eta.never_synced_count} folder#{'s' if eta.never_synced_count != 1} never synced (#{bytes(eta.never_synced_bytes)}); " \
             'still waiting for one to finish before estimating their time.'

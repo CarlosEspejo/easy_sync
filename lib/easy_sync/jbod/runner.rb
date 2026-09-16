@@ -206,20 +206,42 @@ module EasySync
       end
 
       # Reads SMART once per run for each mounted drive and records it. A
-      # drive that is starting to fail is the one thing worth shouting about.
+      # drive that is starting to fail is the one thing worth shouting about -
+      # but only when a bad counter is actually growing. A reallocated-sector
+      # count that's nonzero but unchanged since the last verified checkpoint
+      # (or since it was first seen) is old, stable damage, not an active
+      # failure in progress, and gets the quieter 'degraded_stable' status
+      # instead of nagging on every run.
       def check_health(mounted_drive, report)
         health = @volume_info.smart_health(mounted_drive.mount_point) or return
+        status = health.status
         unless @dry_run
-          manifest.update_drive_health(mounted_drive.serial_number, status: health.status, detail: health.detail,
+          if health.reallocated_sector_ct
+            manifest.record_smart_check(mounted_drive.serial_number, reallocated_sector_ct: health.reallocated_sector_ct)
+          end
+          status = resolve_alert_status(mounted_drive.serial_number, health)
+          manifest.update_drive_health(mounted_drive.serial_number, status: status, detail: health.detail,
                                                                      power_on_hours: health.power_on_hours)
         end
-        return if %w[ok unknown].include?(health.status)
+        return if %w[ok unknown degraded_stable].include?(status)
 
-        report.unhealthy << [mounted_drive.friendly_name, health.status]
-        verb = health.status == 'failing' ? 'is FAILING' : 'is starting to fail'
+        report.unhealthy << [mounted_drive.friendly_name, status]
+        verb = status == 'failing' ? 'is FAILING' : 'is starting to fail'
         warn(report, "drive #{mounted_drive.friendly_name} #{verb}: SMART says #{health.detail}. " \
                      "Plan to replace it: register a new drive, then " \
                      "`easy_sync replace-drive #{mounted_drive.friendly_name} --to NEW_NAME --copy`.")
+      end
+
+      # Downgrades a 'warning' caused solely by a non-growing reallocated
+      # count to 'degraded_stable'. Any other reason for 'warning' (pending
+      # sectors, uncorrectable sectors, media errors, an NVMe critical flag)
+      # is left alone regardless of reallocated-count trend.
+      def resolve_alert_status(serial_number, health)
+        return health.status unless health.status == 'warning' && !health.other_bad
+
+        baseline = manifest.reallocated_baseline(serial_number)
+        current = health.reallocated_sector_ct.to_i
+        baseline && current > baseline ? 'warning' : 'degraded_stable'
       end
 
       # Best-effort: says *why* a drive isn't mounted when it's detectably a

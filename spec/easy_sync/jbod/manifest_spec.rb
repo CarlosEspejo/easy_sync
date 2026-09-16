@@ -191,6 +191,41 @@ RSpec.describe EasySync::Jbod::Manifest do
     end
   end
 
+  describe 'SMART reallocated-sector trend' do
+    before { register_fleet(manifest) }
+
+    it 'has no baseline before any check is recorded' do
+      expect(manifest.reallocated_baseline('SN-backup-01-3tb')).to be_nil
+    end
+
+    it 'uses the first-ever recorded check as the baseline until something is verified' do
+      manifest.record_smart_check('SN-backup-01-3tb', reallocated_sector_ct: 24)
+      manifest.record_smart_check('SN-backup-01-3tb', reallocated_sector_ct: 24)
+      expect(manifest.reallocated_baseline('SN-backup-01-3tb')).to eq(24)
+    end
+
+    it 'raises when verifying a drive with no SMART check recorded yet' do
+      expect { manifest.verify_drive_stable('SN-backup-01-3tb') }.to raise_error(EasySync::Error, /no SMART check/)
+    end
+
+    it 'moves the baseline to a verified checkpoint, overriding the first-ever value' do
+      manifest.record_smart_check('SN-backup-01-3tb', reallocated_sector_ct: 24)
+      manifest.record_smart_check('SN-backup-01-3tb', reallocated_sector_ct: 24)
+      manifest.verify_drive_stable('SN-backup-01-3tb', note: 'SpinRite Level 3, 0 new defects')
+      expect(manifest.reallocated_baseline('SN-backup-01-3tb')).to eq(24)
+
+      latest = manifest.latest_smart_check('SN-backup-01-3tb')
+      expect(latest).to include('verified' => 1, 'note' => 'SpinRite Level 3, 0 new defects', 'reallocated_sector_ct' => 24)
+    end
+
+    it 'keeps different drives on independent baselines' do
+      manifest.record_smart_check('SN-backup-01-3tb', reallocated_sector_ct: 24)
+      manifest.record_smart_check('SN-backup-04-8tb', reallocated_sector_ct: 0)
+      expect(manifest.reallocated_baseline('SN-backup-01-3tb')).to eq(24)
+      expect(manifest.reallocated_baseline('SN-backup-04-8tb')).to eq(0)
+    end
+  end
+
   describe 'folder assignment' do
     before { register_fleet(manifest) }
 
