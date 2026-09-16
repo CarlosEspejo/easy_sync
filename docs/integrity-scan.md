@@ -30,11 +30,13 @@ section. It would stop being satisfied immediately if the plan ever dropped to
 
 ### The bigger offsite risk is not rot at all
 
-**Backblaze Personal removes a drive's data from the backup if that drive has
-not been connected in 30 days.** With drives deliberately kept offline between
-syncs, that is a live, silent hole in offsite coverage, and it has nothing to
-do with corruption: the files are simply gone from the backup, and you find out
-by looking.
+**Backblaze Personal drops a drive's data from the current backup if that drive
+has not been connected in 30 days.** Verified directly: the old Drobo volume is
+absent from today's backup but still present when browsing back to September
+2025. So the 30-day rule removes it from the *live* set while version history
+keeps it for the retention window — roughly a year to notice and recover, not
+instant loss. It is still a hole in offsite coverage, and still silent, but it
+is a countdown rather than a cliff.
 
 This is cheaper to defend than anything else in this document, and the data
 already exists — `drives.last_seen_at` is written on every sync. A drive
@@ -91,26 +93,38 @@ only the drive, halves the I/O, and does not need the NAS mounted at all.
 
 ## Design
 
-Verify each drive against a hash recorded when the file was written.
+Verify each drive against a hash recorded the first time the file was seen.
 
-1. **Baseline is written by the sync that copies the file.** After a folder's
-   copy pass succeeds, hash the files rsync reported as transferred — read the
-   *destination* copy on the drive and hash it in Ruby with SHA-256. Store one
+1. **`verify` writes every baseline. `sync` does no hashing at all.** Store one
    row per file in a new `file_checksums` table: folder_path, relative_path,
-   size_bytes, mtime, algo, digest, verified_at.
+   size_bytes, mtime, algo, digest, verified_at. Rows are created by the first
+   `verify` that reaches the file (trust on first use) and updated thereafter.
+   Bootstrap and steady state are the same code path because there is only one
+   path.
 
-   The alternative is to capture rsync's `%C` and skip the read entirely. It is
-   genuinely free, but it forces `--checksum-choice=md5` on every sync, and it
-   only covers *transferred* files — so a separate bootstrap path is still
-   needed for the 35 TB already on the drives. Hashing the destination
-   ourselves makes bootstrap and steady state the same code, and buys SHA-256's
-   2.5 GB/s over MD5's 763 MB/s. Take the extra local read.
+   **This is a hard constraint, not a preference — see the budget floor below.**
+   An earlier draft had the sync hash each file after copying it. That adds a
+   second serial read over the same bytes and costs 25–33% of sync throughput,
+   which breaks the floor outright at the low end of the observed copy range.
+   `sync` is the thing that must not get slower; `verify` is the thing that
+   already has a budget and runs when convenient. Put the cost where the budget
+   is.
 
-   Do not "optimize" this back to rsync's free `%C` later. Beyond the bootstrap
-   problem, xxh128 is not a cryptographic hash and MD5 is broken — SHA-256 is
-   the only option here that also detects deliberate modification rather than
-   just accidental rot. The fast choice and the sound choice happen to coincide;
-   keep it that way.
+   The trade is a wider trust-on-first-use window: a file copied today is not
+   baselined until the frontier reaches it. Acceptable, because that file is
+   freshly written and rsync verified it in flight, making it the least likely
+   thing on the drive to be rotten. If the window ever does need closing, the
+   fix is to overlap hashing with the *next* folder's copy — copying is
+   network-bound and hashing is local-drive-bound, so they can genuinely run
+   concurrently — not to put a serial hash back into the copy path.
+
+   Not rsync's free `%C` either, and do not "optimize" your way back to it
+   later. It costs no read at all, which is tempting, but it forces
+   `--checksum-choice=md5`, covers only *transferred* files (so bootstrap needs
+   a separate path anyway), and the algorithm is wrong: xxh128 is not a
+   cryptographic hash and MD5 is broken. SHA-256 is the only option here that
+   also detects deliberate modification rather than merely accidental rot. The
+   fast choice and the sound choice happen to coincide — keep it that way.
 
 2. **`easy_sync verify [DRIVE...]` is the scan.** For each mounted, non-retired
    drive: walk its folders, re-hash, compare to `file_checksums`.
@@ -291,22 +305,37 @@ it: it would catch the trust-on-first-use case, but at double the I/O with the
 SMB side added, and every legitimately edited file reads as a finding. The
 scrub report hands you the same information for free.
 
+## Fleet, and the speed floor this must not break
+
+**Fleet: 8 active drives, 44.59 TB** — 4 × 7.28 TB, 2 × 5.46 TB, 1 × 2.73 TB,
+1 × 1.82 TB — against a library of roughly 31.9 TB (tv 17.7, movies 12.3,
+synology 1.9, pro 0.04).
+
+**There is nothing further to measure about sync speed, and no reason to.**
+Sync throughput is network IO plus the one target drive being written, because
+only one folder copies at a time — so per-drive benchmarking across the
+enclosure tells you nothing the observed range doesn't. Observed: **50–90 MB/s**.
+
+That gives the acceptance criterion this whole feature has to meet:
+
+> **If the integrity work drops sync below 50 MB/s, the design failed.**
+
+This is what rules out hashing inside the copy path (see Design 1): a serial
+post-copy read costs 25–33%, which is 37.5 MB/s at the low end of the observed
+range. Any future change that touches `sync` gets held to the same line.
+Verification's own read speed is unconstrained by this — it has a budget and
+runs when convenient, which is the entire reason the cost belongs there.
+
 ## Open question: parallelism
 
 Verification is drive-local, so it could run one thread per drive. That does
 not contradict the sequential-sync invariant — that rule is about NAS and
 network contention, neither of which applies to reading local drives. Whether
 it is worth it depends on whether the OWC enclosure sustains N × sequential
-reads over one USB-C link, which is a thing to measure, not assume.
-
-**Fleet capacity is now known; speed still is not.** The real fleet is 8 active
-drives totalling 44.59 TB — 4 × 7.28 TB, 2 × 5.46 TB, 1 × 2.73 TB, 1 × 1.82 TB —
-against a library of roughly 31.9 TB (tv 17.7, movies 12.3, synology 1.9, pro
-0.04). Every *wall-clock* figure above is still extrapolated from the SanDisk
-test drives: real per-drive read speed, sustained throughput across the OWC
-enclosure, and per-drive file counts remain unmeasured. Measure them before
-committing to a budget number, since the budget is what has to beat the offsite
-retention window.
+reads over one USB-C link, which is a thing to measure, not assume. Note this
+is the one speed question the section above does *not* settle: that one is
+about writing to a single target during a sync, this is about reading from
+several at once during a scan.
 
 ## Edge cases to test
 
