@@ -198,6 +198,28 @@ Verify each drive against a hash recorded when the file was written.
 6. **Config.** `verify_algo: sha256`, `verify_budget: "2h"`. No automatic
    verification during `sync`; it is a separate, explicitly-invoked command.
 
+## Free follow-on once the table exists: duplicate detection
+
+`file_checksums` makes this nearly free — group by digest, report anything with
+more than one row. Worth doing because **space is the scarce resource here**:
+5.4 TB of headroom, and "how much isn't backed up at all" is the headline
+number on the dashboard. A byte-identical duplicate is capacity spent twice on
+the same content while something else has zero copies, so every duplicate found
+is potentially a folder that gets backed up instead.
+
+Rules, consistent with everything else here:
+
+- **Report, never delete.** Same stance as `verify`. It prints what it found.
+- **The fix belongs on the NAS, not the drives.** Removing a duplicate from a
+  drive just means the next sync copies it straight back. Dedupe at the source
+  and let the sync propagate the result.
+- Only catches *byte-identical* files. Two encodes of the same movie at
+  different qualities are not duplicates by this definition and will not be
+  found, which is the correct behaviour — the tool cannot know which one you
+  want.
+- Cheap enough to fold into the `verify` summary rather than being its own
+  command, since the digests are already in hand.
+
 ## Known limitations
 
 - **Trust on first use.** The baseline is whatever the file looked like when it
@@ -247,6 +269,18 @@ day parity becomes worth paying for. It is not the right answer now:
 - It is also not a backup tool — placement, fitting, grace-period deletion and
   the "what isn't backed up at all" inventory are untouched by it. This was
   never SnapRAID *or* easy_sync, only SnapRAID for this one slice.
+- **It identifies drives by path, which is weaker than what we already do.**
+  Its config binds a logical name to a mount point (`data d1 /mnt/disk1`); the
+  name is what lands in the content file, the path is just where to look today.
+  It stores a filesystem UUID per disk and errors on an unexpected change
+  (`--force-uuid` overrides), but that is a tripwire, not self-correction — it
+  will not work out which drive is which. On macOS with 8 hot-swappable USB
+  drives that is genuinely fragile: mount order varies, a name collision
+  silently becomes `/Volumes/name 1`, and a locked encrypted volume does not
+  appear at all. Adopting it would mean hand-maintaining an 8-line name→path
+  map and re-checking it whenever the enclosure came up differently — after
+  we already solved drive identity properly by matching the serial in
+  `<drive>/.easy_sync/drive.json`.
 
 Revisit when the library comfortably fits with a spare 8 TB drive to burn. At
 that point adopt SnapRAID and delete this document rather than building both.
