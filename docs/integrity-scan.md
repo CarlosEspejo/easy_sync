@@ -23,10 +23,27 @@ but nothing is looking, and nothing tells you to go get it.
 
 It also sets a deadline that has nothing to do with how fast bit rot happens:
 **a full verify pass must complete faster than the offsite service ages out
-the last good version.** If version history is 30 days and a full sweep takes
-five months, a file can rot, upload, and lose its good version before verify
-ever reaches it. See the budget section — the cheap fix is to lengthen
-retention, not to shorten the sweep.
+the last good version.** Measured: retention is 1 year (Backblaze Personal)
+against a ~5 month sweep, so this is satisfied comfortably — see the budget
+section. It would stop being satisfied immediately if the plan ever dropped to
+30-day history.
+
+### The bigger offsite risk is not rot at all
+
+**Backblaze Personal removes a drive's data from the backup if that drive has
+not been connected in 30 days.** With drives deliberately kept offline between
+syncs, that is a live, silent hole in offsite coverage, and it has nothing to
+do with corruption: the files are simply gone from the backup, and you find out
+by looking.
+
+This is cheaper to defend than anything else in this document, and the data
+already exists — `drives.last_seen_at` is written on every sync. A drive
+approaching the window should be called out in `status` and on the dashboard
+well before it lapses (say at 21 days, leaving nine to act), the same way an
+unmounted drive already gets a note. No new tables, no scanning, no hashing.
+
+Do this before building the scan. It protects more of the backup for a tiny
+fraction of the effort.
 
 ## What covers what
 
@@ -155,9 +172,12 @@ Verify each drive against a hash recorded when the file was written.
    binds is that the offsite copy comes from the drives: a full pass has to
    finish before the offsite service expires the last good version, or verify
    finds the corruption after the only clean copy has already aged out.
-   Compare the two numbers and make them agree. Lengthening retention (a paid
-   add-on on consumer plans, a lifecycle rule on object storage) is far cheaper
-   than the drive reads needed to shorten the sweep — prefer it.
+
+   **Measured: retention is 1 year (Backblaze Personal), sweep is ~5 months.**
+   The constraint is satisfied with roughly seven months to spare, so the
+   budget can be set on convenience rather than on beating a deadline. Re-check
+   if the plan changes — if retention ever drops to 30 days, the sweep has to
+   shorten by an order of magnitude and the whole budget story changes.
 
    Report the frontier age so the gap is visible: the dashboard should say how
    long ago the *least* recently verified file was checked, which is the number
