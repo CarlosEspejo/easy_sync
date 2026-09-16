@@ -201,7 +201,8 @@ RSpec.describe EasySync::Jbod::Runner do
         .and_return(EasySync::Jbod::Health.new(status: 'ok', detail: 'PASSED · reallocated 0 · 34°C', source: 'smartctl',
                                                power_on_hours: 10_432))
       allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-05-8tb")
-        .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 12 · pending 3 · 41°C', source: 'smartctl'))
+        .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 12 · pending 3 · 41°C', source: 'smartctl',
+                                               reallocated_sector_ct: 12, other_bad: true))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
@@ -211,6 +212,48 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(report.unhealthy).to eq([['backup-05-8tb', 'warning']])
       expect(report.warnings).to include(a_string_matching(/backup-05-8tb is starting to fail: SMART says PASSED · reallocated 12 · pending 3/))
       expect(report.warnings).not_to include(a_string_matching(/backup-04-8tb is/))
+    end
+
+    it 'downgrades a first-seen nonzero reallocated count to degraded_stable instead of alarming immediately' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-04-8tb")
+        .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 24 · 34°C', source: 'smartctl',
+                                               reallocated_sector_ct: 24, other_bad: false))
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      report = runner.run
+      expect(manifest.drive('SN-backup-04-8tb').smart_status).to eq('degraded_stable')
+      expect(report.unhealthy).to eq([])
+      expect(report.warnings).not_to include(a_string_matching(/backup-04-8tb/))
+    end
+
+    it 'alerts once the reallocated count grows past the first-seen baseline' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      manifest.record_smart_check('SN-backup-04-8tb', reallocated_sector_ct: 24)
+
+      allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-04-8tb")
+        .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 26 · 34°C', source: 'smartctl',
+                                               reallocated_sector_ct: 26, other_bad: false))
+
+      report = runner.run
+      expect(manifest.drive('SN-backup-04-8tb').smart_status).to eq('warning')
+      expect(report.unhealthy).to eq([['backup-04-8tb', 'warning']])
+    end
+
+    it 'goes back to degraded_stable, not warning, once a full-surface scan verifies the count as stable' do
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      manifest.record_smart_check('SN-backup-04-8tb', reallocated_sector_ct: 24)
+      manifest.verify_drive_stable('SN-backup-04-8tb', note: 'SpinRite: 0 new defects')
+
+      allow(volume_info).to receive(:smart_health).with("#{mount_root}/backup-04-8tb")
+        .and_return(EasySync::Jbod::Health.new(status: 'warning', detail: 'PASSED · reallocated 24 · 34°C', source: 'smartctl',
+                                               reallocated_sector_ct: 24, other_bad: false))
+
+      report = runner.run
+      expect(manifest.drive('SN-backup-04-8tb').smart_status).to eq('degraded_stable')
+      expect(report.unhealthy).to eq([])
     end
 
     it 'reports drive-full separately from a generic rsync failure and leaves the folder resumable' do

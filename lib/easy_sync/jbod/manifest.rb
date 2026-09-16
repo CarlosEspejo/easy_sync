@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 2
+      SCHEMA_VERSION = 3
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -144,6 +144,59 @@ module EasySync
            WHERE serial_number = ?
         SQL
         drive(serial_number)
+      end
+
+      # -- SMART trend history ---------------------------------------------
+
+      # Records one reading's reallocated-sector count for trend comparison.
+      # Every check is stored, not just changes, so #reallocated_baseline has
+      # a first-ever value to fall back on for a drive that's never been
+      # through #verify_drive_stable.
+      def record_smart_check(serial_number, reallocated_sector_ct:, checked_at: now)
+        ensure_drive!(serial_number)
+        db.execute(<<~SQL, [serial_number, checked_at, reallocated_sector_ct])
+          INSERT INTO smart_checks (drive_serial, checked_at, reallocated_sector_ct, verified)
+          VALUES (?, ?, ?, 0)
+        SQL
+      end
+
+      def latest_smart_check(serial_number)
+        db.get_first_row(<<~SQL, [serial_number])
+          SELECT * FROM smart_checks WHERE drive_serial = ? ORDER BY checked_at DESC, id DESC LIMIT 1
+        SQL
+      end
+
+      # A full-surface scan (SpinRite or equivalent) found no new defects:
+      # record the drive's most recently read reallocated count as a manually
+      # verified checkpoint. #reallocated_baseline compares against this
+      # value and this timestamp from now on, until the next verification.
+      def verify_drive_stable(serial_number, note: nil, at: now)
+        ensure_drive!(serial_number)
+        latest = latest_smart_check(serial_number) or
+          raise Error, "no SMART check recorded yet for #{serial_number}; run a sync first"
+        db.execute(<<~SQL, [serial_number, at, latest['reallocated_sector_ct'], note])
+          INSERT INTO smart_checks (drive_serial, checked_at, reallocated_sector_ct, verified, note)
+          VALUES (?, ?, ?, 1, ?)
+        SQL
+      end
+
+      # The reallocated-sector count a new check is compared against: the
+      # most recent manually verified checkpoint, or - until the first
+      # verification - the earliest check ever recorded for the drive. That
+      # fallback matters so turning this tracking on for an already-degraded
+      # drive doesn't itself read as "the count just increased".
+      def reallocated_baseline(serial_number)
+        row = db.get_first_row(<<~SQL, [serial_number])
+          SELECT reallocated_sector_ct FROM smart_checks
+           WHERE drive_serial = ? AND verified = 1
+           ORDER BY checked_at DESC, id DESC LIMIT 1
+        SQL
+        row ||= db.get_first_row(<<~SQL, [serial_number])
+          SELECT reallocated_sector_ct FROM smart_checks
+           WHERE drive_serial = ?
+           ORDER BY checked_at ASC, id ASC LIMIT 1
+        SQL
+        row && row['reallocated_sector_ct']
       end
 
       # Backfills the model for a drive registered before this field existed,
@@ -419,7 +472,22 @@ module EasySync
         migrate_to_v1! if schema_version < 1
         add_column('drives', 'model', 'TEXT')
         add_column('drives', 'power_on_hours', 'INTEGER')
+        create_smart_checks_table!
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
+      end
+
+      def create_smart_checks_table!
+        db.execute_batch(<<~SQL)
+          CREATE TABLE IF NOT EXISTS smart_checks (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            drive_serial          TEXT NOT NULL REFERENCES drives(serial_number),
+            checked_at            TEXT NOT NULL,
+            reallocated_sector_ct INTEGER,
+            verified              INTEGER NOT NULL DEFAULT 0,
+            note                  TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_smart_checks_drive ON smart_checks(drive_serial, checked_at);
+        SQL
       end
 
       def add_column(table, name, type)

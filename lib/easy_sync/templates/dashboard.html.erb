@@ -10,21 +10,21 @@
     --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --hairline: #e1e0d9; --ring: rgba(11,11,11,0.10);
     --accent: #2a78d6; --track: #e6e5df;
-    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --stable: #5b8fd6;
     --warning-track: #fdebc2; --critical-track: #f6cfcf;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
       --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
-      --accent: #3987e5; --track: #333331;
+      --accent: #3987e5; --track: #333331; --stable: #6fa1e0;
       --warning-track: #4a3708; --critical-track: #4a1717;
     }
   }
   :root[data-theme="dark"] {
     --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
     --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
-    --accent: #3987e5; --track: #333331;
+    --accent: #3987e5; --track: #333331; --stable: #6fa1e0;
     --warning-track: #4a3708; --critical-track: #4a1717;
   }
   * { box-sizing: border-box; }
@@ -53,11 +53,13 @@
   .tile .sub.muted { color: var(--muted); }
   .meter { height: 8px; border-radius: 4px; background: var(--track); margin: 10px 0 8px; overflow: hidden; }
   .meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .tile.stable { border-color: var(--stable); box-shadow: inset 4px 0 0 var(--stable); }
   .tile.warning { border-color: var(--warning); box-shadow: inset 4px 0 0 var(--warning); }
   .tile.critical { border-color: var(--critical); box-shadow: inset 4px 0 0 var(--critical); }
   .tile .health { font-size: 12px; margin-top: 8px; color: var(--ink-2); }
   .tile .health::before { content: "●"; margin-right: 4px; }
   .tile .health.ok::before { color: var(--good); }
+  .tile .health.degraded_stable::before { color: var(--stable); }
   .tile .health.warning::before { color: var(--warning); }
   .tile .health.failing::before { color: var(--critical); }
   .tile .health.unknown::before { color: var(--muted); }

@@ -177,9 +177,11 @@ module EasySync
         power_on_hours = out[/^\s*\d+\s+Power_On_Hours\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(\d+)/, 1] ||
                          out[/^Power On Hours:\s*([\d,]+)/, 1]&.delete(',')
 
-        bad = counters.values_at('Reallocated_Sector_Ct', 'Current_Pending_Sector', 'Offline_Uncorrectable').compact.sum
-        bad += media_errors.to_i
-        bad += 1 if critical && critical.hex != 0
+        reallocated = counters['Reallocated_Sector_Ct']
+        other_bad = counters.values_at('Current_Pending_Sector', 'Offline_Uncorrectable').compact.sum
+        other_bad += media_errors.to_i
+        other_bad += 1 if critical && critical.hex != 0
+        bad = other_bad + reallocated.to_i
 
         status = if verdict.casecmp?('PASSED') then bad.positive? ? 'warning' : 'ok'
                  else 'failing'
@@ -193,7 +195,8 @@ module EasySync
         parts << "#{pct_used}% of rated life used" if pct_used
         parts << "#{temp}°C" if temp
         Health.new(status: status, detail: parts.join(' · '), source: 'smartctl',
-                   power_on_hours: power_on_hours&.to_i)
+                   power_on_hours: power_on_hours&.to_i, reallocated_sector_ct: reallocated,
+                   other_bad: other_bad.positive?)
       end
 
       def diskutil_health(mount_point)

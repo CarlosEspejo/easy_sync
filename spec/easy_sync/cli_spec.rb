@@ -263,7 +263,7 @@ RSpec.describe EasySync::CLI do
 
       it 'says it is waiting when nothing has finished yet this run' do
         expect(cli('status', clock: double('clock', now: started + 5)).run).to eq(0)
-        expect(out.string).to include('Estimating time remaining: waiting for the first folder to finish this run...')
+        expect(out.string).to include('Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...')
       end
 
       it 'combines the observed transfer rate and verify time into one estimate' do
@@ -332,7 +332,7 @@ RSpec.describe EasySync::CLI do
       File.utime(Time.now, Time.now, lock_path)
 
       expect(cli('dashboard').run).to eq(0)
-      expect(File.read(dashboard_path)).to include('<p class="eta">Sync in progress: Estimating time remaining: waiting for the first folder to finish this run...</p>')
+      expect(File.read(dashboard_path)).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
     end
   end
 
@@ -395,6 +395,31 @@ RSpec.describe EasySync::CLI do
       expect(err.string).to include('same')
 
       expect(manifest.drives.map(&:friendly_name)).to contain_exactly('backup-07-2tb', 'backup-08-6tb')
+    end
+  end
+
+  describe 'verify-drive' do
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-02-6tb', capacity_bytes: 6 * TB)
+      m.record_smart_check('S1', reallocated_sector_ct: 24)
+      m.update_drive_health('S1', status: 'warning', detail: 'PASSED · reallocated 24 · 34°C')
+      m.close
+    end
+
+    it 'records a verified-stable checkpoint and downgrades an active warning to degraded_stable' do
+      expect(cli('verify-drive', 'backup-02-6tb', '--note', 'SpinRite Level 3, 0 new defects').run).to eq(0)
+      expect(out.string).to include("Recorded backup-02-6tb's current reallocated-sector count as a verified-stable checkpoint.",
+                                    'Note: SpinRite Level 3, 0 new defects')
+
+      drive = manifest.drive_by_name('backup-02-6tb')
+      expect(drive.smart_status).to eq('degraded_stable')
+      expect(manifest.reallocated_baseline('S1')).to eq(24)
+    end
+
+    it 'fails for an unknown drive name' do
+      expect(cli('verify-drive', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
     end
   end
 

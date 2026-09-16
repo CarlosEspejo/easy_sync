@@ -25,6 +25,7 @@ module EasySync
         ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
+        ['verify-drive NAME [--note TEXT]', 'record that a full-surface scan (SpinRite etc.) found no new defects; resets the reallocated-sector baseline'],
         ['restore FOLDER|SHARE [...] | --all [--dry-run]', 'copy folders back onto the NAS from wherever they live (reverse of sync)'],
         ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
         ['sources', 'list the configured shares']
@@ -76,6 +77,7 @@ module EasySync
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
       when 'rename-drive' then rename_drive(@argv)
+      when 'verify-drive' then verify_drive(@argv)
       when 'pending' then pending
       when 'clean' then clean(@argv)
       when 'plan' then plan(@argv)
@@ -483,6 +485,8 @@ module EasySync
       end
     end
 
+    SMART_STATUS_LABELS = { 'degraded_stable' => 'stable wear' }.freeze
+
     # The verdict plus only what's worth reading: zero counters and the
     # PASSED verdict (implied by ok/warning) are dropped; ok keeps just the temperature.
     def smart_summary(drive)
@@ -491,7 +495,7 @@ module EasySync
 
       parts = drive.smart_detail.to_s.split(' · ').reject { |p| p == 'PASSED' || p.match?(/\A[a-z ]+ 0\z/) }
       parts = parts.grep(/°C\z/) if drive.smart_status == 'ok'
-      [drive.smart_status, *parts].join(' · ')
+      [SMART_STATUS_LABELS.fetch(drive.smart_status, drive.smart_status), *parts].join(' · ')
     end
 
     # Only the unusual: not mounted, locked, or mounted somewhere other than under its own name.
@@ -568,7 +572,7 @@ module EasySync
       case e&.status
       when nil then nil
       when :waiting_for_first_folder
-        '  Estimating time remaining: waiting for the first folder to finish this run...'
+        '  Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...'
       when :waiting_for_first_transfer
         "  #{e.never_synced_count} folder#{'s' if e.never_synced_count != 1} never synced (#{bytes(e.never_synced_bytes)}); " \
           'still waiting for one to finish before estimating their time.'
@@ -625,6 +629,28 @@ module EasySync
         relabel_marker(old.serial_number, new_name, mounted)
         rename_volume_hint(old.serial_number, new_name, mounted)
       end
+    end
+
+    # Manually confirms that a drive flagged 'warning' or 'degraded_stable'
+    # over reallocated sectors is not actively getting worse - typically
+    # after an independent full-surface scan (SpinRite etc.) found zero new
+    # defects. Locks in the drive's most recently read reallocated-sector
+    # count as the new baseline, so future checks compare against today,
+    # not against whatever the count happened to be before this tool ever
+    # tracked it.
+    def verify_drive(args)
+      opts = {}
+      OptionParser.new { |o| o.on('--note TEXT', 'e.g. "SpinRite Level 3, 22.5h, 0 new defects"') { |v| opts[:note] = v } }.parse!(args)
+      name = args.first or raise Error, "verify-drive needs a drive name\n\n#{USAGE}"
+      drive = manifest.drive_by_name(name) or raise Error, "no drive named #{name}"
+
+      manifest.verify_drive_stable(drive.serial_number, note: opts[:note])
+      if drive.smart_status == 'warning'
+        manifest.update_drive_health(drive.serial_number, status: 'degraded_stable', detail: drive.smart_detail)
+      end
+      message = "Recorded #{name}'s current reallocated-sector count as a verified-stable checkpoint."
+      message += " Note: #{opts[:note]}" if opts[:note]
+      @out.puts message
     end
 
     # Keeps the drive's own .easy_sync/drive.json readable-by-hand, though

@@ -251,6 +251,16 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       h = described_class.parse_smartctl(out)
       expect(h.status).to eq('warning')
       expect(h.detail).to include('reallocated 12', 'pending 3')
+      expect(h.reallocated_sector_ct).to eq(12)
+      expect(h.other_bad).to eq(true)
+    end
+
+    it 'flags reallocated sectors alone as other_bad: false, for trend comparison downstream' do
+      out = ata.sub(/Reallocated_Sector_Ct.*-\s+0$/) { |l| l.sub(/0$/, '24') }
+      h = described_class.parse_smartctl(out)
+      expect(h.status).to eq('warning')
+      expect(h.reallocated_sector_ct).to eq(24)
+      expect(h.other_bad).to eq(false)
     end
 
     it 'reports a failed self-assessment as failing' do

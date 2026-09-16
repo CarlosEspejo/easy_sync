@@ -37,7 +37,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
   it 'shows the ETA banner, phrased the same way as `status`, while a sync is running' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)],
                             started_at: Time.utc(2026, 9, 13, 11, 45, 0))   # after Photos synced, nothing yet this run
-    expect(html).to include('<p class="eta">Sync in progress: Estimating time remaining: waiting for the first folder to finish this run...</p>')
+    expect(html).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
   end
 
   it 'omits the capacity line when no drives are registered' do
@@ -67,6 +67,15 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('<strong>backup-06-8tb</strong> is FAILING')
     expect(html).not_to include('is 100% full')
     expect(html).to include('drive colours show SMART health, not fullness')
+  end
+
+  it 'gives a drive with stable, non-growing reallocated sectors a lower-urgency tile, not the top alert banner' do
+    manifest.update_drive_health('SN-backup-05-8tb', status: 'degraded_stable', detail: 'PASSED · reallocated 24 · 34°C')
+    html = dashboard.render(mounted: [mounted(drives['backup-05-8tb'], free: 4 * TB, used: 4 * TB)])
+    expect(html).to match(/class="tile stable"[\s\S]*?backup-05-8tb[\s\S]*?SMART: historical wear, stable/)
+    expect(html).to include('<small>PASSED · reallocated 24 · 34°C</small>')
+    expect(html).not_to include('is starting to fail')
+    expect(html).not_to include('class="alert')
   end
 
   it 'shows last-known numbers for drives that are not mounted, without alarm' do
