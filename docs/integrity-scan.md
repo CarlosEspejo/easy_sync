@@ -105,7 +105,8 @@ Verify each drive against a hash recorded the first time the file was seen.
    **This is a hard constraint, not a preference — see the budget floor below.**
    An earlier draft had the sync hash each file after copying it. That adds a
    second serial read over the same bytes and costs 25–33% of sync throughput,
-   which breaks the floor outright at the low end of the observed copy range.
+   taking the measured 62.9 MB/s aggregate to 42–47 and breaking the floor
+   outright — see the budget floor below for the measurement.
    `sync` is the thing that must not get slower; `verify` is the thing that
    already has a budget and runs when convenient. Put the cost where the budget
    is.
@@ -311,20 +312,69 @@ scrub report hands you the same information for free.
 1 × 1.82 TB — against a library of roughly 31.9 TB (tv 17.7, movies 12.3,
 synology 1.9, pro 0.04).
 
-**There is nothing further to measure about sync speed, and no reason to.**
-Sync throughput is network IO plus the one target drive being written, because
-only one folder copies at a time — so per-drive benchmarking across the
-enclosure tells you nothing the observed range doesn't. Observed: **50–90 MB/s**.
+**Sync speed is measured, not estimated, and there is nothing further to
+measure.** Throughput is network IO plus the one target drive being written,
+because only one folder copies at a time.
+
+The numbers below come from the `sync_runs` table of the real manifest, over
+the first full-library campaign (2026-09-13 to 2026-09-17): **154 folder
+copies of 5 GB or more, 11.3 TB moved in 49.9 hours of transfer time.** Runs
+under 5 GB are excluded so that per-folder setup cost doesn't contaminate the
+rate. Reproduce it with:
+
+```sql
+SELECT folder_path, bytes_transferred,
+       strftime('%s',finished_at) - strftime('%s',started_at) AS secs
+  FROM sync_runs
+ WHERE exit_status = 0 AND bytes_transferred >= 5e9
+   AND strftime('%s',finished_at) > strftime('%s',started_at);
+```
+
+| statistic | MB/s |
+|---|---|
+| **aggregate (total bytes / total time)** | **62.9** |
+| median folder | 67.7 |
+| p25 – p75 | 57.8 – 79.8 |
+| p10 – p90 | 50.2 – 87.6 |
+| min / max | 16.6 / 98.3 |
+
+**Plan with the aggregate, 63 MB/s.** It is the only figure that predicts
+wall-clock time for a campaign; the median flatters the result because slow
+folders occupy more of the clock than fast ones. The older eyeballed figure of
+"50–90 MB/s" turns out to have been a fair read of the p10–p90 band, so
+nothing built on it is wrong — but it described the spread, not the rate.
+
+**Per-drive benchmarking is confirmed pointless.** Aggregate by drive:
+WSD0TYRR 66.5, WKD1FPS5 66.8, WSD8HPZN 66.4, WKD1SH4M 68.8, 875XK163F56D 67.8
+MB/s. Four 8 TB Seagates and a 6 TB Toshiba, spread 2.4 MB/s. The target drive
+is not the variable; the NAS read path is.
 
 That gives the acceptance criterion this whole feature has to meet:
 
-> **If the integrity work drops sync below 50 MB/s, the design failed.**
+> **If the integrity work drops the aggregate below 50 MB/s, the design failed.**
+
+It is a floor on the aggregate, deliberately, because as an instantaneous
+floor it is already breached without any integrity work at all: **10.7% of
+transfer time today runs below 50 MB/s**, and the p10 folder sits at 50.2.
+Holding individual folders to 50 would fail the status quo.
 
 This is what rules out hashing inside the copy path (see Design 1): a serial
-post-copy read costs 25–33%, which is 37.5 MB/s at the low end of the observed
-range. Any future change that touches `sync` gets held to the same line.
+post-copy read costs 25–33%, taking 62.9 MB/s to **47.2 at best and 42.1 at
+worst** — under the floor on the aggregate, not merely at the low end of the
+range. The measurement strengthens the original conclusion rather than
+softening it. Any future change that touches `sync` gets held to the same line.
+
 Verification's own read speed is unconstrained by this — it has a budget and
 runs when convenient, which is the entire reason the cost belongs there.
+
+**Known confound, worth eliminating before re-measuring:** Time Machine on
+this Mac backs up to a sparsebundle on the same Synology (DS1019, 10.0.1.102)
+that serves the media shares, so its scattered band writes contend with
+rsync's sequential reads on the same array and the same SMB link. It was
+running during part of this campaign and is the most likely source of the low
+tail. A run with `sudo tmutil disable` would raise the aggregate; treat 62.9
+MB/s as a floor-ish figure taken under realistic household conditions rather
+than a clean-room best case.
 
 ## Open question: parallelism
 

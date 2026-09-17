@@ -147,11 +147,17 @@ assumptions, they cannot check them.
   - **Why it matters here specifically: the offsite backup is taken from the
     drives, not from the NAS.** A rotted file gets uploaded as a change and
     corrupts the last copy standing. That is the whole justification.
-  - **`sync` does no hashing. `verify` writes every baseline.** Observed sync
-    throughput is 50–90 MB/s (network IO + the one target drive), and the
-    acceptance criterion is that integrity work must never drop it below
-    50 MB/s. A post-copy hash pass costs 25–33%, i.e. 37.5 MB/s at the low
-    end — it breaks the floor, which is why it was moved out.
+  - **`sync` does no hashing. `verify` writes every baseline.** Throughput is
+    **62.9 MB/s aggregate** — measured from `sync_runs`, 154 folder copies of
+    5 GB+, 11.3 TB over 49.9 h; median folder 67.7, p10–p90 50.2–87.6. Plan
+    with the aggregate, not the spread: it is what predicts wall-clock time.
+    The acceptance criterion is that integrity work never drops the
+    *aggregate* below 50 MB/s — as an instantaneous floor it is already
+    breached, 10.7% of transfer time runs under 50 today. A post-copy hash
+    pass costs 25–33%, i.e. 42–47 MB/s, so it breaks the floor outright,
+    which is why it was moved out. Don't re-derive any of this by eye from an
+    rsync log: the rate `--info=progress2` prints is a *cumulative average*
+    (bytes ÷ elapsed), so it sags smoothly and understates the real spread.
   - Measured, don't re-derive: rsync prints a per-file checksum for free via
     `--out-format='%i %C %l %n'` (no `--checksum` needed), stable across runs.
     **We deliberately do not use it** — it forces `--checksum-choice=md5`,
@@ -180,7 +186,14 @@ assumptions, they cannot check them.
   against 44.59 TB of capacity. Check `easy_sync status` / the dashboard for
   current placement; don't assume the old test-drive partial-fit numbers apply.
   Sync speed needs no further measuring — it is network IO plus the single
-  target drive being written, observed at 50–90 MB/s. The one speed question
+  target drive being written, measured at 62.9 MB/s aggregate (see
+  docs/integrity-scan.md for the method and the per-drive breakdown, which
+  confirms the target drive is not the variable: five drives within 2.4 MB/s
+  of each other). Time Machine on this Mac backs up to a sparsebundle on the
+  *same* Synology that serves the media shares, so it contends with rsync's
+  reads on the same array and link — `sudo tmutil disable` during a long
+  campaign is worth it, and it is the first thing to check when a sync looks
+  slow. The one speed question
   still genuinely open is whether the enclosure sustains N concurrent
   *reads* over its single USB-C link, which only matters for parallelising a
   future `verify`.
