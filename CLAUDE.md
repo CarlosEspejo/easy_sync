@@ -141,13 +141,35 @@ assumptions, they cannot check them.
 ## Open items
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
-- Bit-rot detection: see docs/integrity-scan.md (designed, not built). Key
-  measured fact, don't re-derive: rsync prints a per-file checksum for free via
-  `--out-format='%i %C %l %n'` (no `--checksum` needed) and the value is stable
-  across runs, so it works as a stored baseline. Default is xxh128 (not in Ruby
-  stdlib); `--checksum-choice=md5` gives a real MD5. On Apple Silicon
-  Digest::SHA256 is ~3x faster than MD5 (2514 vs 763 MB/s) — the disk is always
-  the bottleneck, never the hash.
+- Bit-rot detection: see docs/integrity-scan.md (designed, not built). Read the
+  doc before touching this; the decisions below were argued out and should not
+  be re-litigated.
+  - **Why it matters here specifically: the offsite backup is taken from the
+    drives, not from the NAS.** A rotted file gets uploaded as a change and
+    corrupts the last copy standing. That is the whole justification.
+  - **`sync` does no hashing. `verify` writes every baseline.** Observed sync
+    throughput is 50–90 MB/s (network IO + the one target drive), and the
+    acceptance criterion is that integrity work must never drop it below
+    50 MB/s. A post-copy hash pass costs 25–33%, i.e. 37.5 MB/s at the low
+    end — it breaks the floor, which is why it was moved out.
+  - Measured, don't re-derive: rsync prints a per-file checksum for free via
+    `--out-format='%i %C %l %n'` (no `--checksum` needed), stable across runs.
+    **We deliberately do not use it** — it forces `--checksum-choice=md5`,
+    covers only transferred files, and MD5/xxh128 are not sound choices. Use
+    SHA-256 (2514 MB/s on Apple Silicon vs MD5's 763); the disk is always the
+    bottleneck, never the hash.
+  - A file found corrupt is **guaranteed to be replaced**: `verify` flags the
+    row, the next `sync` of that folder deletes the flagged file before its
+    copy pass so rsync re-fetches it. This amends the "only Purger deletes"
+    invariant above — update it when this is built.
+  - SnapRAID was evaluated and rejected: it won't give you scrub without
+    parity, parity costs a 7.28 TB drive against only ~5.4 TB of headroom, and
+    it identifies drives by config path rather than by serial.
+- Backblaze (Personal, taken from the drives): **1 year version history**,
+  verified — the old Drobo volume is gone from today's backup but still
+  browsable back to Sept 2025. A drive not connected for 30 days drops out of
+  the *current* backup but stays in history, so it is a ~1-year countdown, not
+  instant loss. `drives.last_seen_at` already has what a warning would need.
 - **The OWC enclosure has replaced the Drobo and is what's in use now.** The
   real fleet is 8 active drives, 44.59 TB total: 4 × 7.28 TB, 2 × 5.46 TB,
   1 × 2.73 TB, 1 × 1.82 TB (the two 235 GB `jbod-test` drives are retired in
@@ -157,9 +179,11 @@ assumptions, they cannot check them.
   so it must stay `split: false`, `pro` 35.6 GB/4 folders) — about 31.9 TB
   against 44.59 TB of capacity. Check `easy_sync status` / the dashboard for
   current placement; don't assume the old test-drive partial-fit numbers apply.
-  Per-drive read speed across the OWC's single USB-C link is still unmeasured,
-  which is the number `docs/integrity-scan.md` needs before a scan budget can
-  be set.
+  Sync speed needs no further measuring — it is network IO plus the single
+  target drive being written, observed at 50–90 MB/s. The one speed question
+  still genuinely open is whether the enclosure sustains N concurrent
+  *reads* over its single USB-C link, which only matters for parallelising a
+  future `verify`.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.
