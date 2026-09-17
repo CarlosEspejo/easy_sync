@@ -193,10 +193,26 @@ assumptions, they cannot check them.
   *same* Synology that serves the media shares, so it contends with rsync's
   reads on the same array and link — `sudo tmutil disable` during a long
   campaign is worth it, and it is the first thing to check when a sync looks
-  slow. The one speed question
-  still genuinely open is whether the enclosure sustains N concurrent
-  *reads* over its single USB-C link, which only matters for parallelising a
-  future `verify`.
+  slow. The drives themselves are never the constraint: measured sequential
+  write is 203/182/178 MB/s for the 8 TB Seagates, 143 Toshiba 6 TB, 116
+  Seagate 2 TB, 115 WD 3 TB — the *slowest* drive is 1.8× the observed sync
+  rate. **The enclosure is Thunderbolt, not USB-C**: each drive has its own
+  AHCI controller at 6 Gb/s on a 40 Gb/s link, so the old "can it sustain N
+  concurrent reads over one USB-C link" worry is answered — 8 × 190 MB/s is
+  ~30% of the link. What is still unmeasured is the NAS read leg, which is
+  the thing that actually binds; it needs a quiet NAS, so it waits for the
+  campaign to finish.
+- **Wanted: an `easy_sync benchmark` command**, keeping the last 25 runs so
+  drive performance can be tracked over time rather than measured once. A
+  falling write rate on one drive is an early failure signal that SMART won't
+  necessarily show. Notes for whoever builds it, learned the hard way: with
+  24 GB of RAM a test smaller than RAM measures the buffer cache, not the
+  disk, and macOS `dd` has no `oflag=direct` — the only way to bypass it is
+  `io.fcntl(48, 1)` (`F_NOCACHE`) on the descriptor. Time the closing `fsync`
+  inside the measurement, use random data, and run each drive three times:
+  run-to-run spread is ~±7%, wide enough to invent a per-drive difference
+  that isn't there. Never benchmark a drive a sync is currently writing to.
+  Baseline numbers to compare against are in docs/integrity-scan.md.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.

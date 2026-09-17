@@ -344,10 +344,40 @@ folders occupy more of the clock than fast ones. The older eyeballed figure of
 "50–90 MB/s" turns out to have been a fair read of the p10–p90 band, so
 nothing built on it is wrong — but it described the spread, not the rate.
 
-**Per-drive benchmarking is confirmed pointless.** Aggregate by drive:
+**The target drive is not the variable.** Aggregate sync throughput by drive:
 WSD0TYRR 66.5, WKD1FPS5 66.8, WSD8HPZN 66.4, WKD1SH4M 68.8, 875XK163F56D 67.8
-MB/s. Four 8 TB Seagates and a 6 TB Toshiba, spread 2.4 MB/s. The target drive
-is not the variable; the NAS read path is.
+MB/s. Four 8 TB Seagates and a 6 TB Toshiba, spread 2.4 MB/s — they all
+deliver the same number because none of them is the constraint.
+
+Measured directly, they are nowhere near it. 8 GB sequential, buffer cache
+bypassed with `fcntl(F_NOCACHE)`, closing `fsync` inside the timing:
+
+| drive | model | used | write MB/s | read MB/s |
+|---|---|---|---|---|
+| backup-04-8tb | ST8000VN004 | 2.2 TB | **203** | 213 |
+| backup-06-8tb | ST8000VN004 | 4.1 TB | 182 | 190 |
+| backup-01-8tb | ST8000VN004 | 2.5 TB | 178 | 199 |
+| backup-07-6tb | HDWE160 | empty | 143 | 179 |
+| backup-08-2tb | ST2000LM015 | empty | 116 | 126 |
+| backup-05-3tb | WD30EFRX | empty | 115 | 128 |
+
+The 8 TB drives are three-run means; the rest are single runs. Run-to-run
+spread is about ±7%, which is wide enough to invent a per-drive difference
+that isn't there — backup-04 really is ~14% faster than the identical
+backup-01, consistently across three passes, but nothing smaller than that
+should be believed without repeats.
+
+**So the slowest drive in the fleet still writes at 1.8× the observed sync
+rate, and the drives holding most of the library write at 2.8–3.2×.** Any
+explanation of sync speed that appeals to the destination drive is wrong.
+Two measurement notes worth not re-deriving: with 24 GB of RAM, a test
+smaller than RAM measures the buffer cache rather than the disk, and macOS
+`dd` has no `oflag=direct` — `fcntl(F_NOCACHE, 1)` is the only way to bypass
+it. A spinning drive that benchmarks in GB/s means the flag didn't take.
+
+**Still unmeasured: the NAS read leg**, which is the one that actually binds.
+It can't be measured while a sync is reading from the same shares, so it
+waits for a quiet NAS (and, per the confound below, a quiet Time Machine).
 
 That gives the acceptance criterion this whole feature has to meet:
 
@@ -380,12 +410,20 @@ than a clean-room best case.
 
 Verification is drive-local, so it could run one thread per drive. That does
 not contradict the sequential-sync invariant — that rule is about NAS and
-network contention, neither of which applies to reading local drives. Whether
-it is worth it depends on whether the OWC enclosure sustains N × sequential
-reads over one USB-C link, which is a thing to measure, not assume. Note this
-is the one speed question the section above does *not* settle: that one is
-about writing to a single target during a sync, this is about reading from
-several at once during a scan.
+network contention, neither of which applies to reading local drives.
+
+**The bandwidth half of this is now settled, and the old premise was wrong.**
+The enclosure is not on "one USB-C link": every drive has its own Thunderbolt
+AHCI controller negotiated at 6 Gb/s (~600 MB/s), on a 40 Gb/s (~5,000 MB/s)
+Thunderbolt link — `system_profiler SPSerialATADataType SPThunderboltDataType`
+shows the topology. Eight drives reading at their measured ~190 MB/s is about
+1,500 MB/s, roughly 30% of the link, and each drive has 3× headroom on its own
+controller. **A parallel verify will not be bandwidth-limited.**
+
+What is still unmeasured is whether it is *worth* it: CPU for eight concurrent
+SHA-256 streams is ample (2514 MB/s per core against ~190 MB/s per drive), so
+the open part is scheduling and whether a scan competing with a running sync
+is acceptable, not throughput.
 
 ## Edge cases to test
 
