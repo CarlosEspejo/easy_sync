@@ -114,7 +114,7 @@
   <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
-    <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> backed up<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
+    <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> placed<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
 <%- if (eta_text = eta_line(eta)) -%>
   <p class="eta">Sync in progress: <%= h eta_text %></p>
 <%- end -%>
@@ -212,7 +212,7 @@
     <summary>
       <span class="share-name"><%= h share %></span>
     <%- inv = inventory_for(inventory, share) -%>
-      <span class="share-meta"><%- if inv[:total].positive? -%><%= inv[:placed] %> of <%= inv[:total] %> folders on the NAS backed up · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
+      <span class="share-meta"><%- if inv[:total].positive? -%><%= inv[:placed] %> of <%= inv[:total] %> folders on the NAS placed · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
       <%- if inv[:unplaced].any? -%><span class="share-problems"><%= inv[:unplaced].size %> not backed up</span><%- end -%>
       <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
     </summary>

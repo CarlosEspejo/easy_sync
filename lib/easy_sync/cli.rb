@@ -167,6 +167,14 @@ module EasySync
           log.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
           Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell.with_out(log),
                                      out: log, dry_run: opts[:dry_run], purge: opts[:purge], clock: @clock).run
+          log.puts 'Sync finished (ran to completion, not interrupted).'
+        rescue Interrupt
+          # Without this, the only way to tell an interrupted run from a
+          # completed one is the absence of the line above - which meant
+          # reading two log files and comparing timestamps to work out that a
+          # "still running" status was actually a fresh restart after Ctrl-C.
+          log.puts 'Sync interrupted (Ctrl-C) before it finished. Nothing was lost; a later `sync` resumes it.'
+          raise
         ensure
           log.close
         end
