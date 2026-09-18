@@ -882,7 +882,27 @@ RSpec.describe EasySync::CLI do
     expect(cli('sync').run).to eq(130)
     expect(err.string).to include('Interrupted. Nothing is lost')
     expect(File).not_to exist(lock_path)
-    expect(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log')).size).to eq(1)
+    logs = Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log'))
+    expect(logs.size).to eq(1)
+    # The log itself must say so - otherwise the only way to tell an
+    # interrupted run from a completed one is comparing two log files by eye.
+    expect(File.read(logs.first)).to include('Sync interrupted (Ctrl-C)')
+  end
+
+  it 'marks the log as finished when a sync runs to completion, unlike an interrupted one' do
+    cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+    File.write(config_path, cfg.merge(sources: [File.join(temp_dir, 'nas')]).to_yaml)
+    make_dirs(temp_dir, 'nas', 'nas/photos')
+    write_file(File.join(temp_dir, 'nas', 'photos', 'x.jpg'))
+    fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+    fake_shell.on('du', output: "10\t.\n")
+    # No drives registered: the folder is left unplaced, but the run still
+    # completes normally rather than raising - unlike an unmounted *source*.
+
+    expect(cli('sync').run).to eq(0)
+    log = File.read(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log')).first)
+    expect(log).to include('Sync finished (ran to completion, not interrupted)')
+    expect(log).not_to include('Sync interrupted')
   end
 
   it 'prints the version' do

@@ -145,7 +145,9 @@ module EasySync
       def when_(iso)
         return 'never' if iso.nil? || iso.empty?
 
-        Time.parse(iso).localtime.strftime('%Y-%m-%d %H:%M')
+        #   (non-breaking space) between date and time: a table column
+        # narrower than the full string must not split it across two lines.
+        Time.parse(iso).localtime.strftime("%Y-%m-%d %H:%M")
       rescue ArgumentError
         iso
       end
@@ -200,7 +202,7 @@ module EasySync
           status = folder_status(f, source_status)
           whole = pending.find { |p| p.whole_folder? && p.folder_path == f.folder_path }
           note = whole ? %(<br><small style="color:var(--muted)">deleted from drive after #{expiry(whole)}</small>) : ''
-          "<tr><td>#{h f.folder_path}</td><td>#{h names.fetch(f.drive_serial, f.drive_serial)}</td>" \
+          "<tr><td>#{h f.folder_path}</td><td class=\"drive\">#{h names.fetch(f.drive_serial, f.drive_serial)}</td>" \
             "<td class=\"num\">#{bytes(f.size_bytes)}</td><td>#{when_(f.last_synced_at)}</td>" \
             "<td><span class=\"status #{status}\">#{h status_label(status)}</span>#{note}</td>" \
             "<td>#{when_(f.assigned_at)}</td></tr>"
