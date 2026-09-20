@@ -130,6 +130,23 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(manifest.sync_runs.size).to eq(1)
     end
 
+    it 'does not place a new folder where the manifest already promises more than df shows as used' do
+      # backup-04-8tb (8 TB capacity) already has 7.5 TB of folders assigned
+      # from an earlier, interrupted run that never got around to copying
+      # them, so `df` still reports the drive as nearly empty (7.9 TB free).
+      # A new 1 TB folder must not be placed there: 7.5 TB already promised
+      # + 1 TB new leaves nothing for the drive to actually hold.
+      manifest.assign_folder('tv/Old Show', 'SN-backup-04-8tb', size_bytes: (7.5 * TB).to_i)
+      sizes['photos'] = 1 * TB
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 7.9 * TB)])
+
+      report = runner.run
+
+      expect(report.placed).to be_empty
+      expect(report.unplaced).to eq(['photos'])
+      expect(manifest.folder('photos')).to be_nil
+    end
+
     it 'announces how many new folders it will measure and reports each as it goes' do
       make_shows('Show A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
