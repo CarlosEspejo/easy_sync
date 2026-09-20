@@ -65,7 +65,20 @@ module EasySync
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         # Free space as placements are made during this run, so two new folders
         # are not both sent to the drive that was emptiest at the start.
-        free_ledger = mounted.to_h { |m| [m.serial_number, m.free_bytes] }
+        # Seeded from whichever is smaller of live `df` free space and
+        # (capacity minus what the manifest already promised that drive,
+        # synced or not): a folder placed by an earlier run whose copy
+        # phase hasn't reached this drive yet doesn't show up in `df`, so
+        # trusting `df` alone lets a later run keep stacking new folders on
+        # top of commitments it can't see. Found on the real fleet:
+        # backup-06-8tb ended up promised 8.55 TB against a 7.28 TiB drive
+        # this way, after an interrupted run's placements were invisible to
+        # the next run's capacity check.
+        free_ledger = mounted.to_h do |m|
+          promised = manifest.folders_on(m.serial_number).sum { |f| f.size_bytes.to_i }
+          committed_free = m.capacity_bytes.to_i - promised
+          [m.serial_number, [m.free_bytes.to_i, committed_free].min]
+        end
         new_folders = folders.count { |f| manifest.folder(f.key).nil? }
         @measured = 0
         if new_folders.positive?
