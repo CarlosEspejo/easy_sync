@@ -22,7 +22,7 @@ module EasySync
         ['pending', 'deletion candidates and when each expires'],
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
         ['history [FOLDER]', 'where a folder has lived'],
-        ['reassign FOLDER DRIVE_NAME [--note TEXT]', 'record a move you made by hand (moves no data)'],
+        ['reassign FOLDER DRIVE_NAME [--note TEXT] [--force]', 'point a folder at a different drive (moves no data); refuses a drive without room unless --force'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['verify-drive NAME [--note TEXT]', 'record that a full-surface scan (SpinRite etc.) found no new defects; resets the reallocated-sector baseline'],
@@ -211,12 +211,30 @@ module EasySync
         return
       end
       now = Time.now
-      @out.puts "#{rows.size} pending (deleted after #{settings[:grace_days]} days and #{settings[:grace_runs]} runs missing):"
+      @out.puts "#{rows.size} pending (deleted after #{settings[:grace_days]} days and #{settings[:grace_runs]} runs missing, " \
+                'or once a reassigned folder is verified synced to its new drive):'
       rows.each do |p|
         label = p.whole_folder? ? "#{p.folder_path} (whole folder)" : "#{p.folder_path}/#{p.relative_path}"
-        state = p.expired?(now: now, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs]) ? 'EXPIRED, deleted on next sync' \
-                : "expires #{p.expires_at(settings[:grace_days]).strftime('%Y-%m-%d')}, seen missing #{p.missing_runs}x"
-        @out.puts "  #{label.ljust(50)} since #{p.first_missing_at}  #{state}"
+        @out.puts "  #{label.ljust(50)} since #{p.first_missing_at}  #{pending_state(p, now)}"
+      end
+    end
+
+    def pending_state(p, now)
+      grace_days, grace_runs = settings[:grace_days], settings[:grace_runs]
+      expired = p.expired?(now: now, grace_days: grace_days, grace_runs: grace_runs)
+
+      unless p.reassigned?
+        return expired ? 'EXPIRED, deleted on next sync' : "expires #{p.expires_at(grace_days).strftime('%Y-%m-%d')}, seen missing #{p.missing_runs}x"
+      end
+
+      old_drive = manifest.drive(p.drive_serial)&.friendly_name || p.drive_serial
+      synced = manifest.folder(p.folder_path)&.last_sync_status == 'ok'
+      if expired && synced
+        'EXPIRED, deleted on next sync'
+      elsif synced
+        "verified on its new drive; old copy on #{old_drive} goes on #{p.expires_at(grace_days).strftime('%Y-%m-%d')}"
+      else
+        "old copy on #{old_drive}; waiting for a verified sync to its new drive before this can be deleted"
       end
     end
 
@@ -600,14 +618,43 @@ module EasySync
     end
 
     def reassign(args)
-      opts = {}
-      OptionParser.new { |o| o.on('--note TEXT') { |v| opts[:note] = v } }.parse!(args)
+      opts = { force: false }
+      OptionParser.new do |o|
+        o.on('--note TEXT') { |v| opts[:note] = v }
+        o.on('--force', 'Reassign even though the target drive does not appear to have room') { opts[:force] = true }
+      end.parse!(args)
       folder, drive_name = args
       raise Error, "reassign needs FOLDER and DRIVE_NAME\n\n#{USAGE}" unless folder && drive_name
 
       drive = manifest.drive_by_name(drive_name) or raise Error, "no drive named #{drive_name}"
+      record = manifest.folder(folder) or raise Error, "#{folder} is not in the manifest"
+      check_fits!(record, drive) unless opts[:force]
+
       manifest.reassign_folder(folder, drive.serial_number, note: opts[:note])
       @out.puts "#{folder} is now recorded on #{drive.friendly_name}. No data was moved."
+    end
+
+    # Same free-space accounting `sync` uses to place new folders: whichever
+    # is smaller of live free space and (capacity minus everything already
+    # promised to that drive), so reassign can't blindly send a folder
+    # somewhere it won't fit either (see the backup-06-8tb overcommit this
+    # was built to stop happening again).
+    def check_fits!(record, drive)
+      return unless record.size_bytes
+
+      mounted = volume_info.mounted_drives([drive]).first
+      unless mounted
+        @out.puts "#{drive.friendly_name} is not mounted; couldn't check whether it has room."
+        return
+      end
+      promised = manifest.folders_on(drive.serial_number).sum { |f| f.size_bytes.to_i }
+      free = [mounted.free_bytes.to_i, drive.capacity_bytes.to_i - promised].min
+      reserve = settings.fetch(:reserve_bytes, 0)
+      return unless (free - reserve) < record.size_bytes
+
+      raise Error, "#{record.folder_path} (#{Jbod::Placement.format_bytes(record.size_bytes)}) does not fit on " \
+                   "#{drive.friendly_name} (#{Jbod::Placement.format_bytes(free)} free, " \
+                   "#{Jbod::Placement.format_bytes(reserve)} reserved). Use --force to reassign anyway."
     end
 
     # Only relabels the manifest (and the drive's own marker); the tool never

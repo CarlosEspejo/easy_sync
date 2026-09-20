@@ -169,7 +169,15 @@ A sync run
    to every mounted drive, and the dashboard is regenerated.
 
 A folder that has outgrown its drive gets a distinct "drive full" status rather
-than a bare rsync error; reassign it to a roomier drive.
+than a bare rsync error; reassign it to a roomier drive with `easy_sync
+reassign FOLDER DRIVE_NAME`, which checks the target actually has room
+first (`--force` skips that check). The next sync copies the folder to its
+new drive from scratch (rsync mirrors into an empty destination, not a
+resume), and the old, now-stale copy left on the full drive is scheduled for
+cleanup the same way a file gone from the NAS is: removed once the folder is
+verified synced to its new drive and it's been that way for `grace_days` (see
+"Deletions have a grace period" below) - it is not deleted immediately, so a
+bad reassign can still be undone before the old copy disappears.
 
 Replacing or upgrading a drive
 ------------------------------
@@ -258,6 +266,13 @@ share follows the same rule; on expiry its manifest row is removed and a
 `removed` entry goes into the placement history. Every removal is written to an
 audit table and shown on the dashboard.
 
+`easy_sync reassign` schedules the same kind of candidate for the copy it
+leaves behind on the old drive, except its clock only starts once the folder
+has been verified synced to its new drive (grace_days alone can't tell you
+that) - so a folder that hasn't actually landed anywhere yet never gets its
+only copy deleted. `replace-drive` is the exception: it retires the old drive
+immediately, so whatever was on it is left as-is rather than tracked here.
+
     easy_sync pending               # every candidate and when it expires
     easy_sync clean                 # remove excluded junk from the drives now, no waiting
 
@@ -345,7 +360,7 @@ Commands
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `history [FOLDER]` | where a folder has lived |
-| `reassign FOLDER DRIVE [--note TEXT]` | record a move you made by hand (moves no data) |
+| `reassign FOLDER DRIVE [--note TEXT] [--force]` | point a folder at a different drive (moves no data); refuses a drive without room unless `--force` |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
 | `dashboard` | regenerate the HTML report only |
 
@@ -374,7 +389,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
 | `placement_history` | every `assigned`, `reassigned` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
-| `pending_deletions` | paths gone from the NAS, first seen and runs confirmed |
+| `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |
 | `deletions` | audit log of everything actually removed from a drive |
 

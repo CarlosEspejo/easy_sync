@@ -239,20 +239,20 @@
   </div>
 
   <h2>Pending deletions</h2>
-  <p class="meta">Files rsync no longer finds on the NAS. Each is removed from its drive once it has been missing for <%= grace_days %> days and confirmed on two separate runs. Anything that reappears on the NAS drops off this list.</p>
+  <p class="meta">Files rsync no longer finds on the NAS, plus the old copy left behind whenever a folder is reassigned to a different drive. A "missing on NAS" entry is removed once it has been missing for <%= grace_days %> days and confirmed on two separate runs (anything that reappears drops off this list); a "moved off" entry is removed once the folder is verified synced to its new drive and that same grace period has passed.</p>
   <div class="table-wrap">
 <%- if pending.empty? -%>
   <p class="empty">Nothing pending.</p>
 <%- else -%>
   <table>
-    <thead><tr><th>Path</th><th>Kind</th><th>Missing since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
+    <thead><tr><th>Path</th><th>Kind</th><th>Since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
     <tbody>
   <%- pending.each do |p| -%>
       <tr>
         <td><%= h pending_label(p) %></td>
-        <td><%= h p.kind %></td>
+        <td><%= h pending_kind(p, names) %></td>
         <td><%= when_(p.first_missing_at) %></td>
-        <td class="num"><%= p.missing_runs %></td>
+        <td class="num"><%= p.reassigned? ? '—' : p.missing_runs %></td>
         <td><%= expiry(p) %></td>
       </tr>
   <%- end -%>

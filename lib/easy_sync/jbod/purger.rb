@@ -30,15 +30,22 @@ module EasySync
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         result = Result.new
         expired = @manifest.expired_deletions(now: @clock.now, grace_days: @grace_days, grace_runs: @grace_runs)
+                           .select { |p| ready?(p) }
 
         # Whole folders first; their file-level candidates go with them.
         folders, paths = expired.partition(&:whole_folder?)
         folders.each do |pending|
           purge_one(pending, by_serial, result, dry_run: dry_run) do |dest, drive|
             FileUtils.rm_rf(dest)
-            @manifest.clear_pending(pending.folder_path)
-            @manifest.remove_folder(pending.folder_path, note: "deleted from #{drive.friendly_name}: " \
-                                                               "missing on NAS since #{pending.first_missing_at}")
+            # A 'reassigned' candidate is the OLD copy of a folder that still
+            # has a valid manifest row elsewhere (see #ready?); only the
+            # files come out, the folder record itself must survive. A
+            # 'missing_on_nas' candidate means the folder is gone entirely.
+            unless pending.reassigned?
+              @manifest.clear_pending(pending.folder_path)
+              @manifest.remove_folder(pending.folder_path, note: "deleted from #{drive.friendly_name}: " \
+                                                                 "missing on NAS since #{pending.first_missing_at}")
+            end
           end
         end
 
@@ -62,9 +69,19 @@ module EasySync
 
       private
 
+      # A folder moved off a drive (cause 'reassigned') is only safe to purge
+      # from there once it has actually landed, verified, on its new drive:
+      # grace_days alone exists to protect against a flaky NAS probe and says
+      # nothing about whether the fresh copy elsewhere actually succeeded.
+      def ready?(pending)
+        return true unless pending.reassigned?
+
+        current = @manifest.folder(pending.folder_path)
+        !current.nil? && current.drive_serial != pending.drive_serial && current.last_sync_status == 'ok'
+      end
+
       def purge_one(pending, by_serial, result, dry_run:)
-        record = @manifest.folder(pending.folder_path)
-        drive = record && by_serial[record.drive_serial]
+        drive = by_serial[pending.drive_serial]
         unless drive
           result.skipped << [pending, 'drive not mounted']
           return
