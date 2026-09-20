@@ -211,12 +211,22 @@ module EasySync
           "<th>Status</th><th>Assigned</th></tr></thead><tbody>#{rows.join}</tbody></table>"
       end
 
+      # A 'reassigned' row also needs its folder verified synced to its new
+      # drive before it's actually eligible (see Purger#ready?); the date
+      # alone is only the earliest it could happen.
       def expiry(pending)
-        pending.expires_at(grace_days).localtime.strftime('%Y-%m-%d')
+        date = pending.expires_at(grace_days).localtime.strftime('%Y-%m-%d')
+        return date unless pending.reassigned?
+
+        manifest.folder(pending.folder_path)&.last_sync_status == 'ok' ? date : "#{date} (once resynced)"
       end
 
       def pending_label(p)
         p.whole_folder? ? "#{p.folder_path} (whole folder)" : "#{p.folder_path}/#{p.relative_path}"
+      end
+
+      def pending_kind(p, names)
+        p.reassigned? ? "moved off #{names.fetch(p.drive_serial, p.drive_serial)}" : p.kind
       end
     end
   end

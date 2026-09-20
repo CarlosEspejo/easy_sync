@@ -102,7 +102,10 @@ module EasySync
         paths = folders_on(from_serial).map(&:folder_path)
         paths.each do |path|   # each call is its own transaction; SQLite cannot nest them
           if to_serial
-            reassign_folder(path, to_serial, note: note, at: at)
+            # schedule_cleanup: false - the old drive is retired right after
+            # this (see #replace_drive), so its leftover data is already the
+            # operator's problem, not something Purger should chase.
+            reassign_folder(path, to_serial, note: note, at: at, schedule_cleanup: false)
           else
             clear_pending(path)
             remove_folder(path, note: note, at: at)
@@ -237,8 +240,15 @@ module EasySync
         folder(folder_path)
       end
 
-      # Records that a folder now lives on another drive. Does not move data.
-      def reassign_folder(folder_path, new_drive_serial, note: nil, at: now)
+      # Records that a folder now lives on another drive. Does not move data,
+      # so whatever is already on the old drive is scheduled for cleanup
+      # (cause 'reassigned') rather than left there untracked: Purger only
+      # removes it once the folder has actually synced OK to its new drive
+      # (see Purger#ready?) and the usual grace period has passed.
+      # +schedule_cleanup: false+ is for callers (replace-drive) that retire
+      # the old drive right after, where that drive's leftover data is
+      # already understood to be the operator's problem, not tracked here.
+      def reassign_folder(folder_path, new_drive_serial, note: nil, at: now, schedule_cleanup: true)
         ensure_drive!(new_drive_serial)
         current = folder(folder_path) or raise UnknownFolder, "#{folder_path} is not in the manifest"
         return current if current.drive_serial == new_drive_serial
@@ -250,6 +260,19 @@ module EasySync
           SQL
           record_history(folder_path, new_drive_serial, 'reassigned',
                          note || "moved from #{current.drive_serial}", at)
+          if schedule_cleanup
+            # missing_runs is set far above any real grace_runs: 'reassigned'
+            # has no repeated-probe concept to confirm (unlike
+            # 'missing_on_nas'), so PendingDeletion#expired?'s run-count half
+            # is always satisfied here on purpose. The real gates are
+            # expires_at (grace_days) below, plus Purger#ready? requiring a
+            # verified sync to the new drive.
+            db.execute(<<~SQL, [folder_path, current.drive_serial, current.drive_serial, at, at])
+              INSERT INTO pending_deletions (folder_path, relative_path, kind, drive_serial, cause,
+                                             first_missing_at, last_missing_at, missing_runs)
+              VALUES (?, ?, 'folder', ?, 'reassigned', ?, ?, 1000000)
+            SQL
+          end
         end
         folder(folder_path)
       end
@@ -356,27 +379,30 @@ module EasySync
       # longer reported have reappeared on the NAS and are forgotten.
       # Returns { new:, still:, reappeared: } counts.
       def reconcile_pending(folder_path, missing, at: now)
-        existing = pending_deletions(folder_path: folder_path).to_h { |p| [p.relative_path, p] }
+        existing = pending_deletions(folder_path: folder_path).select { |p| !p.reassigned? }.to_h { |p| [p.relative_path, p] }
         keys = missing.map(&:first)
         counts = { new: 0, still: 0, reappeared: 0 }
+        drive_serial = folder(folder_path)&.drive_serial
         db.transaction do
           existing.each_key do |rel|
             next if keys.include?(rel)
 
-            db.execute('DELETE FROM pending_deletions WHERE folder_path = ? AND relative_path = ?', [folder_path, rel])
+            db.execute("DELETE FROM pending_deletions WHERE folder_path = ? AND relative_path = ? AND cause = 'missing_on_nas'",
+                       [folder_path, rel])
             counts[:reappeared] += 1
           end
           missing.each do |rel, kind|
             if existing[rel]
-              db.execute(<<~SQL, [at, kind, folder_path, rel])
-                UPDATE pending_deletions SET last_missing_at = ?, missing_runs = missing_runs + 1, kind = ?
-                 WHERE folder_path = ? AND relative_path = ?
+              db.execute(<<~SQL, [at, kind, drive_serial, folder_path, rel])
+                UPDATE pending_deletions SET last_missing_at = ?, missing_runs = missing_runs + 1, kind = ?, drive_serial = ?
+                 WHERE folder_path = ? AND relative_path = ? AND cause = 'missing_on_nas'
               SQL
               counts[:still] += 1
             else
-              db.execute(<<~SQL, [folder_path, rel, kind, at, at])
-                INSERT INTO pending_deletions (folder_path, relative_path, kind, first_missing_at, last_missing_at, missing_runs)
-                VALUES (?, ?, ?, ?, ?, 1)
+              db.execute(<<~SQL, [folder_path, rel, kind, drive_serial, at, at])
+                INSERT INTO pending_deletions (folder_path, relative_path, kind, drive_serial, cause,
+                                               first_missing_at, last_missing_at, missing_runs)
+                VALUES (?, ?, ?, ?, 'missing_on_nas', ?, ?, 1)
               SQL
               counts[:new] += 1
             end
@@ -473,6 +499,14 @@ module EasySync
         add_column('drives', 'model', 'TEXT')
         add_column('drives', 'power_on_hours', 'INTEGER')
         create_smart_checks_table!
+        # CREATE TABLE IF NOT EXISTS first: add_column assumes its table
+        # already exists, which migrate_to_v1! only guarantees when it
+        # actually ran (schema_version < 1). A real manifest can be older
+        # than this tool and already have pending_deletions without these
+        # columns, so add_column still does the column-level check too.
+        create_pending_deletions_table!
+        add_column('pending_deletions', 'drive_serial', 'TEXT')
+        add_column('pending_deletions', 'cause', "TEXT NOT NULL DEFAULT 'missing_on_nas'")
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
       end
 
@@ -487,6 +521,21 @@ module EasySync
             note                  TEXT
           );
           CREATE INDEX IF NOT EXISTS idx_smart_checks_drive ON smart_checks(drive_serial, checked_at);
+        SQL
+      end
+
+      def create_pending_deletions_table!
+        db.execute(<<~SQL)
+          CREATE TABLE IF NOT EXISTS pending_deletions (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_path      TEXT NOT NULL,
+            relative_path    TEXT NOT NULL,
+            kind             TEXT NOT NULL,
+            first_missing_at TEXT NOT NULL,
+            last_missing_at  TEXT NOT NULL,
+            missing_runs     INTEGER NOT NULL DEFAULT 1,
+            UNIQUE (folder_path, relative_path)
+          );
         SQL
       end
 
@@ -550,6 +599,8 @@ module EasySync
               folder_path      TEXT NOT NULL,
               relative_path    TEXT NOT NULL,
               kind             TEXT NOT NULL,
+              drive_serial     TEXT,
+              cause            TEXT NOT NULL DEFAULT 'missing_on_nas',
               first_missing_at TEXT NOT NULL,
               last_missing_at  TEXT NOT NULL,
               missing_runs     INTEGER NOT NULL DEFAULT 1,

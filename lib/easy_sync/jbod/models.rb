@@ -68,11 +68,18 @@ module EasySync
     SyncRun = Struct.new(:id, :folder_path, :drive_serial, :started_at, :finished_at, :exit_status,
                          :bytes_transferred, :total_size_bytes, keyword_init: true)
 
-    # A path on a drive that rsync reported as no longer present on the NAS.
-    # relative_path is '' (kind 'folder') when the whole folder is gone.
-    PendingDeletion = Struct.new(:id, :folder_path, :relative_path, :kind, :first_missing_at, :last_missing_at,
-                                 :missing_runs, keyword_init: true) do
+    # A path on a drive that is a candidate for deletion, either because
+    # rsync reported it gone from the NAS (cause 'missing_on_nas';
+    # relative_path is '' with kind 'folder' when the whole folder is gone)
+    # or because the folder was reassigned off +drive_serial+ (cause
+    # 'reassigned', always whole-folder; relative_path there holds the old
+    # drive's serial instead of a real path, only so a second reassignment of
+    # the same folder before the first cleanup runs gets its own row rather
+    # than colliding on the folder_path+relative_path uniqueness).
+    PendingDeletion = Struct.new(:id, :folder_path, :relative_path, :kind, :drive_serial, :cause, :first_missing_at,
+                                 :last_missing_at, :missing_runs, keyword_init: true) do
       def whole_folder? = kind == 'folder'
+      def reassigned? = cause == 'reassigned'
 
       def expires_at(grace_days)
         Time.parse(first_missing_at) + (grace_days * 86_400)

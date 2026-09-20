@@ -127,6 +127,63 @@ RSpec.describe EasySync::CLI do
       expect(err.string).to include('no drive named backup-99')
     end
 
+    it 'schedules the old drive copy for grace-period cleanup' do
+      cli('reassign', 'Photos', 'backup-02-6tb').run
+      pending = manifest.pending_deletions(folder_path: 'Photos').first
+      expect(pending).to have_attributes(cause: 'reassigned', drive_serial: 'S1')
+    end
+
+    context 'capacity check' do
+      before do
+        m = manifest
+        m.assign_folder('Movies', 'S1', size_bytes: 5 * TB)
+        m.close
+      end
+
+      def mount_target(free_tb:, capacity_tb: 6)
+        vol = make_dirs(mount_root, 'backup-02-6tb').first
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S2', friendly_name: 'backup-02-6tb' }.to_json)
+        used_tb = capacity_tb - free_tb
+        fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol },
+                      output: df_output(vol, capacity_kb: capacity_tb * 1024**3, used_kb: used_tb * 1024**3))
+      end
+
+      it 'refuses a drive that does not have room' do
+        mount_target(free_tb: 4)   # Movies is 5 TB
+        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(1)
+        expect(err.string).to include('Movies', 'does not fit on backup-02-6tb', 'Use --force')
+        expect(manifest.folder('Movies').drive_serial).to eq('S1')
+      end
+
+      it '--force reassigns anyway' do
+        mount_target(free_tb: 4)
+        expect(cli('reassign', 'Movies', 'backup-02-6tb', '--force').run).to eq(0)
+        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+      end
+
+      it 'allows a drive that has room' do
+        mount_target(free_tb: 6)
+        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(0)
+        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+      end
+
+      it "proceeds without checking when the target isn't mounted, but says so" do
+        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(0)
+        expect(out.string).to include("backup-02-6tb is not mounted; couldn't check whether it has room")
+        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+      end
+
+      it 'ignores what is already promised to the target drive when checking, not just live free space' do
+        # backup-02-6tb reads 6 TB free live (nothing copied there yet), but
+        # 3 TB of it is already promised to another unsynced folder - so only
+        # 3 TB is really available, not enough for a second 5 TB folder.
+        manifest.assign_folder('Shows', 'S2', size_bytes: 3 * TB)
+        mount_target(free_tb: 6)
+        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(1)
+        expect(err.string).to include('does not fit on backup-02-6tb')
+      end
+    end
+
     it 'prints status, including SMART health, and a folder summary (no per-folder listing by default)' do
       m = manifest
       m.update_drive_health('S1', status: 'ok', detail: 'PASSED · reallocated 0 · pending 0 · uncorrectable 0 · 44°C')
@@ -733,6 +790,33 @@ RSpec.describe EasySync::CLI do
     it 'says so when nothing is pending' do
       cli('pending').run
       expect(out.string).to include('Nothing is pending deletion')
+    end
+
+    it 'describes a reassigned folder distinctly, not as a missing-runs candidate' do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.register_drive(serial_number: 'S2', friendly_name: 'backup-02-6tb', capacity_bytes: 6 * TB)
+      m.assign_folder('photos', 'S1')
+      m.reassign_folder('photos', 'S2')
+      m.close
+
+      expect(cli('pending').run).to eq(0)
+      expect(out.string).to include('photos (whole folder)', 'old copy on backup-01-3tb',
+                                    'waiting for a verified sync to its new drive')
+      expect(out.string).not_to include('seen missing')
+    end
+
+    it 'shows a reassigned folder as verified, with an expiry date, once its new drive has synced ok' do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.register_drive(serial_number: 'S2', friendly_name: 'backup-02-6tb', capacity_bytes: 6 * TB)
+      m.assign_folder('photos', 'S1')
+      m.reassign_folder('photos', 'S2')
+      m.mark_folder_status('photos', 'ok')
+      m.close
+
+      expect(cli('pending').run).to eq(0)
+      expect(out.string).to include('verified on its new drive', 'old copy on backup-01-3tb goes on')
     end
   end
 

@@ -286,6 +286,41 @@ RSpec.describe EasySync::Jbod::Manifest do
     it 'raises for an unknown folder' do
       expect { manifest.reassign_folder('Nope', 'SN-backup-04-8tb') }.to raise_error(described_class::UnknownFolder)
     end
+
+    it 'schedules the old drive copy for cleanup' do
+      manifest.reassign_folder('Photos', 'SN-backup-07-8tb')
+      pending = manifest.pending_deletions(folder_path: 'Photos').first
+      expect(pending).to have_attributes(cause: 'reassigned', drive_serial: 'SN-backup-04-8tb', kind: 'folder')
+      expect(pending).to be_whole_folder
+      expect(pending).to be_reassigned
+    end
+
+    it 'does not schedule cleanup when schedule_cleanup: false' do
+      manifest.reassign_folder('Photos', 'SN-backup-07-8tb', schedule_cleanup: false)
+      expect(manifest.pending_deletions(folder_path: 'Photos')).to be_empty
+    end
+
+    it 'schedules a distinct cleanup row for each drive a folder passes through' do
+      manifest.reassign_folder('Photos', 'SN-backup-07-8tb')
+      manifest.reassign_folder('Photos', 'SN-backup-02-6tb')
+      expect(manifest.pending_deletions(folder_path: 'Photos').map(&:drive_serial))
+        .to contain_exactly('SN-backup-04-8tb', 'SN-backup-07-8tb')
+    end
+
+    it 'does not schedule cleanup for a no-op reassign to the same drive' do
+      manifest.reassign_folder('Photos', 'SN-backup-04-8tb')
+      expect(manifest.pending_deletions(folder_path: 'Photos')).to be_empty
+    end
+  end
+
+  describe '#move_all_folders' do
+    it 'does not schedule old-drive cleanup when handing folders to a new drive (replace-drive retires the old one instead)' do
+      register_fleet(manifest)
+      manifest.assign_folder('Photos', 'SN-backup-04-8tb')
+      manifest.move_all_folders('SN-backup-04-8tb', 'SN-backup-07-8tb', note: 'replaced')
+      expect(manifest.folder('Photos').drive_serial).to eq('SN-backup-07-8tb')
+      expect(manifest.pending_deletions(folder_path: 'Photos')).to be_empty
+    end
   end
 
   describe '#remove_folder' do
@@ -459,6 +494,24 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
       manifest.reconcile_pending('movies/Heat (1995)', [['', 'folder']])
       expect(manifest.pending_deletions.first).to have_attributes(relative_path: '', kind: 'folder')
       expect(manifest.pending_deletions.first).to be_whole_folder
+    end
+
+    it "records the folder's current drive and cause 'missing_on_nas'" do
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']])
+      expect(manifest.pending_deletions.first).to have_attributes(drive_serial: 'SN-backup-04-8tb', cause: 'missing_on_nas')
+      expect(manifest.pending_deletions.first).not_to be_reassigned
+    end
+
+    it 'leaves a reassigned-cause row alone, even one sharing the folder_path' do
+      manifest.reassign_folder('movies/Heat (1995)', 'SN-backup-07-8tb')   # schedules a 'reassigned' row for backup-04-8tb
+      manifest.reconcile_pending('movies/Heat (1995)', [['a.srt', 'file']])   # missing_on_nas probe against its new drive
+
+      by_cause = manifest.pending_deletions(folder_path: 'movies/Heat (1995)').group_by(&:cause)
+      expect(by_cause['reassigned'].size).to eq(1)
+      expect(by_cause['missing_on_nas'].size).to eq(1)
+
+      manifest.reconcile_pending('movies/Heat (1995)', [])   # a.srt reappeared
+      expect(manifest.pending_deletions(folder_path: 'movies/Heat (1995)').map(&:cause)).to eq(['reassigned'])
     end
   end
 
