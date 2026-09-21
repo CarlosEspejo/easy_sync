@@ -100,17 +100,15 @@ README.md is the user-facing truth; this file is for working on the code.
 
 ## Verify live when you touch the sync path
 
-Two 250 GB USB drives (`jbod-test-1`, `jbod-test-2`, APFS encrypted, passphrase
-`jbodtest1234`) exist for this. Keep a scratch config via `--config` so the real
+Two 250 GB USB drives (`jbod-test-1`, `jbod-test-2`, APFS encrypted; the
+passphrase is in the gitignored `CLAUDE.local.md`) exist for this. Keep a scratch config via `--config` so the real
 `~/.easy_sync/` is never touched, and a scratch source tree under the scratchpad.
 Several bugs here were only visible on real hardware; the specs encode the
 assumptions, they cannot check them.
 
 ## Repo / process notes
 
-- PR #1 (43 commits, the whole JBOD rewrite) is merged into `main` (renamed
-  from `master` — GitHub's rename endpoint, not delete+recreate, so old
-  clones/links redirect). Public repo, solo maintainer (`CarlosEspejo` is the
+- Public repo, solo maintainer (`CarlosEspejo` is the
   only collaborator with write access — verified via the collaborators API,
   not assumed). `main` protection: force-push and deletion blocked, **not**
   locked, **no** required reviews (dropped deliberately: required-review only
@@ -134,85 +132,46 @@ assumptions, they cannot check them.
 - Config is now flat and the tool *writes* it (`Config#save`, `Config.dump`):
   `add-source`, `remove-source`, `plan --apply` all rewrite
   `~/.easy_sync/config.yml` directly, preserving comments/order. A first-time
-  user never has to hand-edit YAML. `plan [SHARE...] [--apply]` can be scoped
-  to one or more shares by folder name or full path, to avoid re-measuring a
-  10+-minute share just to check one small one.
+  user never has to hand-edit YAML.
 
 ## Open items
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
-- Bit-rot detection: see docs/integrity-scan.md (designed, not built). Read the
-  doc before touching this; the decisions below were argued out and should not
-  be re-litigated.
-  - **Why it matters here specifically: the offsite backup is taken from the
-    drives, not from the NAS.** A rotted file gets uploaded as a change and
-    corrupts the last copy standing. That is the whole justification.
-  - **`sync` does no hashing. `verify` writes every baseline.** Throughput is
-    **62.9 MB/s aggregate** — measured from `sync_runs`, 154 folder copies of
-    5 GB+, 11.3 TB over 49.9 h; median folder 67.7, p10–p90 50.2–87.6. Plan
-    with the aggregate, not the spread: it is what predicts wall-clock time.
-    The acceptance criterion is that integrity work never drops the
-    *aggregate* below 50 MB/s — as an instantaneous floor it is already
-    breached, 10.7% of transfer time runs under 50 today. A post-copy hash
-    pass costs 25–33%, i.e. 42–47 MB/s, so it breaks the floor outright,
-    which is why it was moved out. Don't re-derive any of this by eye from an
-    rsync log: the rate `--info=progress2` prints is a *cumulative average*
-    (bytes ÷ elapsed), so it sags smoothly and understates the real spread.
-  - Measured, don't re-derive: rsync prints a per-file checksum for free via
-    `--out-format='%i %C %l %n'` (no `--checksum` needed), stable across runs.
-    **We deliberately do not use it** — it forces `--checksum-choice=md5`,
-    covers only transferred files, and MD5/xxh128 are not sound choices. Use
-    SHA-256 (2514 MB/s on Apple Silicon vs MD5's 763); the disk is always the
-    bottleneck, never the hash.
-  - A file found corrupt is **guaranteed to be replaced**: `verify` flags the
-    row, the next `sync` of that folder deletes the flagged file before its
-    copy pass so rsync re-fetches it. This amends the "only Purger deletes"
-    invariant above — update it when this is built.
-  - SnapRAID was evaluated and rejected: it won't give you scrub without
-    parity, parity costs a 7.28 TB drive against only ~5.4 TB of headroom, and
-    it identifies drives by config path rather than by serial.
+- Bit-rot detection: `easy_sync scrub`, fully specified in
+  docs/integrity-scan.md (designed, not built). That doc is the build spec;
+  its "Decisions" section is settled. The short version:
+  - It matters because **the offsite backup is taken from the drives, not
+    from the NAS**: a rotted file is uploaded as a change.
+  - `scrub` does one drive at a time. It walks the drive to add, drop and
+    reset rows in `file_checksums`, then hashes the files with SHA-256
+    (`F_NOCACHE`) and flags mismatches. It is read-only on the drive.
+  - `sync` never hashes. Its only new step: once a folder's copy pass
+    succeeds, it re-copies that folder's flagged files with `rsync -I
+    --files-from`. That overwrites the bad file; it never deletes, so "only
+    Purger deletes" stays true.
+  - The command is called `scrub` because `verify-drive` already exists and
+    means something else (it records a clean SpinRite pass).
+- Measured sync throughput (62.9 MB/s aggregate; any change to `sync` must
+  keep the aggregate at 50 MB/s or more), per-drive benchmarks, enclosure
+  bandwidth and hash speeds: docs/performance.md.
 - Backblaze (Personal, taken from the drives): **1 year version history**,
   verified — the old Drobo volume is gone from today's backup but still
   browsable back to Sept 2025. A drive not connected for 30 days drops out of
   the *current* backup but stays in history, so it is a ~1-year countdown, not
   instant loss. `drives.last_seen_at` already has what a warning would need.
-- **The OWC enclosure has replaced the Drobo and is what's in use now.** The
-  real fleet is 8 active drives, 44.59 TB total: 4 × 7.28 TB, 2 × 5.46 TB,
-  1 × 2.73 TB, 1 × 1.82 TB (the two 235 GB `jbod-test` drives are retired in
-  the manifest, not deleted). A first real `sync` (not a test-drive run) is in
-  progress against the real library (`tv` 17.7 TB/~308 folders, `movies`
-  12.3 TB/~2,379 folders, `synology` 1.9 TB/16 folders + loose top-level files
-  so it must stay `split: false`, `pro` 35.6 GB/4 folders) — about 31.9 TB
-  against 44.59 TB of capacity. Check `easy_sync status` / the dashboard for
-  current placement; don't assume the old test-drive partial-fit numbers apply.
-  Sync speed needs no further measuring — it is network IO plus the single
-  target drive being written, measured at 62.9 MB/s aggregate (see
-  docs/integrity-scan.md for the method and the per-drive breakdown, which
-  confirms the target drive is not the variable: five drives within 2.4 MB/s
-  of each other). Time Machine on this Mac backs up to a sparsebundle on the
-  *same* Synology that serves the media shares, so it contends with rsync's
-  reads on the same array and link — `sudo tmutil disable` during a long
-  campaign is worth it, and it is the first thing to check when a sync looks
-  slow. The drives themselves are never the constraint: measured sequential
-  write is 203/182/178 MB/s for the 8 TB Seagates, 143 Toshiba 6 TB, 116
-  Seagate 2 TB, 115 WD 3 TB — the *slowest* drive is 1.8× the observed sync
-  rate. **The enclosure is Thunderbolt, not USB-C**: each drive has its own
-  AHCI controller at 6 Gb/s on a 40 Gb/s link, so the old "can it sustain N
-  concurrent reads over one USB-C link" worry is answered — 8 × 190 MB/s is
-  ~30% of the link. What is still unmeasured is the NAS read leg, which is
-  the thing that actually binds; it needs a quiet NAS, so it waits for the
-  campaign to finish.
+- **The OWC ThunderBay 8 (Thunderbolt) has replaced the Drobo.** 8 active
+  drives, 44.59 TB; the two `jbod-test` drives are retired in the manifest,
+  not deleted. The first full sync of the real library (~31.9 TB) finished
+  around 2026-09-21 — check `easy_sync status` / the dashboard for current
+  placement. `synology` has loose top-level files, so it must stay
+  `split: false`. The NAS side limits sync speed, never the drives; Time
+  Machine (backing up to the same Synology) is the first thing to check when
+  a sync looks slow. Numbers and method: docs/performance.md.
 - **Wanted: an `easy_sync benchmark` command**, keeping the last 25 runs so
   drive performance can be tracked over time rather than measured once. A
   falling write rate on one drive is an early failure signal that SMART won't
-  necessarily show. Notes for whoever builds it, learned the hard way: with
-  24 GB of RAM a test smaller than RAM measures the buffer cache, not the
-  disk, and macOS `dd` has no `oflag=direct` — the only way to bypass it is
-  `io.fcntl(48, 1)` (`F_NOCACHE`) on the descriptor. Time the closing `fsync`
-  inside the measurement, use random data, and run each drive three times:
-  run-to-run spread is ~±7%, wide enough to invent a per-drive difference
-  that isn't there. Never benchmark a drive a sync is currently writing to.
-  Baseline numbers to compare against are in docs/integrity-scan.md.
+  necessarily show. How to measure correctly (it's easy to benchmark the
+  buffer cache by mistake) and the baseline numbers: docs/performance.md.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.
