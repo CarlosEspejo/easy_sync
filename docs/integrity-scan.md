@@ -1,458 +1,373 @@
-# Integrity scan (designed, not built)
+# Integrity scan: `easy_sync scrub` (designed, not built)
 
-## The gap
+This is the build spec. Everything in it has been checked against the code as
+of `9b1c921`. If something here disagrees with the code, the code wins; fix
+this doc.
 
-rsync verifies data in flight — a transfer that finishes without error wrote
-what the source sent. What it does not do is notice that a file written
-correctly a year ago has rotted since. The next sync's quick check compares
-size and mtime only, so a flipped bit on a drive matches and is skipped
-forever. APFS checksums metadata, not file contents, so the filesystem will
-not catch it either. Nothing in easy_sync currently answers "is what's on the
-drive still what we wrote?"
+## Problem
 
-`--checksum` answers it by re-reading both sides every run, which is the wrong
-trade at 35 TB behind one SMB link.
+rsync checks data while it copies it. Nothing checks it afterwards. If a bit
+flips on a backup drive a year later, the file keeps the same size and mtime,
+so rsync's quick check skips it on every future sync. APFS checksums metadata,
+not file contents. The bad copy stays there, unnoticed.
 
-## Why this is load-bearing, not a nicety
+This matters here because **the offsite backup (Backblaze Personal) is taken
+from the drives, not from the NAS.** Backblaze sees a rotted file as a changed
+file and uploads it. The NAS still has the good version, but nothing tells you
+to go and get it.
 
-**The offsite backup is taken from the drives, not from the NAS.** That single
-fact is what justifies the whole feature. A rotted file on a drive is seen by
-the offsite client as a changed file and uploaded, so the corruption
-propagates to the last copy standing. The NAS still holds the good version,
-but nothing is looking, and nothing tells you to go get it.
+What is already covered, and so is out of scope:
 
-It also sets a deadline that has nothing to do with how fast bit rot happens:
-**a full verify pass must complete faster than the offsite service ages out
-the last good version.** Measured: retention is 1 year (Backblaze Personal)
-against a ~5 month sweep, so this is satisfied comfortably — see the budget
-section. It would stop being satisfied immediately if the plan ever dropped to
-30-day history.
+- **The NAS.** Synology's monthly Btrfs scrub detects rot and repairs it from
+  redundancy.
+- **Legitimate changes on the NAS**, including ransomware or a bad app write
+  that sync then copies over the good backup. That is a different feature:
+  `docs/changed-file-grace.md`. `scrub` treats any change in size or mtime as
+  legitimate on purpose.
 
-### The bigger offsite risk is not rot at all
+## How it works (summary)
 
-**Backblaze Personal drops a drive's data from the current backup if that drive
-has not been connected in 30 days.** Verified directly: the old Drobo volume is
-absent from today's backup but still present when browsing back to September
-2025. So the 30-day rule removes it from the *live* set while version history
-keeps it for the retention window — roughly a year to notice and recover, not
-instant loss. It is still a hole in offsite coverage, and still silent, but it
-is a countdown rather than a cliff.
+1. `easy_sync scrub` picks one mounted drive, the one that has gone longest
+   without a full check.
+2. It walks that drive's assigned folders on local disk. It adds a row for
+   each new file, drops rows for files that are gone, and resets the row of
+   any file whose size or mtime changed (a legitimate re-sync).
+3. It hashes files with SHA-256 in frontier order: files that were flagged
+   and then refetched come first, then files never hashed, then the oldest
+   hashed. It compares each hash to the stored one.
+4. A mismatch marks the row `corrupt`. A read error marks it `unreadable`.
+   `scrub` never changes anything on the drive.
+5. On the next `sync` of that folder, after the normal copy pass succeeds,
+   sync re-copies the flagged files from the NAS with `rsync -I` (ignore
+   times). rsync writes each one to a temp file and renames it over the bad
+   copy. Nothing is deleted.
+6. The next `scrub` of that drive re-hashes the refetched files. If the hash
+   matches the original baseline, the row goes back to `ok` ("repaired"). If
+   it still does not match, the row becomes `unresolved`: it is reported and
+   never refetched again automatically.
 
-This is cheaper to defend than anything else in this document, and the data
-already exists — `drives.last_seen_at` is written on every sync. A drive
-approaching the window should be called out in `status` and on the dashboard
-well before it lapses (say at 21 days, leaving nine to act), the same way an
-unmounted drive already gets a note. No new tables, no scanning, no hashing.
+`sync` never hashes anything. The only change to sync is step 5, and it runs
+only for folders that have flagged files.
 
-Do this before building the scan. It protects more of the backup for a tiny
-fraction of the effort.
+## Decisions (settled, don't re-open)
 
-## What covers what
+- **The command is `scrub`, not `verify`.** `verify-drive` already exists and
+  does something unrelated: it records a clean SpinRite pass and resets the
+  reallocated-sector baseline (`cli.rb` `verify_drive`). Two commands called
+  `verify` would be confusing.
+- **One drive at a time.** Each drive is scrubbed completely, in sequence.
+  There is no interleaving across drives and no budget split between them.
+  Drives are connected now and then rather than kept mounted, so the normal
+  use is: connect the drives, run `scrub --all`, leave it. At about 200 MB/s,
+  the fullest drive today (backup-01-8tb, 5.8 TB used) takes about 8 hours,
+  and the whole fleet (about 35 TB) takes about 2 days.
+- **`scrub` discovers files by walking, not `sync`.** A walk of one local
+  APFS drive takes seconds to minutes, next to hours of hashing. The same walk
+  handles the first run and every later one. It also cleans up after purge,
+  clean, reassign and re-sync without those code paths knowing about checksums.
+  (An earlier draft had `sync` add rows from its `--itemize-changes` output.
+  That was dropped because a failed or interrupted copy pass would leave
+  fully-copied files without rows. They then match on the next run, rsync
+  never lists them again, and they are never picked up.)
+- **Repair by overwriting, never by deleting.** `rsync -I --files-from`
+  replaces the flagged file atomically. The invariant "only `Purger`
+  deletes" stays true. There is never a moment when the file is missing.
+- **SHA-256, computed in Ruby.** Do not use rsync's `%C` checksums. They
+  only cover files rsync transferred, they need `--checksum-choice=md5`, and
+  MD5 and xxh128 are not sound choices here. SHA-256 runs at about 2.5 GB/s
+  on Apple Silicon, so the disk is always the bottleneck.
+- **Read past the page cache.** Set `F_NOCACHE` on each file descriptor
+  (`io.fcntl(48, 1)` on macOS, best effort: rescue `SystemCallError` and
+  carry on). Without it, a file sync just wrote is hashed from RAM and the
+  platter is never checked. The Mac has 24 GB of RAM, so this is the normal
+  case, not a corner case.
+- **Trust on first use.** The first hash of a file becomes its baseline. A
+  file that was already bad when it was copied gets a bad baseline, and
+  `scrub` cannot know. Btrfs scrub on the NAS is the check for that side.
+- **Staleness threshold is 30 days** (`scrub_stale_days: 30`). It matches
+  Backblaze's rule that a drive not connected for 30 days drops out of the
+  current backup, so there is one number to remember.
+- **Not in v1:** scrubbing drives in parallel, duplicate detection (a GROUP
+  BY on `digest` later), scheduling (launchd), SnapRAID. SnapRAID has no
+  checksum-only mode, and its parity would need a 7.28 TB drive the fleet
+  cannot spare.
 
-- **NAS (Btrfs, with redundancy):** covered. Synology's monthly data scrubbing
-  verifies checksums and self-heals from parity. Rot on the source is detected
-  and repaired without easy_sync involved. (Without redundancy it detects but
-  cannot repair; reads of the bad file then return an I/O error, so rsync fails
-  loudly rather than copying garbage.)
-- **Backup drives (APFS, single, no redundancy):** uncovered by anything. APFS
-  checksums metadata, not contents. This is the entire gap.
-- **A Btrfs repair never propagates outward.** The repair restores the original
-  bytes at the block layer without touching size or mtime, so rsync's quick
-  check skips the file forever. A NAS fix does not reach the drives on its own.
+## Schema
 
-## Measured (rsync 3.5.0, homebrew, on the M-series Mac)
-
-These are the facts the design rests on. Re-check them if rsync changes.
-
-- **rsync already computes a per-file checksum on every ordinary copy and will
-  print it for free.** `--out-format='%i %C %l %n'` keeps the itemize flags
-  `Mirror` already parses and appends checksum, size, name. No `--checksum`, no
-  extra read.
-- **The value is stable across sessions** — identical over three separate runs
-  and unaffected by `--checksum-seed`. It is therefore usable as a stored
-  baseline. (Worth re-testing on any rsync upgrade; this is not documented
-  behaviour.)
-- **Default is xxh128**, which Ruby stdlib cannot reproduce.
-  `--checksum-choice=md5` yields a real MD5 (matches `md5 -q`).
-- **Only transferred files emit `%C`.** Skipped files print nothing.
-- Digest throughput: **SHA-256 2514 MB/s, SHA-1 2486, MD5 763.** Apple Silicon
-  accelerates SHA, not MD5. All exceed any USB read, so the disk is the
-  bottleneck, never the hash.
-- Forcing md5 halves rsync's *local* copy ceiling (800 MB: 0.87s → 1.84s).
-  Irrelevant over SMB; it would slow `replace-drive --copy`.
-- SMB metadata is very slow: a shallow `ls` plus one file read on `/Volumes/tv`
-  did not return in two minutes. Any design that re-walks the NAS pays this.
-
-## Why not compare against the NAS
-
-The obvious approach — `rsync -anc` per folder — reads all 35 TB on *both*
-sides, and the side it adds is the slow one. It also cannot separate "rotted on
-the drive" from "legitimately edited on the NAS since the last sync": every
-changed file reads as a finding. Verifying against a stored hash instead reads
-only the drive, halves the I/O, and does not need the NAS mounted at all.
-
-## Design
-
-Verify each drive against a hash recorded the first time the file was seen.
-
-1. **`verify` writes every baseline. `sync` does no hashing at all.** Store one
-   row per file in a new `file_checksums` table: folder_path, relative_path,
-   size_bytes, mtime, algo, digest, verified_at. Rows are created by the first
-   `verify` that reaches the file (trust on first use) and updated thereafter.
-   Bootstrap and steady state are the same code path because there is only one
-   path.
-
-   **This is a hard constraint, not a preference — see the budget floor below.**
-   An earlier draft had the sync hash each file after copying it. That adds a
-   second serial read over the same bytes and costs 25–33% of sync throughput,
-   taking the measured 62.9 MB/s aggregate to 42–47 and breaking the floor
-   outright — see the budget floor below for the measurement.
-   `sync` is the thing that must not get slower; `verify` is the thing that
-   already has a budget and runs when convenient. Put the cost where the budget
-   is.
-
-   The trade is a wider trust-on-first-use window: a file copied today is not
-   baselined until the frontier reaches it. Acceptable, because that file is
-   freshly written and rsync verified it in flight, making it the least likely
-   thing on the drive to be rotten. If the window ever does need closing, the
-   fix is to overlap hashing with the *next* folder's copy — copying is
-   network-bound and hashing is local-drive-bound, so they can genuinely run
-   concurrently — not to put a serial hash back into the copy path.
-
-   Not rsync's free `%C` either, and do not "optimize" your way back to it
-   later. It costs no read at all, which is tempting, but it forces
-   `--checksum-choice=md5`, covers only *transferred* files (so bootstrap needs
-   a separate path anyway), and the algorithm is wrong: xxh128 is not a
-   cryptographic hash and MD5 is broken. SHA-256 is the only option here that
-   also detects deliberate modification rather than merely accidental rot. The
-   fast choice and the sound choice happen to coincide — keep it that way.
-
-2. **`easy_sync verify [DRIVE...]` is the scan.** For each mounted, non-retired
-   drive: walk its folders, re-hash, compare to `file_checksums`.
-   - digest differs → **corrupt**; report loudly, this is the point of the feature
-   - read error → **unreadable**; same severity, different cause
-   - no row → **unverified**; hash it and record (trust-on-first-use)
-   - size or mtime differs from the row → **stale**, not corrupt: the file was
-     legitimately re-synced. Re-hash and update the row.
-
-   Never delete, never repair, never touch the NAS. `verify` is read-only on
-   the drive and writes only to the manifest — it must be safe to run during
-   anything except a sync of that same drive (take the existing run lock).
-
-   `verify` stays read-only because the repair belongs in `sync`, where the
-   source is actually available — see 3.
-
-3. **A corrupt file is guaranteed to be replaced on the next sync.** Detection
-   without replacement is worthless here: the whole reason this matters is that
-   the offsite copy is taken from the drives, so a corrupt file that lingers
-   keeps poisoning the backup on every upload. Finding it is only half the job.
-
-   The obvious remedy does not work. "Just run a sync" is wrong — the corrupt
-   file still matches the NAS on size and mtime, so rsync's quick check skips
-   it, forever. Nor should `verify` fix it directly; the NAS may not even be
-   mounted when `verify` runs.
-
-   So `verify` **records the finding** and `sync` **acts on it**:
-
-   - `verify` marks the row `corrupt` in `file_checksums`. That is its only
-     write, and it stays read-only on the drive.
-   - The next `sync` of that folder, immediately before its copy pass, deletes
-     the files flagged `corrupt` on the drive. rsync then sees them missing and
-     re-copies them from the NAS as ordinary new files.
-   - On success, re-hash the fresh copy, set a new baseline, clear the flag.
-   - If the drive is unmounted the flag simply persists; nothing is lost and the
-     next sync that reaches that folder does the work.
-
-   Deleting immediately before the copy pass is what makes this safe: the good
-   copy is one rsync away, and the file being removed is one we have positively
-   established is already garbage. Log every such deletion to the existing
-   `deletions` audit table with a distinct reason, so a corrupt-file replacement
-   is never confused with a grace-period purge.
-
-   **This amends a standing invariant.** `Purger` is no longer the only thing
-   that deletes from a drive. The new rule: *deletion is allowed either after
-   `grace_days` and `grace_runs` (Purger), or for a file positively identified
-   as corrupt and re-copied in the same run (refetch).* Anything else still
-   never deletes. Update CLAUDE.md when this is built.
-
-4. **Budget every run; never scan everything.** This is the part that makes it
-   usable. `verified_at` drives a rolling frontier: each run verifies
-   least-recently-verified first until its budget is spent.
-   `--for 2h` / `--max-bytes 500gb` / `--all`. At ~200 MB/s a full 35 TB sweep
-   is ~48 hours of reading; as a weekly two-hour chore that is a complete pass
-   every five months or so.
-
-   **The cadence is set by offsite retention, not by bit rot.** Rot is slow
-   enough that a quarterly pass would be fine on its own merits. What actually
-   binds is that the offsite copy comes from the drives: a full pass has to
-   finish before the offsite service expires the last good version, or verify
-   finds the corruption after the only clean copy has already aged out.
-
-   **Measured: retention is 1 year (Backblaze Personal), sweep is ~5 months.**
-   The constraint is satisfied with roughly seven months to spare, so the
-   budget can be set on convenience rather than on beating a deadline. Re-check
-   if the plan changes — if retention ever drops to 30 days, the sweep has to
-   shorten by an order of magnitude and the whole budget story changes.
-
-   Report the frontier age so the gap is visible: the dashboard should say how
-   long ago the *least* recently verified file was checked, which is the number
-   that has to stay under the retention window. An average is useless here.
-
-5. **Report where the numbers already live.** `verify` prints a summary like
-   `sync` does. The dashboard gets a per-tile "last verified" age and a
-   corrupt-file list beside "Pending deletions". A drive with corrupt files is
-   as important as a failing SMART status — but keep them distinct: tile colour
-   still means SMART.
-
-   Show corrupt files as **awaiting replacement**, not merely as damage, and
-   keep them listed until the refetch has actually happened. A file found
-   corrupt on a drive that has not been plugged in since is the case most worth
-   surfacing, because the offsite copy is carrying the bad version the whole
-   time. `sync` should also say plainly how many files it replaced this run.
-
-6. **Config.** `verify_algo: sha256`, `verify_budget: "2h"`. No automatic
-   verification during `sync`; it is a separate, explicitly-invoked command.
-
-## Free follow-on once the table exists: duplicate detection
-
-`file_checksums` makes this nearly free — group by digest, report anything with
-more than one row. Worth doing because **space is the scarce resource here**:
-5.4 TB of headroom, and "how much isn't backed up at all" is the headline
-number on the dashboard. A byte-identical duplicate is capacity spent twice on
-the same content while something else has zero copies, so every duplicate found
-is potentially a folder that gets backed up instead.
-
-Rules, consistent with everything else here:
-
-- **Report, never delete.** Same stance as `verify`. It prints what it found.
-- **The fix belongs on the NAS, not the drives.** Removing a duplicate from a
-  drive just means the next sync copies it straight back. Dedupe at the source
-  and let the sync propagate the result.
-- Only catches *byte-identical* files. Two encodes of the same movie at
-  different qualities are not duplicates by this definition and will not be
-  found, which is the correct behaviour — the tool cannot know which one you
-  want.
-- Cheap enough to fold into the `verify` summary rather than being its own
-  command, since the digests are already in hand.
-
-## Known limitations
-
-- **Trust on first use.** The baseline is whatever the file looked like when it
-  was first hashed. A file that was already corrupt at copy time has its
-  corruption enshrined as the baseline, and every later scan confirms it as
-  unchanged. `verify` is structurally blind to this and always will be — do not
-  design around it, just know it.
-
-  The compensating control is on the NAS side: Btrfs scrub reports the paths it
-  repaired. Any drive copy made between the rot and that repair is suspect, and
-  the remedy is the same (delete the drive copy, let sync re-fetch). This is
-  manual and rare — it needs a file to rot in the window between arriving on the
-  NAS and its first sync. Once a file has been synced the drive copy is immune,
-  because NAS rot changes neither size nor mtime and rsync will not overwrite a
-  good copy with a rotted one.
-
-- **Repair depends on the NAS.** The refetch in 3 assumes the NAS copy is good.
-  That is a fair assumption — Btrfs scrub covers that side — but it is an
-  assumption, and a file flagged `corrupt` on a drive whose share has since been
-  `remove-source`d has no repair path at all. Report those rather than retrying
-  forever.
-- **A flagged file stays corrupt until its drive is next synced.** The guarantee
-  is "replaced on the next sync of that folder", not "replaced immediately".
-  With drives kept offline between syncs, the window is however long until you
-  next plug that drive in — which is also, not coincidentally, the window in
-  which the offsite copy keeps carrying the bad version.
-
-## Alternatives considered
-
-**SnapRAID** (snapshot parity + per-file checksums over independent drives) does
-everything in this document and is mature, tested C. It is the right answer the
-day parity becomes worth paying for. It is not the right answer now:
-
-- **It will not sell you the scrub without the parity.** `snapraid sync`
-  computes parity and the content/checksum file together, and the config
-  requires a parity drive sized to the largest data disk. There is no
-  checksums-only mode.
-- **The parity drive costs 7.28 TB**, because it has to match the largest data
-  drive — the 1.82 TB and 2.73 TB units cannot serve. Against 44.59 TB of fleet
-  and a ~31.9 TB library, single parity leaves 37.31 TB usable and about 5.4 TB
-  of headroom. Dual parity leaves 30.03 TB and **does not fit the library at
-  all**.
-- **Parity buys repair, and repair is the half already covered.** The NAS is
-  intact; a dead drive is a `replace-drive` and a re-sync. What is missing is
-  *detection*, which is the cheap half and is a hash column in a table that
-  already exists.
-- It is also not a backup tool — placement, fitting, grace-period deletion and
-  the "what isn't backed up at all" inventory are untouched by it. This was
-  never SnapRAID *or* easy_sync, only SnapRAID for this one slice.
-- **It identifies drives by path, which is weaker than what we already do.**
-  Its config binds a logical name to a mount point (`data d1 /mnt/disk1`); the
-  name is what lands in the content file, the path is just where to look today.
-  It stores a filesystem UUID per disk and errors on an unexpected change
-  (`--force-uuid` overrides), but that is a tripwire, not self-correction — it
-  will not work out which drive is which. On macOS with 8 hot-swappable USB
-  drives that is genuinely fragile: mount order varies, a name collision
-  silently becomes `/Volumes/name 1`, and a locked encrypted volume does not
-  appear at all. Adopting it would mean hand-maintaining an 8-line name→path
-  map and re-checking it whenever the enclosure came up differently — after
-  we already solved drive identity properly by matching the serial in
-  `<drive>/.easy_sync/drive.json`.
-
-Revisit when the library comfortably fits with a spare 8 TB drive to burn. At
-that point adopt SnapRAID and delete this document rather than building both.
-
-**Comparing drive against NAS on content** (`rsync -anc`) is rejected in "Why
-not compare against the NAS" above, and the offsite dependency does not change
-it: it would catch the trust-on-first-use case, but at double the I/O with the
-SMB side added, and every legitimately edited file reads as a finding. The
-scrub report hands you the same information for free.
-
-## Fleet, and the speed floor this must not break
-
-**Fleet: 8 active drives, 44.59 TB** — 4 × 7.28 TB, 2 × 5.46 TB, 1 × 2.73 TB,
-1 × 1.82 TB — against a library of roughly 31.9 TB (tv 17.7, movies 12.3,
-synology 1.9, pro 0.04).
-
-**Sync speed is measured, not estimated, and there is nothing further to
-measure.** Throughput is network IO plus the one target drive being written,
-because only one folder copies at a time.
-
-The numbers below come from the `sync_runs` table of the real manifest, over
-the first full-library campaign (2026-09-13 to 2026-09-17): **154 folder
-copies of 5 GB or more, 11.3 TB moved in 49.9 hours of transfer time.** Runs
-under 5 GB are excluded so that per-folder setup cost doesn't contaminate the
-rate. Reproduce it with:
+Add this in `Manifest#migrate!` using `CREATE TABLE IF NOT EXISTS`. Don't
+gate it on `user_version` (see CLAUDE.md: the real manifest is stamped 5).
 
 ```sql
-SELECT folder_path, bytes_transferred,
-       strftime('%s',finished_at) - strftime('%s',started_at) AS secs
-  FROM sync_runs
- WHERE exit_status = 0 AND bytes_transferred >= 5e9
-   AND strftime('%s',finished_at) > strftime('%s',started_at);
+CREATE TABLE IF NOT EXISTS file_checksums (
+  drive_serial  TEXT    NOT NULL REFERENCES drives(serial_number),
+  folder_path   TEXT    NOT NULL,              -- folders.folder_path, e.g. "movies/Heat (1995)"
+  relative_path TEXT    NOT NULL,              -- path inside the folder
+  size_bytes    INTEGER NOT NULL,
+  mtime         INTEGER NOT NULL,              -- File.lstat.mtime.to_i
+  digest        TEXT,                          -- hex SHA-256 baseline; NULL = never hashed
+  verified_at   TEXT,                          -- last time the hash matched (or was first set)
+  status        TEXT    NOT NULL DEFAULT 'ok', -- ok | corrupt | unreadable | unresolved
+  failed_at     TEXT,                          -- when status last left 'ok'
+  refetched_at  TEXT,                          -- set by sync after a successful refetch
+  PRIMARY KEY (drive_serial, folder_path, relative_path)
+);
+CREATE INDEX IF NOT EXISTS idx_file_checksums_frontier
+  ON file_checksums(drive_serial, status, verified_at);
 ```
 
-| statistic | MB/s |
-|---|---|
-| **aggregate (total bytes / total time)** | **62.9** |
-| median folder | 67.7 |
-| p25 – p75 | 57.8 – 79.8 |
-| p10 – p90 | 50.2 – 87.6 |
-| min / max | 16.6 / 98.3 |
+The key includes `drive_serial` because `reassign` and `replace-drive` move a
+folder between drives. Rows always describe one physical copy.
 
-**Plan with the aggregate, 63 MB/s.** It is the only figure that predicts
-wall-clock time for a campaign; the median flatters the result because slow
-folders occupy more of the clock than fast ones. The older eyeballed figure of
-"50–90 MB/s" turns out to have been a fair read of the p10–p90 band, so
-nothing built on it is wrong — but it described the spread, not the rate.
+The file on disk is at `File.join(mount_point, folder_path, relative_path)`.
+That is the same join `Runner#sync_folder` uses to build its destination.
 
-**The target drive is not the variable.** Aggregate sync throughput by drive:
-WSD0TYRR 66.5, WKD1FPS5 66.8, WSD8HPZN 66.4, WKD1SH4M 68.8, 875XK163F56D 67.8
-MB/s. Four 8 TB Seagates and a 6 TB Toshiba, spread 2.4 MB/s — they all
-deliver the same number because none of them is the constraint.
+## Component 1: `Jbod::Scrubber` (`lib/easy_sync/jbod/scrubber.rb`)
 
-Measured directly, they are nowhere near it. 8 GB sequential, buffer cache
-bypassed with `fcntl(F_NOCACHE)`, closing `fsync` inside the timing:
+`Scrubber.new(manifest, excludes:, clock:, out:, deadline: nil, dry_run: false)`,
+then `#run(mounted_drive) -> Result`. Each call handles one drive.
 
-| drive | model | used | write MB/s | read MB/s |
-|---|---|---|---|---|
-| backup-04-8tb | ST8000VN004 | 2.2 TB | **203** | 213 |
-| backup-06-8tb | ST8000VN004 | 4.1 TB | 182 | 190 |
-| backup-01-8tb | ST8000VN004 | 2.5 TB | 178 | 199 |
-| backup-07-6tb | HDWE160 | empty | 143 | 179 |
-| backup-08-2tb | ST2000LM015 | empty | 116 | 126 |
-| backup-05-3tb | WD30EFRX | empty | 115 | 128 |
+### 1a. Reconcile (walk)
 
-The 8 TB drives are three-run means; the rest are single runs. Run-to-run
-spread is about ±7%, which is wide enough to invent a per-drive difference
-that isn't there — backup-04 really is ~14% faster than the identical
-backup-01, consistently across three passes, but nothing smaller than that
-should be believed without repeats.
+For each folder in `manifest.folders_on(serial)`:
 
-**So the slowest drive in the fleet still writes at 1.8× the observed sync
-rate, and the drives holding most of the library write at 2.8–3.2×.** Any
-explanation of sync speed that appeals to the destination drive is wrong.
-Two measurement notes worth not re-deriving: with 24 GB of RAM, a test
-smaller than RAM measures the buffer cache rather than the disk, and macOS
-`dd` has no `oflag=direct` — `fcntl(F_NOCACHE, 1)` is the only way to bypass
-it. A spinning drive that benchmarks in GB/s means the flag didn't take.
+- `root = File.join(mount_point, folder_path)`. If it doesn't exist yet
+  (assigned but never synced), skip it.
+- Use `Find.find(root)` to find regular files only (check with `File.lstat`;
+  skip symlinks). Prune any entry whose basename matches an `exclude_folders`
+  pattern (`File.fnmatch(pat, name, File::FNM_DOTMATCH)`).
+- Compare with the folder's existing rows:
+  - **File with no row:** insert it with `digest` NULL.
+  - **Row with no file:** delete the row.
+  - **Size or mtime differs:** it was legitimately re-synced. Set the new
+    size and mtime, set `digest`, `verified_at`, `failed_at` and
+    `refetched_at` to NULL, and set `status` to `'ok'`.
 
-**Still unmeasured: the NAS read leg**, which is the one that actually binds.
-It can't be measured while a sync is reading from the same shares, so it
-waits for a quiet NAS (and, per the confound below, a quiet Time Machine).
+Then delete this drive's rows whose `folder_path` is no longer assigned to
+this drive (the folder was reassigned, removed or purged).
 
-That gives the acceptance criterion this whole feature has to meet:
+Write in one transaction per folder.
 
-> **If the integrity work drops the aggregate below 50 MB/s, the design failed.**
+### 1b. Work queue (frontier)
 
-It is a floor on the aggregate, deliberately, because as an instantaneous
-floor it is already breached without any integrity work at all: **10.7% of
-transfer time today runs below 50 MB/s**, and the p10 folder sits at 50.2.
-Holding individual folders to 50 would fail the status quo.
+```sql
+SELECT * FROM file_checksums
+ WHERE drive_serial = ?
+   AND (status = 'ok'
+        OR (status IN ('corrupt','unreadable') AND refetched_at IS NOT NULL))
+ ORDER BY
+   CASE WHEN status <> 'ok'   THEN 0   -- 1: confirm refetched repairs
+        WHEN digest IS NULL   THEN 1   -- 2: never hashed
+        ELSE 2 END,                    -- 3: re-check, oldest first
+   verified_at, folder_path, relative_path
+```
 
-This is what rules out hashing inside the copy path (see Design 1): a serial
-post-copy read costs 25–33%, taking 62.9 MB/s to **47.2 at best and 42.1 at
-worst** — under the floor on the aggregate, not merely at the low end of the
-range. The measurement strengthens the original conclusion rather than
-softening it. Any future change that touches `sync` gets held to the same line.
+Two kinds of row are skipped: `corrupt` or `unreadable` rows still waiting for
+sync to refetch them (re-hashing them proves nothing new), and `unresolved`
+rows.
 
-Verification's own read speed is unconstrained by this — it has a budget and
-runs when convenient, which is the entire reason the cost belongs there.
+### 1c. Hash each file and record the result
 
-**Known confound, worth eliminating before re-measuring:** Time Machine on
-this Mac backs up to a sparsebundle on the same Synology (DS1019, 10.0.1.102)
-that serves the media shares, so its scattered band writes contend with
-rsync's sequential reads on the same array and the same SMB link. It was
-running during part of this campaign and is the most likely source of the low
-tail. A run with `sudo tmutil disable` would raise the aggregate; treat 62.9
-MB/s as a floor-ish figure taken under realistic household conditions rather
-than a clean-room best case.
+Stop before starting the next file if `deadline` has passed. A file already
+being hashed runs to completion.
 
-## Open question: parallelism
+Before each file, check that the drive's marker
+(`<mount>/.easy_sync/drive.json`) still exists. If it doesn't, the drive was
+unmounted: stop this drive, report it, and don't touch the row.
 
-Verification is drive-local, so it could run one thread per drive. That does
-not contradict the sequential-sync invariant — that rule is about NAS and
-network contention, neither of which applies to reading local drives.
+Hash with `Digest::SHA256`, reading in 8 MB chunks, with `F_NOCACHE` set.
+Then update the row:
 
-**The bandwidth half of this is now settled, and the old premise was wrong.**
-The enclosure is not on "one USB-C link": every drive has its own Thunderbolt
-AHCI controller negotiated at 6 Gb/s (~600 MB/s), on a 40 Gb/s (~5,000 MB/s)
-Thunderbolt link — `system_profiler SPSerialATADataType SPThunderboltDataType`
-shows the topology. Eight drives reading at their measured ~190 MB/s is about
-1,500 MB/s, roughly 30% of the link, and each drive has 3× headroom on its own
-controller. **A parallel verify will not be bandwidth-limited.**
+| row before | read result | row after | reported as |
+|---|---|---|---|
+| `ok`, digest NULL | read OK | digest set, `verified_at`=now | new baseline |
+| `ok`, digest set | matches | `verified_at`=now | ok |
+| `ok`, digest set | differs | `status`=`corrupt`, `failed_at`=now; digest **kept** | **CORRUPT** |
+| any | `Errno::EIO` | `status`=`unreadable`, `failed_at`=now | **UNREADABLE** |
+| `corrupt`/`unreadable` + refetched, digest set | matches | `status`=`ok`, `verified_at`=now, clear `failed_at`/`refetched_at` | repaired |
+| `unreadable` + refetched, digest NULL | read OK | digest set, `status`=`ok`, clear flags | repaired |
+| `corrupt`/`unreadable` + refetched | differs, or EIO again | `status`=`unresolved` | **UNRESOLVED** |
+| any | `Errno::ENOENT` | delete the row | (not reported) |
 
-What is still unmeasured is whether it is *worth* it: CPU for eight concurrent
-SHA-256 streams is ample (2514 MB/s per core against ~190 MB/s per drive), so
-the open part is scheduling and whether a scan competing with a running sync
-is acceptable, not throughput.
+Keep the digest on `corrupt`. It is the known-good value that confirms the
+repair later.
 
-## Edge cases to test
+Commit at least every 30 seconds and on exit, including Ctrl-C (`Interrupt`).
+An interrupted run loses at most the files since the last commit, and the next
+run picks up where it stopped.
 
-- A folder re-synced between verify runs: rows must go stale (size/mtime), not
-  corrupt. Getting this wrong cries wolf on every changed file and the feature
-  gets ignored.
-- Drive unmounted, or FileVault-locked, mid-scan: stop that drive, report it,
-  do not mark its unread files as anything.
-- `--dry-run` must write nothing — including no `verified_at` updates.
-- A file purged by grace between runs: its rows must go with it
-  (`Purger`/`clear_pending` need a matching `file_checksums` delete).
-- Interrupted scan (Ctrl-C): rows already verified keep their `verified_at`, so
-  the next run resumes at the frontier rather than restarting.
-- Retired drives are never scanned.
-- Row count: ~35 TB of mostly large media is a few hundred thousand rows, tens
-  of MB of SQLite. Confirm against the real fleet — if it is far larger, fall
-  back to a per-folder rollup hash (one row per folder, folder-granular
-  findings) rather than per-file.
-- The refetch path end to end: flag a file `corrupt`, run a sync, confirm the
-  drive copy is deleted, re-copied from the NAS, re-hashed, and the flag
-  cleared. This is the one path the whole feature exists to enable.
-- A flagged file whose folder is skipped this run (drive unmounted, source
-  unmounted, drive full): the flag must survive untouched. The failure to avoid
-  is a flag cleared by a sync that never actually replaced the file.
-- A sync interrupted between the delete and the copy: the file is now missing
-  rather than corrupt. The next sync must still re-copy it, and the flag must
-  not have been cleared. Deleting and clearing the flag are not the same event.
-- `--dry-run` deletes nothing and clears nothing — it should say which files it
-  *would* replace, and leave every flag in place.
-- Frontier age is reported as the *oldest* `verified_at`, not an average. A
-  fleet that looks 90% fresh while one drive has not been touched in a year is
-  precisely the failure this number exists to make visible.
+### 1d. Result
+
+Per drive, return: files new, ok, repaired, corrupt, unreadable, unresolved,
+removed and changed (from the walk), plus bytes read, elapsed time and MB/s.
+Also say whether the run completed or stopped (deadline, unmount or
+interrupt).
+
+`dry_run: true` walks the drive and prints what it would do (row counts to
+add, drop and reset, files and bytes to hash, and an estimate at 150 MB/s).
+It writes nothing.
+
+## Component 2: the `scrub` CLI command (`cli.rb`)
+
+```
+easy_sync scrub [NAME...] [--all] [--for DURATION] [--dry-run] [--no-keep-awake]
+```
+
+- **No arguments:** scrub one drive, the stalest of the mounted, non-retired
+  drives (see "Staleness" below).
+- **`NAME...`:** scrub the named drives in the order given. An unknown name
+  or unmounted drive is an error; a retired drive is refused.
+- **`--all`:** scrub every mounted, non-retired drive, stalest first, one after
+  another.
+- **`--for 8h`:** one wall-clock deadline for the whole invocation (accept
+  `m`, `h` and `d`). With no flag, it runs to completion.
+- Hold `RunLock` for the whole run. `sync` and `scrub` never overlap: they
+  share the manifest, and sync's refetch step reads the flags. Change the
+  `AlreadyRunning` message from "another easy_sync sync" to "another
+  easy_sync run".
+- Keep the Mac awake exactly as `sync` does (`KeepAwake`, honouring
+  `keep_awake` and `--no-keep-awake`).
+- Write output to a log file too, through `RunLog`. Give `RunLog.open` a
+  `prefix:` argument (default `'sync'`) and prune each prefix separately, so
+  that `scrub-*.log` files never push out `sync-*.log` files.
+- Exit with a non-zero status if any file ends the run `corrupt`,
+  `unreadable` or `unresolved`.
+- Add a line to `USAGE`, and a README section.
+
+**Staleness.** A drive's `scrubbed_through` is the oldest `verified_at`
+across its rows. It is NULL if any row has a NULL digest, or if the drive has
+no rows. This is the moment since which every file on the drive has been
+checked.
+
+- To pick drives: order by `scrubbed_through` ascending, NULLs first, ties
+  broken by `friendly_name`.
+- A drive is overdue if `scrubbed_through` is NULL or older than
+  `scrub_stale_days`, and it has at least one folder with `last_synced_at`
+  set. An empty new drive is not overdue.
+
+Compute this with a query; no new column is needed. Files synced since the
+drive was last scrubbed don't count until the next walk adds them. They are
+the least likely files to be rotten, so that is acceptable.
+
+## Component 3: refetch in `sync`
+
+`Mirror#refetch(source, destination, relative_paths) -> Shell result`:
+
+```
+rsync -a -I --stats --from0 --files-from=<tmpfile> <source>/ <destination>/
+```
+
+Write `<tmpfile>` NUL-separated, using `Tempfile`. Don't pass `--partial`. An
+interrupted refetch should leave the old file in place, still flagged, not a
+partial file.
+
+In `Runner#sync_folder`, after the copy pass succeeds:
+
+1. Select rows for `(target.serial_number, folder.key)` with
+   `status IN ('corrupt','unreadable') AND refetched_at IS NULL`.
+2. If there are none, do nothing. This is the only cost `sync` pays.
+3. In dry-run, print `N flagged files would be refetched` and stop.
+4. Otherwise call `refetch`. If it succeeds, set `refetched_at = now` on those
+   rows and add them to the run report ("refetched N files flagged by
+   scrub"). If it fails, warn and leave the rows as they are, so the next
+   sync tries again.
+
+If the copy pass fails, don't refetch. A folder skipped for any reason
+(drive not mounted, source not mounted, drive full) leaves its flags as they
+are.
+
+## Component 4: reporting
+
+- **`status`:** add one line per drive that is overdue (`never scrubbed` or
+  `scrubbed N days ago`). Add a count of rows that are `corrupt`, `unreadable`
+  or `unresolved`, with a pointer to `scrub`.
+- **Dashboard:** show "scrubbed N days ago" or "never scrubbed" on each drive
+  tile, with an overdue note in the same style as the existing unmounted note.
+  **Tile colour stays SMART-only.** Add a "Scrub findings" section next to
+  "Pending deletions". It lists every non-`ok` row: the drive, the path, its
+  status, and "awaiting refetch", "refetched, awaiting re-check" or
+  "unresolved: compare with the NAS copy".
+- **`restore`:** before copying a folder back to the NAS, warn and list any
+  flagged files in it. A rotted file must not quietly go back to the NAS.
+
+## Required doc updates when this ships
+
+- **CLAUDE.md:** replace the integrity bullets under "Open items" with a short
+  description of `scrub`. The invariant "only `Purger` deletes" stays as it
+  is. Add: "refetch overwrites flagged files via `rsync -I`; `scrub` is
+  read-only on the drive."
+- **README:** document the `scrub` command and the `scrub_stale_days` config
+  key. Add `scrub_stale_days: 30` to the defaults in `Config`.
+
+## Tests
+
+Specs use real files under `temp_dir` for the walk and the hashing, since
+nothing shells out there. rsync (the refetch) and drive detection go through
+`FakeShell` and the existing `VolumeInfo` fakes. To simulate rot in a spec,
+overwrite one byte and then put the mtime back with `File.utime`, so size
+and mtime are unchanged.
+
+Scrubber:
+- The first run gives every file a baseline. A second run with no changes
+  reports all files as `ok` and hashes nothing new.
+- Rot (one byte changed, mtime restored) → `corrupt`, and the digest is not
+  changed.
+- A file changed legitimately (new mtime) → reset and re-baselined, not
+  `corrupt`.
+- File deleted → row removed. New file added → row added.
+- Folder reassigned to another drive → the old drive's rows are removed on
+  the next scrub of the old drive.
+- An `exclude_folders` match (e.g. `.DS_Store`) is never added. Symlinks are
+  skipped.
+- Frontier order: refetched rows first, then NULL digests, then oldest
+  `verified_at`.
+- The deadline stops the run between files, and the next run continues from
+  where it stopped.
+- Marker disappears mid-run → stops, and the row being processed is untouched.
+- `Errno::EIO` (stub the read) → `unreadable`.
+- A refetched file that matches its baseline → `ok` (repaired). One that
+  still differs → `unresolved`, and sync never refetches it again.
+- Dry-run leaves the manifest unchanged. Compare a full dump of
+  `file_checksums` from before and after. Asserting "no error" is not
+  enough (see CLAUDE.md on the dry-run incident).
+
+CLI:
+- With no arguments it picks the stalest drive, and a drive that was never
+  scrubbed beats every other drive.
+- `--all` goes through the drives stalest first. Named drives run in the
+  order given. A retired drive is refused.
+- A second process is blocked by `RunLock`.
+- The exit status is non-zero when there are findings.
+
+Sync refetch:
+- A flagged row causes exactly one `rsync -a -I ... --files-from` call after
+  the copy pass, and `refetched_at` is set.
+- No flagged rows → no extra rsync call.
+- The copy pass fails → no refetch, and the flags are unchanged.
+- The refetch fails → `refetched_at` stays NULL.
+- Dry-run → no refetch call, and a "would refetch" line is printed.
+
+## Verify on real hardware before merging
+
+Use the `jbod-test` drives with a scratch `--config` (see CLAUDE.md):
+
+1. Sync a small source tree, then `scrub` it. Every file should get a baseline.
+2. Corrupt one file on the drive:
+   `printf '\xff' | dd of=FILE bs=1 seek=1000 conv=notrunc`, then
+   `touch -r COPY_OF_ORIGINAL FILE`.
+3. `scrub` → it should report CORRUPT and exit non-zero.
+4. `sync` → it should report "refetched 1 file". Check that the drive copy is
+   byte-identical to the NAS copy again (`cmp`).
+5. `scrub` → it should report the file as repaired.
+6. Unplug the drive during a scrub. It should stop cleanly, and the next run
+   should pick up where it stopped.
+7. Record the measured scrub MB/s for one real fleet drive in this doc. That
+   checks the ~200 MB/s estimate and shows whether `F_NOCACHE` took effect:
+   a spinning drive that reads at GB/s means the flag didn't take.
+
+## Separate and smaller: warn before Backblaze drops a drive
+
+This is not part of this feature. Build it first if there is time. Backblaze
+Personal drops a drive from the current backup after 30 days disconnected,
+although version history keeps it for a year. `drives.last_seen_at` already
+records when each drive was last mounted. Warn in `status` and on the
+dashboard when a drive reaches 21 days, which leaves 9 days to act.
