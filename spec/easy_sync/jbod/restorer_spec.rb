@@ -99,5 +99,22 @@ RSpec.describe EasySync::Jbod::Restorer do
       restorer.run([manifest.folder('pro')], mounted_list, dry_run: true)
       expect(fake_shell.calls_to('rsync').first).to include('--dry-run')
     end
+
+    it 'warns and names every scrub-flagged file before restoring a folder that has one, but still restores it' do
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'pro', { 'Course/lesson1.mp4' => [400, 400] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'pro', 'Course/lesson1.mp4', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      fake_shell.on('rsync', output: rsync_stats)
+
+      result = restorer.run([manifest.folder('pro')], mounted_list)
+      expect(result.restored).to eq(['pro'])
+      expect(out.string).to include('WARNING: pro: 1 file on backup-04-8tb is flagged by scrub ' \
+                                    '(Course/lesson1.mp4: corrupt); restoring may copy a rotted file onto the NAS.')
+    end
+
+    it 'says nothing about scrub when nothing is flagged' do
+      fake_shell.on('rsync', output: rsync_stats)
+      restorer.run([manifest.folder('pro')], mounted_list)
+      expect(out.string).not_to include('flagged by scrub')
+    end
   end
 end

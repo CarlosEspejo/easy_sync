@@ -22,9 +22,10 @@ module EasySync
 
       attr_reader :manifest, :grace_days
 
-      def initialize(manifest, grace_days: 7, clock: Time)
+      def initialize(manifest, grace_days: 7, scrub_stale_days: 30, clock: Time)
         @manifest = manifest
         @grace_days = grace_days
+        @scrub_stale_days = scrub_stale_days
         @clock = clock
       end
 
@@ -51,6 +52,7 @@ module EasySync
           pending: manifest.pending_deletions,
           inventory: manifest.source_inventory,
           deletions: manifest.deletions(limit: 30),
+          scrub_findings: manifest.scrub_findings,
           eta: started_at ? SyncEta.for(manifest, started_at) : nil
         }
         scope = binding
@@ -227,6 +229,33 @@ module EasySync
 
       def pending_kind(p, names)
         p.reassigned? ? "moved off #{names.fetch(p.drive_serial, p.drive_serial)}" : p.kind
+      end
+
+      # "scrubbed N days ago" or "never scrubbed", shown on every drive tile
+      # regardless of whether it's overdue.
+      def scrub_status_line(view)
+        through = manifest.scrubbed_through(view.drive.serial_number)
+        through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
+      end
+
+      # Same overdue rule as `status`: something has to have actually synced
+      # to the drive first, so a brand-new empty drive is never overdue.
+      def scrub_overdue?(view)
+        return false unless view.folders.any?(&:last_synced_at)
+
+        through = manifest.scrubbed_through(view.drive.serial_number)
+        through.nil? || Time.parse(through) < (@clock.now - (@scrub_stale_days * 86_400))
+      end
+
+      def days_ago(iso)
+        ((@clock.now - Time.parse(iso)) / 86_400).floor
+      end
+
+      def scrub_finding_phrase(row)
+        return 'unresolved: compare with the NAS copy' if row.status == 'unresolved'
+        return 'refetched, awaiting re-check' if row.refetched_at
+
+        'awaiting refetch'
       end
     end
   end

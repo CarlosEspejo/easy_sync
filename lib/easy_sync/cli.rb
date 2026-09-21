@@ -21,6 +21,8 @@ module EasySync
       ['Maintain', [
         ['pending', 'deletion candidates and when each expires'],
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
+        ['scrub [NAME ...] [--all] [--for DURATION] [--dry-run] [--no-keep-awake]',
+         'read every tracked file back off a drive and check it against its baseline; catches bit rot rsync cannot see'],
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT] [--force]', 'point a folder at a different drive (moves no data); refuses a drive without room unless --force'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
@@ -80,6 +82,7 @@ module EasySync
       when 'verify-drive' then verify_drive(@argv)
       when 'pending' then pending
       when 'clean' then clean(@argv)
+      when 'scrub' then return scrub(@argv)
       when 'plan' then plan(@argv)
       when 'dashboard' then dashboard
       else
@@ -93,9 +96,9 @@ module EasySync
     rescue Interrupt
       # Ctrl-C. Everything is resumable: the lock and log are released by
       # their ensure blocks, caffeinate exits with us, rsync's own temp file for
-      # the in-flight copy is removed by rsync, and the folder that was being
-      # synced simply syncs again next run.
-      @err.puts "\nInterrupted. Nothing is lost: run `easy_sync sync` again to pick up where this left off."
+      # an in-flight rsync copy is removed by rsync, and whatever folder or
+      # file was in progress simply gets processed again next run.
+      @err.puts "\nInterrupted. Nothing is lost: run the same command again to pick up where this left off."
       130
     end
 
@@ -202,6 +205,84 @@ module EasySync
                     "#{Jbod::Placement.format_bytes(result.bytes)} freed."
         end
       end
+    end
+
+    # Reads every tracked file on one or more drives back off the platter and
+    # compares it to its SHA-256 baseline, catching bit rot that rsync's
+    # quick size/mtime check cannot see. See docs/integrity-scan.md.
+    def scrub(args)
+      opts = { dry_run: false, all: false, keep_awake: settings.fetch(:keep_awake, true) }
+      OptionParser.new do |o|
+        o.on('--all', 'Scrub every mounted, non-retired drive, stalest first') { opts[:all] = true }
+        o.on('--for DURATION', 'Stop after this long (e.g. 90m, 8h, 2d); default runs to completion') { |v| opts[:for] = v }
+        o.on('--dry-run', 'Walk and report what would be hashed, without hashing or writing anything') { opts[:dry_run] = true }
+        o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
+      end.parse!(args)
+      raise Error, "scrub takes drive NAMEs or --all, not both\n\n#{USAGE}" if opts[:all] && args.any?
+
+      deadline = opts[:for] ? @clock.now + parse_duration(opts[:for]) : nil
+      targets = resolve_scrub_targets(args, all: opts[:all])
+      raise Error, 'no mounted, non-retired drive to scrub' if targets.empty?
+
+      findings = false
+      stopped = []
+      Jbod::RunLock.new(settings[:lock_path]).acquire do
+        log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock, prefix: 'scrub')
+        begin
+          log.puts "easy_sync #{VERSION} scrub · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')}" \
+                   "#{' · DRY RUN' if opts[:dry_run]} · log #{log.path}"
+          log.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
+          scrubber = Jbod::Scrubber.new(manifest, excludes: settings[:exclude_folders], clock: @clock, out: log,
+                                        deadline: deadline, dry_run: opts[:dry_run])
+          targets.each do |mounted_drive|
+            result = scrubber.run(mounted_drive)
+            findings ||= result.findings?
+            stopped << "#{result.drive} #{result.stopped_reason == :deadline ? 'hit the --for deadline' : 'was unmounted'}" if result.stopped_reason
+            next unless result.stopped_reason == :deadline
+
+            log.puts '--for deadline reached; stopping before the next drive (if any).'
+            break
+          end
+          if stopped.empty?
+            log.puts 'Scrub finished (ran to completion, not interrupted).'
+          else
+            log.puts "Scrub stopped early (#{stopped.join('; ')}). Nothing was lost; a later `scrub` resumes it."
+          end
+        rescue Interrupt
+          log.puts 'Scrub interrupted (Ctrl-C) before it finished. Nothing was lost; a later `scrub` resumes it.'
+          raise
+        ensure
+          log.close
+        end
+      end
+      findings ? 1 : 0
+    end
+
+    # Named drives, in the order given (an unknown or unmounted name is an
+    # error, a retired one is refused); otherwise every mounted, non-retired
+    # drive ordered stalest (oldest #scrubbed_through, NULLs/never-scrubbed
+    # first) to freshest, trimmed to just the stalest one unless +all+.
+    def resolve_scrub_targets(names, all:)
+      mounted_by_serial = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+      if names.any?
+        names.map do |name|
+          drive = manifest.drive_by_name(name) or raise Error, "no drive named #{name}"
+          raise Error, "#{name} is retired" if drive.retired?
+
+          mounted_by_serial[drive.serial_number] or raise Error, "#{name} is not mounted"
+        end
+      else
+        stalest = manifest.drives.select { |d| mounted_by_serial.key?(d.serial_number) }
+                          .sort_by { |d| [manifest.scrubbed_through(d.serial_number) || '', d.friendly_name] }
+                          .map { |d| mounted_by_serial[d.serial_number] }
+        all ? stalest : stalest.first(1)
+      end
+    end
+
+    def parse_duration(spec)
+      m = spec.match(/\A(\d+)([mhd])\z/) or raise Error, "invalid --for duration #{spec.inspect} (use e.g. 90m, 8h, 2d)"
+
+      m[1].to_i * { 'm' => 60, 'h' => 3600, 'd' => 86_400 }.fetch(m[2])
     end
 
     def pending
@@ -469,6 +550,39 @@ module EasySync
       print_run_status
       print_drives(all)
       all ? print_all_folders : print_folder_summary
+      print_scrub_status
+    end
+
+    # A drive is overdue once it's gone scrub_stale_days without a full
+    # check (or never had one) and actually has something synced to it - an
+    # empty new drive is not overdue. Alongside that, the fleet-wide count of
+    # rows scrub has flagged as corrupt/unreadable/unresolved.
+    def print_scrub_status
+      overdue = manifest.drives.select { |d| scrub_overdue?(d) }
+      unless overdue.empty?
+        @out.puts "\nOverdue for `scrub`:"
+        overdue.each do |d|
+          through = manifest.scrubbed_through(d.serial_number)
+          label = through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
+          @out.puts "  #{d.friendly_name.ljust(16)} #{label}"
+        end
+      end
+      findings = manifest.scrub_findings.size
+      return unless findings.positive?
+
+      @out.puts "\n#{findings} file#{'s' if findings != 1} flagged by scrub (corrupt, unreadable, or unresolved); " \
+                'run `easy_sync scrub` to work through them.'
+    end
+
+    def scrub_overdue?(drive)
+      return false unless manifest.folders_on(drive.serial_number).any?(&:last_synced_at)
+
+      through = manifest.scrubbed_through(drive.serial_number)
+      through.nil? || Time.parse(through) < (@clock.now - (settings[:scrub_stale_days] * 86_400))
+    end
+
+    def days_ago(iso)
+      ((@clock.now - Time.parse(iso)) / 86_400).floor
     end
 
     RETIRED_SHOWN = 5   # most recent; older ones are still in the manifest, just not printed by default
@@ -727,7 +841,7 @@ module EasySync
     def dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
       run = Jbod::RunLock.new(settings[:lock_path]).status
-      path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days])
+      path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
                             .write(settings[:dashboard_path], mounted: mounted, started_at: run&.started_at)
       @out.puts "Dashboard written to #{path}"
     end

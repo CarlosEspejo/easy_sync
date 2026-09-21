@@ -513,6 +513,81 @@ RSpec.describe EasySync::Jbod::Runner do
     end
   end
 
+  describe 'refetching files flagged by scrub' do
+    let(:drive_root) { "#{mount_root}/backup-04-8tb" }
+
+    before do
+      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos', { '2024/IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', '2024/IMG_0001.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', 'good.jpg', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+    end
+
+    it 'refetches flagged files after a successful copy pass and marks them refetched' do
+      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos").and_return(ok_result)
+      expect(mirror).to receive(:refetch).with(photos, "#{drive_root}/photos", ['2024/IMG_0001.jpg'])
+                                         .and_return(EasySync::Shell::Result.new(output: '', status: 0))
+
+      report = runner.run
+      expect(report.refetched).to eq([['photos', 1]])
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      expect(row.refetched_at).to eq('2026-09-13T12:00:00Z')
+      expect(out.string).to include('refetched 1 file flagged by scrub')
+    end
+
+    it 'does not refetch anything when nothing is flagged' do
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', '2024/IMG_0001.jpg', outcome: :repaired, digest: 'x', at: '2026-09-01T00:00:00Z')
+      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos").and_return(ok_result)
+      expect(mirror).not_to receive(:refetch)
+      runner.run
+    end
+
+    it 'skips a flagged file that no longer exists on the NAS instead of failing the whole refetch' do
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos',
+                                   { '2024/IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1], 'gone.jpg' => [1, 1] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', 'gone.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      expect(mirror).to receive(:sync).and_return(ok_result)
+      expect(mirror).to receive(:refetch).with(photos, "#{drive_root}/photos", ['2024/IMG_0001.jpg'])
+                                         .and_return(EasySync::Shell::Result.new(output: '', status: 0))
+      runner.run
+      gone = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == 'gone.jpg' }
+      expect(gone.refetched_at).to be_nil
+    end
+
+    it 'does not refetch when the copy pass fails' do
+      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos").and_return(failed_result)
+      expect(mirror).not_to receive(:refetch)
+      report = runner.run
+      expect(report.refetched).to be_empty
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      expect(row.refetched_at).to be_nil
+    end
+
+    it 'warns and leaves the flags untouched when the refetch itself fails' do
+      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos").and_return(ok_result)
+      expect(mirror).to receive(:refetch).and_return(EasySync::Shell::Result.new(output: 'boom', status: 23))
+
+      report = runner.run
+      expect(report.refetched).to be_empty
+      expect(report.warnings).to include(a_string_matching(/photos: refetch of 1 scrub-flagged file failed/))
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      expect(row.refetched_at).to be_nil
+    end
+
+    it 'in dry-run, only prints what would be refetched and calls neither refetch nor mark_refetched' do
+      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos").and_return(ok_result)
+      expect(mirror).not_to receive(:refetch)
+      before_dump = manifest.db.execute('SELECT * FROM file_checksums ORDER BY relative_path')
+
+      build_runner(settings, dry_run: true).run
+
+      after_dump = manifest.db.execute('SELECT * FROM file_checksums ORDER BY relative_path')
+      expect(after_dump).to eq(before_dump)
+      expect(out.string).to include('1 flagged file would be refetched')
+    end
+  end
+
   describe 'grace-period deletions' do
     let(:drive_root) { "#{mount_root}/backup-04-8tb" }
 

@@ -24,7 +24,7 @@ module EasySync
       SourceFolder = Struct.new(:key, :path, keyword_init: true)
 
       Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, :loose_files, :unhealthy, :empty, keyword_init: true) do
+                          :purged, :would_purge, :pending, :loose_files, :unhealthy, :empty, :refetched, keyword_init: true) do
         def initialize(**)
           super
           (members - [:pending]).each { |m| self[m] ||= [] }
@@ -47,7 +47,8 @@ module EasySync
         @volume_info = volume_info || VolumeInfo.new(mount_root: settings[:mount_root], shell: shell)
         @mirror = mirror || Mirror.new(shell: shell, excludes: settings.fetch(:exclude_folders, []),
                                        extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
-        @dashboard = dashboard || Dashboard.new(manifest, grace_days: settings[:grace_days], clock: clock)
+        @dashboard = dashboard || Dashboard.new(manifest, grace_days: settings[:grace_days],
+                                                          scrub_stale_days: settings.fetch(:scrub_stale_days, 30), clock: clock)
         @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
                                                  clock: clock, out: out)
         @sizer = sizer || method(:du_bytes)
@@ -317,6 +318,7 @@ module EasySync
           else
             note_missing(folder, result.extraneous)
           end
+          refetch_flagged(folder, target, destination, report)
         elsif result.disk_full?
           manifest.mark_folder_status(folder.key, 'drive_full') unless @dry_run
           warn(report, "#{folder.key} did not fully sync: #{target.friendly_name} is full " \
@@ -326,6 +328,35 @@ module EasySync
         else
           warn(report, "rsync for #{folder.key} exited with status #{result.exit_status}")
           report.failed << folder.key
+        end
+      end
+
+      # Re-copies files `scrub` flagged as corrupt/unreadable, overwriting the
+      # bad copy on the drive - the only cost a folder with no flagged files
+      # pays for this. Only called after the copy pass has already succeeded;
+      # a folder skipped for any reason leaves its flags exactly as they are,
+      # so the next sync tries again.
+      def refetch_flagged(folder, target, destination, report)
+        # A flagged file since deleted on the NAS can't be refetched (and
+        # would make rsync fail the whole list with exit 23); the deletion
+        # probe already tracks it for Purger, and the next scrub drops its row.
+        flagged = manifest.flagged_checksums(target.serial_number, folder.key)
+                          .select { |f| File.exist?(File.join(folder.path, f.relative_path)) }
+        return if flagged.empty?
+
+        if @dry_run
+          @out.puts "  #{folder.key}: #{flagged.size} flagged file#{'s' if flagged.size != 1} would be refetched"
+          return
+        end
+
+        result = @mirror.refetch(folder.path, destination, flagged.map(&:relative_path))
+        if result.success?
+          manifest.mark_refetched(target.serial_number, folder.key, flagged.map(&:relative_path))
+          report.refetched << [folder.key, flagged.size]
+          @out.puts "  #{folder.key}: refetched #{flagged.size} file#{'s' if flagged.size != 1} flagged by scrub"
+        else
+          warn(report, "#{folder.key}: refetch of #{flagged.size} scrub-flagged file#{'s' if flagged.size != 1} failed " \
+                       "(rsync exit #{result.status}); will try again next sync")
         end
       end
 
@@ -428,6 +459,11 @@ module EasySync
                   "drive full #{report.drive_full.size}, skipped #{report.skipped.size}, " \
                   "unplaced #{report.unplaced.size}, empty #{report.empty.size}, purged #{report.purged.size}, " \
                   "#{report.pending.to_i} pending deletion#{'s' if report.pending.to_i != 1}, warnings #{report.warnings.size}"
+        refetched_files = report.refetched.sum { |_, count| count }
+        return unless refetched_files.positive?
+
+        @out.puts "Refetched #{refetched_files} file#{'s' if refetched_files != 1} flagged by scrub, " \
+                  "across #{report.refetched.size} folder#{'s' if report.refetched.size != 1}"
       end
     end
   end

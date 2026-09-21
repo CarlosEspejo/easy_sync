@@ -281,6 +281,24 @@ RSpec.describe EasySync::CLI do
       expect(out.string).not_to include('more (see')
     end
 
+    it 'flags a drive overdue for scrub once something has synced to it, but not an empty new one' do
+      m = manifest
+      m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('Overdue for `scrub`:', 'backup-01-3tb', 'never scrubbed')
+      expect(out.string.scan('backup-02-6tb').size).to eq(1)   # only in the drive table, not the overdue list
+    end
+
+    it 'reports the fleet-wide count of scrub findings, with a pointer to `scrub`' do
+      m = manifest
+      m.reconcile_checksums('S1', 'Photos', { 'a.jpg' => [1, 1] })
+      m.checksum_hashed('S1', 'Photos', 'a.jpg', outcome: :corrupt, at: '2026-01-01T00:00:00Z')
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('1 file flagged by scrub', 'easy_sync scrub')
+    end
+
     it 'says no sync is running when the lock file is absent' do
       expect(cli('status').run).to eq(0)
       expect(out.string).to include('No sync currently running.')
@@ -674,6 +692,178 @@ RSpec.describe EasySync::CLI do
       expect(err.string).to include('no registered drive is mounted')
       expect(cli('clean').run).to eq(1)
       expect(err.string).to include('already running')
+    end
+  end
+
+  describe 'scrub' do
+    let(:vol) { make_dirs(mount_root, 'backup-01-3tb').first }
+
+    def register_and_mount(serial:, name:, vol:)
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), JSON.generate(serial_number: serial, friendly_name: name))
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol }, output: df_output(vol, capacity_kb: 3_000_000, used_kb: 1_000))
+      m = manifest
+      m.register_drive(serial_number: serial, friendly_name: name, capacity_bytes: 3 * TB)
+      m.close
+    end
+
+    it 'scrubs the stalest mounted drive when given no arguments, baselining every tracked file' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      write_file(File.join(vol, 'pro', 'a.mkv'), 'hello')
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.close
+
+      expect(cli('scrub').run).to eq(0)
+      rows = manifest.checksum_rows('S1', 'pro')
+      expect(rows.size).to eq(1)
+      expect(rows.first.digest).not_to be_nil
+      expect(out.string).to include('backup-01-3tb:')
+    end
+
+    it 'exits non-zero when a file ends the run corrupt, unreadable or unresolved' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      path = write_file(File.join(vol, 'pro', 'a.mkv'), 'hello world, a longer string')
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.close
+      cli('scrub').run
+      mtime = File.mtime(path)
+      File.open(path, 'r+b') { |f| f.write('X') }
+      File.utime(mtime, mtime, path)
+
+      expect(cli('scrub').run).to eq(1)
+      expect(out.string).to include('CORRUPT')
+    end
+
+    it 'refuses an unknown or retired drive name' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      expect(cli('scrub', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+
+      m = manifest
+      m.retire_drive('S1')
+      m.close
+      expect(cli('scrub', 'backup-01-3tb').run).to eq(1)
+      expect(err.string).to include('is retired')
+    end
+
+    it 'scrubs every mounted, non-retired drive with --all' do
+      vol2 = make_dirs(mount_root, 'backup-02-6tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      m.close
+
+      expect(cli('scrub', '--all').run).to eq(0)
+      expect(manifest.checksum_rows('S1', 'pro').size).to eq(1)
+      expect(manifest.checksum_rows('S2', 'stuff').size).to eq(1)
+    end
+
+    it 'with no arguments picks the stalest mounted drive, and a never-scrubbed one beats every other drive' do
+      vol2 = make_dirs(mount_root, 'backup-02-6tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      # backup-01-3tb was already scrubbed recently; backup-02-6tb never has,
+      # so it must be picked even though it's alphabetically second.
+      m.reconcile_checksums('S1', 'pro', { 'a.mkv' => [1, 1] })
+      m.checksum_hashed('S1', 'pro', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
+      m.close
+
+      expect(cli('scrub').run).to eq(0)
+      expect(manifest.checksum_rows('S2', 'stuff').size).to eq(1)   # backup-02-6tb was scrubbed
+      expect(manifest.checksum_rows('S1', 'pro').first.verified_at).to eq('2026-09-13T00:00:00Z')   # backup-01-3tb was not touched again
+    end
+
+    it '--all goes through the drives stalest first' do
+      vol2 = make_dirs(mount_root, 'backup-02-6tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      m.reconcile_checksums('S1', 'pro', { 'a.mkv' => [1, 1] })
+      m.checksum_hashed('S1', 'pro', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
+      m.close
+
+      cli('scrub', '--all').run
+      order = out.string.scan(/^backup-0[12]-\w+tb:/).map { |l| l.delete_suffix(':') }
+      expect(order).to eq(['backup-02-6tb', 'backup-01-3tb'])   # never-scrubbed first
+    end
+
+    it 'scrubs named drives in the order given, regardless of staleness' do
+      vol2 = make_dirs(mount_root, 'backup-02-6tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      m.close
+
+      cli('scrub', 'backup-01-3tb', 'backup-02-6tb').run
+      order = out.string.scan(/^backup-0[12]-\w+tb:/).map { |l| l.delete_suffix(':') }
+      expect(order).to eq(['backup-01-3tb', 'backup-02-6tb'])
+    end
+
+    it 'refuses a second concurrent run, sharing the lock with sync' do
+      lock_path = File.join(temp_dir, 'jbod.lock')
+      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+      File.write(config_path, cfg.merge(lock_path: lock_path).to_yaml)
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      File.write(lock_path, Process.pid.to_s)
+
+      expect(cli('scrub').run).to eq(1)
+      expect(err.string).to include('already running')
+    end
+
+    it 'writes its own scrub-*.log, kept separate from sync-*.log' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      cli('scrub').run
+      expect(Dir.glob(File.join(temp_dir, 'logs', 'scrub-*.log')).size).to eq(1)
+      expect(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log'))).to be_empty
+      expect(File.read(Dir.glob(File.join(temp_dir, 'logs', 'scrub-*.log')).first)).to include('easy_sync 2.0.0 scrub')
+    end
+
+    it 'says the scrub stopped early, not that it finished, when the drive disappears mid-run' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.close
+      allow_any_instance_of(EasySync::Jbod::Scrubber).to receive(:marker_present?).and_return(false)
+
+      expect(cli('scrub').run).to eq(0)
+      expect(out.string).to include('Scrub stopped early (backup-01-3tb was unmounted)')
+      expect(out.string).not_to include('ran to completion')
+    end
+
+    it 'does not hash or write anything in --dry-run' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.close
+
+      expect(cli('scrub', '--dry-run').run).to eq(0)
+      expect(manifest.checksum_rows('S1', 'pro')).to be_empty
+      expect(out.string).to include('DRY RUN')
+    end
+
+    it 'refuses when no mounted drive is available' do
+      expect(cli('scrub').run).to eq(1)
+      expect(err.string).to include('no mounted, non-retired drive to scrub')
     end
   end
 

@@ -12,16 +12,19 @@ module EasySync
     class RunLog
       attr_reader :path
 
-      def self.open(dir, keep: 20, out: $stdout, clock: Time)
+      # +prefix+ names the run kind ('sync' or 'scrub'), so each is pruned
+      # separately: scrub-*.log files never push out sync-*.log files, or the
+      # other way around.
+      def self.open(dir, keep: 20, out: $stdout, clock: Time, prefix: 'sync')
         FileUtils.mkdir_p(dir)
-        path = File.join(dir, "sync-#{clock.now.strftime('%Y%m%d-%H%M%S')}.log")
-        prune(dir, keep: keep - 1)
+        path = File.join(dir, "#{prefix}-#{clock.now.strftime('%Y%m%d-%H%M%S')}.log")
+        prune(dir, keep: keep - 1, prefix: prefix)
         new(File.open(path, 'a'), out: out, path: path)
       end
 
-      # Keeps the newest +keep+ sync logs in +dir+.
-      def self.prune(dir, keep:)
-        logs = Dir.glob(File.join(dir, 'sync-*.log')).sort
+      # Keeps the newest +keep+ logs matching +prefix+ in +dir+.
+      def self.prune(dir, keep:, prefix: 'sync')
+        logs = Dir.glob(File.join(dir, "#{prefix}-*.log")).sort
         (logs.size - [keep, 0].max).clamp(0, logs.size).times { |i| File.delete(logs[i]) }
       end
 

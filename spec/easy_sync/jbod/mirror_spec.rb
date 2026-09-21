@@ -96,6 +96,37 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(result).not_to be_disk_full
   end
 
+  describe '#refetch' do
+    it 'runs rsync -I with a NUL-separated --files-from list, and no --partial' do
+      captured = nil
+      fake_shell.on('rsync', output: lambda { |argv|
+        list_arg = argv.find { |a| a.start_with?('--files-from=') }
+        captured = File.read(list_arg.delete_prefix('--files-from='))
+        rsync_stats
+      })
+      result = described_class.new(shell: fake_shell).refetch('/nas/movies/Heat (1995)', '/Volumes/backup-04-8tb/movies/Heat (1995)',
+                                                               ['movie.mkv', 'subs/en.srt'])
+      expect(result).to be_success
+      expect(captured).to eq("movie.mkv\x00subs/en.srt")
+
+      call = fake_shell.calls.last
+      expect(call[0, 4]).to eq(['rsync', '-a', '-I', '--stats'])
+      expect(call).to include('--from0')
+      expect(call).not_to include('--partial')
+      expect(call.last(2)).to eq(['/nas/movies/Heat (1995)/', '/Volumes/backup-04-8tb/movies/Heat (1995)/'])
+    end
+
+    it 'cleans up its temp file after the call' do
+      list_path = nil
+      fake_shell.on('rsync', output: lambda { |argv|
+        list_path = argv.find { |a| a.start_with?('--files-from=') }.delete_prefix('--files-from=')
+        rsync_stats
+      })
+      described_class.new(shell: fake_shell).refetch('/a', '/b', ['x'])
+      expect(File).not_to exist(list_path)
+    end
+  end
+
   describe '.check_version!' do
     it 'accepts rsync 3.x' do
       fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\nCopyright (C) 1996-2026\n")

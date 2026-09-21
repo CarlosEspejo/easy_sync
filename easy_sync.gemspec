@@ -25,6 +25,9 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'sqlite3', '~> 2.9'
   # logger left the standard library in Ruby 4.0 and must be declared explicitly.
   spec.add_dependency 'logger', '~> 1.6'
+  # fiddle is a bundled (not default) gem in Ruby 4.0; scrub uses it to evict
+  # a file's cached pages before hashing (see Jbod::PageCache).
+  spec.add_dependency 'fiddle', '~> 1.1'
 
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rspec', '~> 3.13'

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'fileutils'
+require 'tempfile'
 
 module EasySync
   module Jbod
@@ -80,6 +81,25 @@ module EasySync
       def probe(source, destination)
         result = @shell.capture(probe_command(source, destination))
         result.success? ? self.class.parse_extraneous(result.output) : nil
+      end
+
+      # Re-copies files `scrub` flagged as corrupt/unreadable, overwriting the
+      # bad copy on the drive. `-I` ignores rsync's quick size/mtime check
+      # (which would otherwise skip a file whose size and mtime never
+      # changed - the whole reason rot goes unnoticed). No --partial: an
+      # interrupted refetch must leave the old, still-flagged file in place,
+      # not a half-written one - rsync only renames its temp file over the
+      # target once that file's transfer completes.
+      def refetch(source, destination, relative_paths)
+        list = Tempfile.new('easy_sync-refetch')
+        begin
+          list.write(relative_paths.join("\0"))
+          list.close
+          @shell.run(['rsync', '-a', '-I', '--stats', '--from0', "--files-from=#{list.path}",
+                      with_slash(source), with_slash(destination)])
+        ensure
+          list.unlink
+        end
       end
 
       # True when rsync's own output says the destination ran out of space.

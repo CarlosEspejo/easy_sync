@@ -545,3 +545,158 @@ RSpec.describe EasySync::Jbod::Manifest, 'pending deletions' do
   end
 
 end
+
+RSpec.describe EasySync::Jbod::Manifest, 'file checksums (scrub)' do
+  let(:clock) { double('clock', now: Time.utc(2026, 9, 13, 12, 0, 0)) }
+  let(:manifest) { memory_manifest(clock: clock) }
+  let(:serial) { 'SN-backup-04-8tb' }
+
+  before do
+    register_fleet(manifest)
+    manifest.assign_folder('movies/Heat (1995)', serial)
+  end
+
+  describe '#reconcile_checksums' do
+    it 'inserts new rows with a NULL digest, resets rows whose size or mtime changed, and drops rows for gone files' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [100, 111], 'b.mkv' => [200, 222] })
+      manifest.db.execute("UPDATE file_checksums SET digest = 'deadbeef', status = 'corrupt' WHERE relative_path = 'a.mkv'")
+
+      added, removed, changed = manifest.reconcile_checksums(serial, 'movies/Heat (1995)',
+                                                              { 'a.mkv' => [999, 111], 'c.mkv' => [50, 50] })
+      expect([added, removed, changed]).to eq([1, 1, 1])
+      rows = manifest.checksum_rows(serial, 'movies/Heat (1995)').to_h { |r| [r.relative_path, r] }
+      expect(rows.keys).to contain_exactly('a.mkv', 'c.mkv')
+      expect(rows['a.mkv']).to have_attributes(status: 'ok', digest: nil, size_bytes: 999)   # reset, not left corrupt
+      expect(rows['c.mkv']).to have_attributes(digest: nil, size_bytes: 50)
+    end
+
+    it 'leaves an unchanged row alone' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [100, 111] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'abc', at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [100, 111] })
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)').first).to have_attributes(digest: 'abc', verified_at: '2026-09-01T00:00:00Z')
+    end
+  end
+
+  describe '#prune_checksums' do
+    it "drops a drive's rows for folders no longer in the keep list" do
+      manifest.assign_folder('photos', serial)
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.reconcile_checksums(serial, 'photos', { 'x.jpg' => [1, 1] })
+
+      manifest.prune_checksums(serial, ['photos'])
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)')).to be_empty
+      expect(manifest.checksum_rows(serial, 'photos')).not_to be_empty
+    end
+
+    it 'drops everything for a drive with an empty keep list' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.prune_checksums(serial, [])
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)')).to be_empty
+    end
+  end
+
+  describe '#checksum_frontier' do
+    it 'orders refetched flagged rows first, then never-hashed rows, then oldest-verified, and excludes the rest' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)',
+                                    { 'never_hashed.mkv' => [1, 1], 'old.mkv' => [1, 1], 'newer.mkv' => [1, 1],
+                                      'awaiting_refetch.mkv' => [1, 1], 'refetched.mkv' => [1, 1], 'gone_bad.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'old.mkv', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'newer.mkv', outcome: :baseline, digest: 'x', at: '2026-09-05T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'awaiting_refetch.mkv', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'awaiting_refetch.mkv', outcome: :corrupt, at: '2026-09-02T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'refetched.mkv', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'refetched.mkv', outcome: :corrupt, at: '2026-09-02T00:00:00Z')
+      manifest.mark_refetched(serial, 'movies/Heat (1995)', ['refetched.mkv'])
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'gone_bad.mkv', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'gone_bad.mkv', outcome: :corrupt, at: '2026-09-02T00:00:00Z')
+      manifest.mark_refetched(serial, 'movies/Heat (1995)', ['gone_bad.mkv'])
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'gone_bad.mkv', outcome: :unresolved)
+
+      expect(manifest.checksum_frontier(serial).map(&:relative_path))
+        .to eq(['refetched.mkv', 'never_hashed.mkv', 'old.mkv', 'newer.mkv'])
+    end
+  end
+
+  describe '#checksum_hashed' do
+    it 'keeps the digest when marking corrupt' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'good', at: 'T1')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :corrupt, at: 'T2')
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)').first)
+        .to have_attributes(status: 'corrupt', digest: 'good', failed_at: 'T2')
+    end
+
+    it 'clears failed_at and refetched_at when repaired' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'good', at: 'T1')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :corrupt, at: 'T2')
+      manifest.mark_refetched(serial, 'movies/Heat (1995)', ['a.mkv'], at: 'T3')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :repaired, digest: 'good', at: 'T4')
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)').first)
+        .to have_attributes(status: 'ok', failed_at: nil, refetched_at: nil, verified_at: 'T4')
+    end
+
+    it 'deletes the row when vanished' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :vanished)
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)')).to be_empty
+    end
+  end
+
+  describe '#flagged_checksums and #mark_refetched' do
+    it 'lists corrupt/unreadable rows awaiting refetch, and stops listing them once refetched' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1], 'b.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :corrupt, at: 'T1')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'b.mkv', outcome: :unreadable, at: 'T1')
+      expect(manifest.flagged_checksums(serial, 'movies/Heat (1995)').map(&:relative_path)).to eq(['a.mkv', 'b.mkv'])
+
+      manifest.mark_refetched(serial, 'movies/Heat (1995)', ['a.mkv'], at: 'T2')
+      expect(manifest.flagged_checksums(serial, 'movies/Heat (1995)').map(&:relative_path)).to eq(['b.mkv'])
+      expect(manifest.checksum_rows(serial, 'movies/Heat (1995)').find { |r| r.relative_path == 'a.mkv' }.refetched_at).to eq('T2')
+    end
+  end
+
+  describe '#scrub_findings and #scrub_findings_for' do
+    it 'lists every non-ok row, newest failure first' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1], 'b.mkv' => [1, 1], 'c.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'b.mkv', outcome: :unreadable, at: '2026-09-05T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'c.mkv', outcome: :baseline, digest: 'x', at: '2026-09-05T00:00:00Z')
+
+      expect(manifest.scrub_findings.map(&:relative_path)).to eq(['b.mkv', 'a.mkv'])
+      expect(manifest.scrub_findings_for(serial, 'movies/Heat (1995)').map(&:relative_path)).to eq(['a.mkv', 'b.mkv'])
+    end
+
+    it 'leaves out findings on a retired drive, which scrub could never clear' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      manifest.retire_drive(serial)
+      expect(manifest.scrub_findings).to be_empty
+    end
+  end
+
+  describe '#scrubbed_through' do
+    it 'is nil for a drive with no rows, or any row never hashed' do
+      expect(manifest.scrubbed_through(serial)).to be_nil
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1] })
+      expect(manifest.scrubbed_through(serial)).to be_nil   # digest still NULL
+    end
+
+    it 'ignores flagged and unresolved rows, whose verified_at never advances' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1], 'bad.mkv' => [1, 1], 'never_read.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-10T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'bad.mkv', outcome: :baseline, digest: 'x', at: '2026-01-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'bad.mkv', outcome: :unresolved)
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'never_read.mkv', outcome: :unreadable, at: '2026-09-10T00:00:00Z')
+      expect(manifest.scrubbed_through(serial)).to eq('2026-09-10T00:00:00Z')
+    end
+
+    it 'is the oldest verified_at once every row has been hashed at least once' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1], 'b.mkv' => [1, 1] })
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-05T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'b.mkv', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      expect(manifest.scrubbed_through(serial)).to eq('2026-09-01T00:00:00Z')
+    end
+  end
+end
