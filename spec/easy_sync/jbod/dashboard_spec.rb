@@ -174,6 +174,46 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('&lt;script&gt;')
   end
 
+  it "shows each tile's scrub status, and flags an overdue one without changing tile colour" do
+    manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1] })
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :baseline, digest: 'x', at: '2026-08-01T00:00:00Z')
+    manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED')
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+
+    expect(html).to match(/class="tile ok"[\s\S]*?backup-04-8tb[\s\S]*?scrubbed 43 days ago.*?badge warning">overdue/)
+    expect(html).to match(/backup-01-3tb[\s\S]*?never scrubbed/)
+    expect(html).not_to match(/backup-01-3tb[\s\S]{0,200}overdue/)   # nothing has synced to it yet
+  end
+
+  it "does not flag a fresh scrub as overdue" do
+    manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1] })
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :baseline, digest: 'x', at: '2026-09-12T00:00:00Z')
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 days ago/)
+    expect(html).not_to match(/backup-04-8tb[\s\S]{0,200}overdue/)
+  end
+
+  it 'lists scrub findings next to pending deletions, with the right next-step phrase for each' do
+    manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1], 'b.jpg' => [1, 1], 'c.jpg' => [1, 1] })
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'b.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+    manifest.mark_refetched('SN-backup-04-8tb', 'Photos', ['b.jpg'])
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'c.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+    manifest.mark_refetched('SN-backup-04-8tb', 'Photos', ['c.jpg'])
+    manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'c.jpg', outcome: :unresolved)
+    html = dashboard.render
+
+    expect(html).to match(/<h2>Scrub findings<\/h2>[\s\S]*?backup-04-8tb[\s\S]*?Photos\/a\.jpg[\s\S]*?awaiting refetch/)
+    expect(html).to include('Photos/b.jpg')
+    expect(html).to match(/Photos\/b\.jpg[\s\S]{0,120}refetched, awaiting re-check/)
+    expect(html).to match(/Photos\/c\.jpg[\s\S]{0,120}unresolved: compare with the NAS copy/)
+  end
+
+  it 'says there are no findings when nothing has been flagged' do
+    html = dashboard.render
+    expect(html).to include('No findings. Run <code>easy_sync scrub</code> to check a drive.')
+  end
+
   it 'writes the file, creating parent directories' do
     path = File.join(temp_dir, 'reports', 'dashboard.html')
     expect(dashboard.write(path)).to eq(path)

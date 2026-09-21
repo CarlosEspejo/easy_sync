@@ -8,7 +8,7 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 3
+      SCHEMA_VERSION = 4
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -469,6 +469,173 @@ module EasySync
         db.get_first_value('PRAGMA user_version')
       end
 
+      # -- file checksums (scrub) ------------------------------------------
+
+      def checksum_rows(drive_serial, folder_path)
+        db.execute('SELECT * FROM file_checksums WHERE drive_serial = ? AND folder_path = ?', [drive_serial, folder_path])
+          .map { |row| row_to_checksum(row) }
+      end
+
+      # Reconciles one folder's rows against +found+, a hash of
+      # relative_path => [size_bytes, mtime] from a walk of the drive. A file
+      # with no row is inserted (digest NULL). A row whose file is gone is
+      # deleted. A row whose size or mtime differs is reset to a fresh,
+      # unhashed baseline (a legitimate re-sync, not rot). One transaction.
+      # Returns [added, removed, changed].
+      def reconcile_checksums(drive_serial, folder_path, found)
+        existing = checksum_rows(drive_serial, folder_path).to_h { |r| [r.relative_path, r] }
+        added = removed = changed = 0
+        db.transaction do
+          found.each do |rel, (size, mtime)|
+            row = existing[rel]
+            if row.nil?
+              db.execute(<<~SQL, [drive_serial, folder_path, rel, size, mtime])
+                INSERT INTO file_checksums (drive_serial, folder_path, relative_path, size_bytes, mtime)
+                VALUES (?, ?, ?, ?, ?)
+              SQL
+              added += 1
+            elsif row.size_bytes != size || row.mtime != mtime
+              db.execute(<<~SQL, [size, mtime, drive_serial, folder_path, rel])
+                UPDATE file_checksums
+                   SET size_bytes = ?, mtime = ?, digest = NULL, verified_at = NULL, failed_at = NULL, refetched_at = NULL,
+                       status = 'ok'
+                 WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?
+              SQL
+              changed += 1
+            end
+          end
+          existing.each_key do |rel|
+            next if found.key?(rel)
+
+            db.execute('DELETE FROM file_checksums WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?',
+                       [drive_serial, folder_path, rel])
+            removed += 1
+          end
+        end
+        [added, removed, changed]
+      end
+
+      # Drops +drive_serial+'s rows for folders no longer in +keep_folder_paths+
+      # (the folder was reassigned, removed, or purged off this drive).
+      def prune_checksums(drive_serial, keep_folder_paths)
+        if keep_folder_paths.empty?
+          db.execute('DELETE FROM file_checksums WHERE drive_serial = ?', [drive_serial])
+        else
+          placeholders = keep_folder_paths.map { '?' }.join(',')
+          db.execute("DELETE FROM file_checksums WHERE drive_serial = ? AND folder_path NOT IN (#{placeholders})",
+                     [drive_serial, *keep_folder_paths])
+        end
+      end
+
+      # The hashing work queue: 'ok' rows (already-hashed ones are due for
+      # periodic re-verification too) plus flagged rows sync has refetched,
+      # ordered refetched-repairs first, then never-hashed, then oldest
+      # verified first. A flagged row still awaiting refetch, or 'unresolved',
+      # is never returned: re-hashing it proves nothing new.
+      def checksum_frontier(drive_serial)
+        db.execute(<<~SQL, [drive_serial]).map { |row| row_to_checksum(row) }
+          SELECT * FROM file_checksums
+           WHERE drive_serial = ?
+             AND (status = 'ok'
+                  OR (status IN ('corrupt','unreadable') AND refetched_at IS NOT NULL))
+           ORDER BY
+             CASE WHEN status <> 'ok'   THEN 0
+                  WHEN digest IS NULL   THEN 1
+                  ELSE 2 END,
+             verified_at, folder_path, relative_path
+        SQL
+      end
+
+      # Records the outcome of hashing one file. +outcome+ is one of
+      # :baseline (first-ever hash), :confirmed (matches), :corrupt (differs),
+      # :unreadable (Errno::EIO), :repaired (a flagged+refetched row now
+      # matches, or got its first successful read), :unresolved (a
+      # flagged+refetched row still bad), :vanished (Errno::ENOENT: row
+      # deleted). The digest is kept, not cleared, when marking corrupt: it is
+      # the known-good baseline a later repair is checked against.
+      def checksum_hashed(drive_serial, folder_path, relative_path, outcome:, digest: nil, at: now)
+        key = [drive_serial, folder_path, relative_path]
+        case outcome
+        when :baseline
+          db.execute('UPDATE file_checksums SET digest = ?, verified_at = ? WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?',
+                     [digest, at, *key])
+        when :confirmed
+          db.execute('UPDATE file_checksums SET verified_at = ? WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?',
+                     [at, *key])
+        when :corrupt
+          db.execute("UPDATE file_checksums SET status = 'corrupt', failed_at = ? WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?",
+                     [at, *key])
+        when :unreadable
+          db.execute("UPDATE file_checksums SET status = 'unreadable', failed_at = ? WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?",
+                     [at, *key])
+        when :repaired
+          db.execute(<<~SQL, [digest, at, *key])
+            UPDATE file_checksums
+               SET status = 'ok', digest = COALESCE(?, digest), verified_at = ?, failed_at = NULL, refetched_at = NULL
+             WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?
+          SQL
+        when :unresolved
+          db.execute("UPDATE file_checksums SET status = 'unresolved' WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?",
+                     key)
+        when :vanished
+          db.execute('DELETE FROM file_checksums WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?', key)
+        else
+          raise ArgumentError, "unknown checksum outcome #{outcome.inspect}"
+        end
+      end
+
+      # Rows flagged by scrub that sync should refetch: not yet refetched
+      # since being flagged. 'unresolved' rows are excluded on purpose - they
+      # are never refetched again automatically.
+      def flagged_checksums(drive_serial, folder_path)
+        db.execute(<<~SQL, [drive_serial, folder_path]).map { |row| row_to_checksum(row) }
+          SELECT * FROM file_checksums
+           WHERE drive_serial = ? AND folder_path = ? AND status IN ('corrupt', 'unreadable') AND refetched_at IS NULL
+           ORDER BY relative_path
+        SQL
+      end
+
+      def mark_refetched(drive_serial, folder_path, relative_paths, at: now)
+        relative_paths.each do |rel|
+          db.execute('UPDATE file_checksums SET refetched_at = ? WHERE drive_serial = ? AND folder_path = ? AND relative_path = ?',
+                     [at, drive_serial, folder_path, rel])
+        end
+      end
+
+      # Every non-ok row for one folder on one drive: what `restore` warns
+      # about before copying it back onto the NAS. Unlike #flagged_checksums,
+      # this also includes rows already refetched or 'unresolved'.
+      def scrub_findings_for(drive_serial, folder_path)
+        db.execute("SELECT * FROM file_checksums WHERE drive_serial = ? AND folder_path = ? AND status <> 'ok' ORDER BY relative_path",
+                   [drive_serial, folder_path]).map { |row| row_to_checksum(row) }
+      end
+
+      # Every non-ok row on an active drive, newest failure first: the
+      # dashboard's "Scrub findings" section and `status`'s summary count.
+      # Retired drives are left out: `scrub` refuses them, so their findings
+      # could never be cleared.
+      def scrub_findings
+        db.execute(<<~SQL).map { |row| row_to_checksum(row) }
+          SELECT c.* FROM file_checksums c JOIN drives d ON d.serial_number = c.drive_serial
+           WHERE c.status <> 'ok' AND d.retired_at IS NULL
+           ORDER BY c.failed_at DESC
+        SQL
+      end
+
+      # The oldest verified_at across a drive's 'ok' rows: the moment since
+      # which every healthy file on it has been checked. NULL if it has no
+      # 'ok' rows yet, or any has never been hashed. Flagged and unresolved
+      # rows are left out on purpose: they are skipped by the hash queue, so
+      # their verified_at never advances, and counting them would pin the
+      # drive as stalest (and overdue) forever. They are reported as findings.
+      def scrubbed_through(drive_serial)
+        ok = "drive_serial = ? AND status = 'ok'"
+        return nil if db.get_first_value("SELECT COUNT(*) FROM file_checksums WHERE #{ok}", [drive_serial]).zero?
+        return nil if db.get_first_value("SELECT COUNT(*) FROM file_checksums WHERE #{ok} AND digest IS NULL", [drive_serial]).positive?
+
+        db.get_first_value("SELECT MIN(verified_at) FROM file_checksums WHERE #{ok}", [drive_serial])
+      end
+
       private
 
       def now = @clock.now.utc.iso8601
@@ -486,6 +653,7 @@ module EasySync
 
       def row_to_drive(row) = Drive.new(**symbolize(row))
       def row_to_folder(row) = Folder.new(**symbolize(row))
+      def row_to_checksum(row) = FileChecksum.new(**symbolize(row))
 
       def symbolize(row)
         row.to_h.transform_keys(&:to_sym)
@@ -507,7 +675,28 @@ module EasySync
         create_pending_deletions_table!
         add_column('pending_deletions', 'drive_serial', 'TEXT')
         add_column('pending_deletions', 'cause', "TEXT NOT NULL DEFAULT 'missing_on_nas'")
+        create_file_checksums_table!
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
+      end
+
+      def create_file_checksums_table!
+        db.execute_batch(<<~SQL)
+          CREATE TABLE IF NOT EXISTS file_checksums (
+            drive_serial  TEXT    NOT NULL REFERENCES drives(serial_number),
+            folder_path   TEXT    NOT NULL,
+            relative_path TEXT    NOT NULL,
+            size_bytes    INTEGER NOT NULL,
+            mtime         INTEGER NOT NULL,
+            digest        TEXT,
+            verified_at   TEXT,
+            status        TEXT    NOT NULL DEFAULT 'ok',
+            failed_at     TEXT,
+            refetched_at  TEXT,
+            PRIMARY KEY (drive_serial, folder_path, relative_path)
+          );
+          CREATE INDEX IF NOT EXISTS idx_file_checksums_frontier
+            ON file_checksums(drive_serial, status, verified_at);
+        SQL
       end
 
       def create_smart_checks_table!

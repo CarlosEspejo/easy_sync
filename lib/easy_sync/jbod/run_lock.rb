@@ -24,7 +24,7 @@ module EasySync
       # running the block if another live process already holds it.
       def acquire
         if (pid = holder)
-          raise AlreadyRunning, "another easy_sync sync is already running (pid #{pid}). " \
+          raise AlreadyRunning, "another easy_sync run is already running (pid #{pid}). " \
                                 "If that's wrong (the process really is gone), remove #{@path}."
         end
 

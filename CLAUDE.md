@@ -42,6 +42,17 @@ README.md is the user-facing truth; this file is for working on the code.
   unchanged folder is ~0.15 s.
 - Headless Chrome refuses windows narrower than ~500 px; render phone widths
   inside a 400 px iframe.
+- `F_NOCACHE` does NOT make a read skip the page cache for pages already in
+  it; it only stops the read adding new ones. A just-synced file scrubbed at
+  2 GB/s from a USB drive until `Jbod::PageCache.evict` (mmap +
+  `msync(MS_SYNC|MS_INVALIDATE)`, via Fiddle) dropped its pages first. Any
+  "read it off the platter" code needs both. Fiddle is a bundled gem in Ruby
+  4.0, so it's declared in the gemspec.
+- Pulling a drive's cable mid-read: the marker file vanishes and reads fail;
+  scrub stops as "unmounted" without flagging the in-flight file. A
+  FileVault test drive came back mounted and unlocked on replug.
+- Scrub reads a fleet drive (spinning SATA, ThunderBay) at ~201 MB/s;
+  `jbod-test-1` (USB) at ~150 MB/s.
 
 - Forwarding a signal to a child process (Ctrl-C during a copy) must signal its
   whole process group, not just its pid: `Open3.popen2e(*argv, pgroup: true)`,
@@ -54,6 +65,8 @@ README.md is the user-facing truth; this file is for working on the code.
 
 - rsync never deletes. Only `Purger` deletes, only after `grace_days` AND
   `grace_runs`, only inside the folder's own destination on a mounted drive.
+  `sync`'s refetch overwrites flagged files via `rsync -I`; `scrub` is
+  read-only on the drive.
 - A placed folder never moves automatically. No rebalancing.
 - Drives are matched by the serial in `<drive>/.easy_sync/drive.json`, never by
   mount path. Unknown or retired volumes are never written to.
@@ -137,20 +150,12 @@ assumptions, they cannot check them.
 ## Open items
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
-- Bit-rot detection: `easy_sync scrub`, fully specified in
-  docs/integrity-scan.md (designed, not built). That doc is the build spec;
-  its "Decisions" section is settled. The short version:
-  - It matters because **the offsite backup is taken from the drives, not
-    from the NAS**: a rotted file is uploaded as a change.
-  - `scrub` does one drive at a time. It walks the drive to add, drop and
-    reset rows in `file_checksums`, then hashes the files with SHA-256
-    (`F_NOCACHE`) and flags mismatches. It is read-only on the drive.
-  - `sync` never hashes. Its only new step: once a folder's copy pass
-    succeeds, it re-copies that folder's flagged files with `rsync -I
-    --files-from`. That overwrites the bad file; it never deletes, so "only
-    Purger deletes" stays true.
-  - The command is called `scrub` because `verify-drive` already exists and
-    means something else (it records a clean SpinRite pass).
+- Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
+  checklist on 2026-09-21 (results in docs/integrity-scan.md). No drive in
+  the real fleet has been scrubbed yet: the first full pass is ~35 TB at
+  ~200 MB/s, about 2 days. `easy_sync scrub --for 8h` fits an overnight
+  window; `--all` works through every mounted, non-retired drive stalest
+  first.
 - Measured sync throughput (62.9 MB/s aggregate; any change to `sync` must
   keep the aggregate at 50 MB/s or more), per-drive benchmarks, enclosure
   bandwidth and hash speeds: docs/performance.md.

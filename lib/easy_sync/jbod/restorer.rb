@@ -63,6 +63,18 @@ module EasySync
 
       private
 
+      # A rotted file must not quietly go back to the NAS: warn and name
+      # every file `scrub` has flagged for this folder on its current drive,
+      # whatever its state (awaiting refetch, refetched, or unresolved).
+      def warn_about_flagged_files(folder, drive)
+        flagged = @manifest.scrub_findings_for(drive.serial_number, folder.folder_path)
+        return if flagged.empty?
+
+        @out.puts "WARNING: #{folder.folder_path}: #{flagged.size} file#{'s' if flagged.size != 1} on #{drive.friendly_name} " \
+                  "#{flagged.size == 1 ? 'is' : 'are'} flagged by scrub (#{flagged.map { |f| "#{f.relative_path}: #{f.status}" }.join(', ')}); " \
+                  'restoring may copy a rotted file onto the NAS.'
+      end
+
       def restore_one(folder, by_serial, result, dry_run:)
         drive = by_serial[folder.drive_serial]
         if drive.nil?
@@ -82,6 +94,7 @@ module EasySync
         source = File.join(drive.mount_point, folder.folder_path)
         return skip(result, folder.folder_path, "nothing at #{source} on #{drive.friendly_name}") unless Dir.exist?(source)
 
+        warn_about_flagged_files(folder, drive)
         @out.puts "\n------------------ #{folder.folder_path}: #{drive.friendly_name} -> NAS ------------------"
         rsync_result = restore_copy(source, destination, dry_run: dry_run)
         if rsync_result.success?

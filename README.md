@@ -61,6 +61,7 @@ by hand:
 :purge: true                            # delete from the drives only after...
 :grace_days: 7                          # ...this many days missing on the NAS
 :grace_runs: 2                          # ...confirmed on this many separate runs
+:scrub_stale_days: 30                   # a drive is overdue for `scrub` after this many days unchecked
 :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                    ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
                                         # never placed, and excluded from every rsync at any depth
@@ -281,6 +282,48 @@ exclusion existed, stray `.DS_Store` files) are never legitimately part of a
 backup, so `clean` removes them from every placed folder on every mounted drive
 immediately. `--dry-run` lists them first.
 
+Bit rot: `scrub`
+-----------------
+
+rsync only checks data while it copies it; nothing checks it again afterwards.
+If a bit flips on a drive a year later, the file keeps the same size and
+mtime, so rsync's quick check skips it on every future sync - the bad copy
+sits there unnoticed. That matters here because **the offsite backup
+(Backblaze) is taken from the drives, not from the NAS**: a rotted file gets
+uploaded as a "change", and the only good copy is the one on the NAS you
+don't know you need to go get.
+
+    easy_sync scrub                 # the drive that's gone longest without a full check
+    easy_sync scrub backup-04-8tb   # a specific drive
+    easy_sync scrub --all           # every mounted, non-retired drive, stalest first
+    easy_sync scrub --for 8h        # stop after this long; the next scrub picks up where it left off
+    easy_sync scrub --dry-run       # what would be hashed, without reading or writing anything
+
+`scrub` does one drive at a time, read-only: it walks the drive's assigned
+folders to track new/removed/legitimately-changed files, then reads each
+tracked file back off the platter (bypassing the page cache) and hashes it
+with SHA-256, comparing against the hash from the first time it was ever
+checked. A mismatch is reported as **corrupt**; a read error as
+**unreadable**. Nothing on the drive is ever touched - repair happens the
+other way around, in `sync`: once a folder's normal copy pass succeeds, any
+files `scrub` flagged for it are re-copied from the NAS with `rsync -I`
+(ignoring the quick check that let rot go unnoticed the first time),
+overwriting the bad copy. `scrub`'s next pass re-hashes a refetched file; a
+match goes back to `ok` ("repaired"), a mismatch becomes **unresolved** and is
+never refetched again automatically - it needs a look by hand, comparing
+against the NAS copy. `restore` warns and lists any flagged files in a folder
+before copying it back to the NAS, so a rotted file never quietly overwrites
+a good one there.
+
+A drive is overdue once it's gone `scrub_stale_days` (30 by default, matching
+how long Backblaze keeps a disconnected drive in the *current* backup) since
+its last full check; `status` and the dashboard say so, and the dashboard
+lists every outstanding finding. `scrub` takes the same lock a `sync` does, so
+the two never run at the same time - connect the drives, run `scrub --all`,
+and leave it; a full pass over the whole fleet takes a while (SHA-256 itself
+runs at gigabytes/second, so a spinning drive's read speed is the limit, not
+the hashing).
+
 Long runs
 ---------
 
@@ -291,11 +334,13 @@ A 30 TB library over gigabit Ethernet takes three to four days the first time.
 - The Mac stays awake by itself: `sync` starts `caffeinate -i -w <its own pid>`,
   which holds off idle sleep exactly as long as the run lasts. `--no-keep-awake`
   or `:keep_awake: false` turns that off. Keep a laptop's lid open.
-- Every run is logged to `~/.easy_sync/logs/sync-<timestamp>.log`: the same
-  lines as the terminal, without rsync's in-place progress updates. The newest
-  `keep_logs` are kept.
-- Only one sync runs at a time. A second one is refused with the running PID; a
-  lock left by a dead process is reclaimed automatically.
+- Every run is logged to `~/.easy_sync/logs/sync-<timestamp>.log` (`scrub` gets
+  its own `scrub-<timestamp>.log`, pruned separately): the same lines as the
+  terminal, without rsync's in-place progress updates. The newest `keep_logs`
+  of each are kept.
+- Only one sync or scrub runs at a time - they share a lock. A second one is
+  refused with the running PID; a lock left by a dead process is reclaimed
+  automatically.
 
 Dashboard
 ---------
@@ -324,6 +369,13 @@ When `smartctl` reports it, each tile also shows how long the drive has
 actually been powered on (SMART's Power_On_Hours), not calendar age — a
 5-year-old drive that sat on a shelf can show far fewer hours than one bought
 last year and run around the clock.
+
+Each tile also says "scrubbed N days ago" or "never scrubbed", with an
+overdue badge once it passes `scrub_stale_days` - this never changes the
+tile's colour, which stays SMART-only. A "Scrub findings" section, next to
+Pending deletions, lists every file `scrub` has flagged: which drive, its
+path, and whether it's awaiting refetch, refetched and awaiting re-check, or
+unresolved.
 
 Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
 shows a rough estimate of time remaining, from what that run has actually
@@ -359,6 +411,7 @@ Commands
 | `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
+| `scrub [NAME ...] \| --all [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER DRIVE [--note TEXT] [--force]` | point a folder at a different drive (moves no data); refuses a drive without room unless `--force` |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
@@ -374,8 +427,8 @@ Where things live
 | `config.yml` | `drive.json`, the drive's identity |
 | `manifest.sqlite3` | `manifest.sqlite3`, a copy as of the last sync |
 | `dashboard.html` | `config.yml`, a copy as of the last sync |
-| `logs/sync-*.log` | `README.txt` |
-| `jbod.lock` while a sync runs | |
+| `logs/sync-*.log`, `logs/scrub-*.log` | `README.txt` |
+| `jbod.lock` while a sync or scrub runs | |
 
 Manifest schema
 ---------------
@@ -392,6 +445,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |
 | `deletions` | audit log of everything actually removed from a drive |
+| `file_checksums` | one row per tracked file per drive: size, mtime, SHA-256 baseline, status (`ok`/`corrupt`/`unreadable`/`unresolved`), when it last failed or was refetched |
 
 Development
 -----------

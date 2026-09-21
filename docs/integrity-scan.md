@@ -1,8 +1,11 @@
-# Integrity scan: `easy_sync scrub` (designed, not built)
+# Integrity scan: `easy_sync scrub` (built and verified on real hardware)
 
-This is the build spec. Everything in it has been checked against the code as
-of `9b1c921`. If something here disagrees with the code, the code wins; fix
-this doc.
+This was the build spec and is now checked against the implementation:
+`Jbod::Scrubber`, `Jbod::PageCache`, the `file_checksums` table,
+`Mirror#refetch`, and the `sync`/`status`/dashboard/`restore` integrations
+described below all exist and are covered by specs. The real-hardware
+checklist at the bottom passed on 2026-09-21; results are recorded there. If
+anything here disagrees with the code, the code wins; fix this doc.
 
 ## Problem
 
@@ -78,9 +81,14 @@ only for folders that have flagged files.
   on Apple Silicon, so the disk is always the bottleneck.
 - **Read past the page cache.** Set `F_NOCACHE` on each file descriptor
   (`io.fcntl(48, 1)` on macOS, best effort: rescue `SystemCallError` and
-  carry on). Without it, a file sync just wrote is hashed from RAM and the
-  platter is never checked. The Mac has 24 GB of RAM, so this is the normal
-  case, not a corner case.
+  carry on), **and** evict the file's pages first (`Jbod::PageCache.evict`:
+  mmap + `msync(MS_SYNC | MS_INVALIDATE)` via Fiddle, best effort).
+  Without both, a file sync just wrote is hashed from RAM and the platter is
+  never checked. The Mac has 24 GB of RAM, so this is the normal case, not a
+  corner case. `F_NOCACHE` alone was measured **not** to be enough: it keeps
+  a read from *adding* pages to the cache, but pages already there are still
+  served from RAM (a just-synced file scrubbed at 2,084 MB/s from a USB
+  drive; after eviction, 145 MB/s).
 - **Trust on first use.** The first hash of a file becomes its baseline. A
   file that was already bad when it was copied gets a bad baseline, and
   `scrub` cannot know. Btrfs scrub on the NAS is the check for that side.
@@ -174,7 +182,8 @@ Before each file, check that the drive's marker
 (`<mount>/.easy_sync/drive.json`) still exists. If it doesn't, the drive was
 unmounted: stop this drive, report it, and don't touch the row.
 
-Hash with `Digest::SHA256`, reading in 8 MB chunks, with `F_NOCACHE` set.
+Hash with `Digest::SHA256`, reading in 8 MB chunks, with `F_NOCACHE` set and
+the file's cached pages evicted first (see "Read past the page cache").
 Then update the row:
 
 | row before | read result | row after | reported as |
@@ -234,9 +243,13 @@ easy_sync scrub [NAME...] [--all] [--for DURATION] [--dry-run] [--no-keep-awake]
 - Add a line to `USAGE`, and a README section.
 
 **Staleness.** A drive's `scrubbed_through` is the oldest `verified_at`
-across its rows. It is NULL if any row has a NULL digest, or if the drive has
-no rows. This is the moment since which every file on the drive has been
-checked.
+across its `ok` rows. It is NULL if any `ok` row has a NULL digest, or if the
+drive has no `ok` rows. This is the moment since which every healthy file on
+the drive has been checked. Flagged and `unresolved` rows are left out: the
+hash queue skips them, so their `verified_at` never advances, and counting
+them would pin the drive as stalest (and overdue) forever. They show up as
+findings instead. Findings on a retired drive are not reported, since
+`scrub` refuses retired drives and could never clear them.
 
 - To pick drives: order by `scrubbed_through` ascending, NULLs first, ties
   broken by `friendly_name`.
@@ -363,6 +376,38 @@ Use the `jbod-test` drives with a scratch `--config` (see CLAUDE.md):
 7. Record the measured scrub MB/s for one real fleet drive in this doc. That
    checks the ~200 MB/s estimate and shows whether `F_NOCACHE` took effect:
    a spinning drive that reads at GB/s means the flag didn't take.
+
+### Results (2026-09-21, all seven steps passed)
+
+1. Synced 4 files (200 MB) to `jbod-test-1`; `scrub` gave all 4 a baseline.
+   It read at **2,084 MB/s**: served from the page cache, not the drive.
+   `F_NOCACHE` does not evict pages already cached (it only stops new ones
+   being added), and a just-synced file is exactly that case. Fixed by adding
+   `Jbod::PageCache.evict`; the same files, deliberately made hot in the
+   cache first, then scrubbed at **145 MB/s**.
+2–3. One byte flipped at offset 1000, mtime restored: `scrub` reported
+   1 CORRUPT, exited 1, digest kept.
+4. `sync --dry-run` said "1 flagged file would be refetched" and wrote
+   nothing; `sync` refetched it, and `cmp` against the NAS copy was
+   identical (size and mtime unchanged).
+5. `scrub` reported 1 repaired; every row back to `ok` with flags cleared.
+6. Cable pulled mid-scrub of a 52 GB folder: the run stopped cleanly as
+   "unmounted" (no hang, no crash), the file being read was left untouched
+   (not flagged unreadable), and the 2 files already hashed kept their
+   baselines (committed on exit). After replugging, the next `scrub` started
+   with exactly the file that was interrupted. Found and fixed: the log said
+   "ran to completion" after an early stop; it now says "stopped early".
+7. Scrub speed, cold reads:
+
+   | drive | interface | MB/s | read |
+   |---|---|---|---|
+   | `backup-01-8tb` (fleet, spinning) | SATA in the ThunderBay 8 | **201.4** | 35.7 GB (`--for 2m`) |
+   | `jbod-test-1` | USB | 151.7 | 52.3 GB |
+
+   201 MB/s matches the ~200 MB/s estimate, so the full-fleet timings in
+   "Decisions" stand. `--for` also stopped correctly on real hardware; with
+   ~9 GB movie files, a 2-minute limit ran about 3 minutes, since a file
+   already being hashed always finishes.
 
 ## Separate and smaller: warn before Backblaze drops a drive
 

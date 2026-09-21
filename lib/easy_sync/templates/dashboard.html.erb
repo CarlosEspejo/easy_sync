@@ -171,6 +171,7 @@
     <%- if d.drive.power_on_label -%>
       <div class="sub muted">powered on <%= h d.drive.power_on_label %></div>
     <%- end -%>
+      <div class="sub muted"><%= h scrub_status_line(d) %><%- if scrub_overdue?(d) -%> <span class="badge warning">overdue</span><%- end -%></div>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>
@@ -254,6 +255,28 @@
         <td><%= when_(p.first_missing_at) %></td>
         <td class="num"><%= p.reassigned? ? '—' : p.missing_runs %></td>
         <td><%= expiry(p) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+<%- end -%>
+  </div>
+
+  <h2>Scrub findings</h2>
+  <p class="meta">Files <code>easy_sync scrub</code> read back off a drive and found rotted, unreadable, or still bad after a refetch. Read-only: nothing here is ever deleted or copied by scrub itself.</p>
+  <div class="table-wrap">
+<%- if scrub_findings.empty? -%>
+  <p class="empty">No findings. Run <code>easy_sync scrub</code> to check a drive.</p>
+<%- else -%>
+  <table>
+    <thead><tr><th>Drive</th><th>Path</th><th>Status</th><th>Next step</th></tr></thead>
+    <tbody>
+  <%- scrub_findings.each do |f| -%>
+      <tr>
+        <td class="drive"><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
+        <td><%= h f.label %></td>
+        <td><span class="status <%= f.status == 'ok' ? 'ok' : 'failed' %>"><%= h f.status %></span></td>
+        <td><%= h scrub_finding_phrase(f) %></td>
       </tr>
   <%- end -%>
     </tbody>

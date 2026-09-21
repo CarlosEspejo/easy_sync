@@ -93,6 +93,20 @@ module EasySync
     Deletion = Struct.new(:id, :folder_path, :relative_path, :kind, :drive_serial, :first_missing_at, :deleted_at,
                           keyword_init: true)
 
+    # One tracked file on one drive, for `scrub` (see docs/integrity-scan.md).
+    # digest is the SHA-256 baseline (nil until the first hash); status is
+    # 'ok', 'corrupt' (hash mismatch), 'unreadable' (a read error), or
+    # 'unresolved' (still bad after sync refetched it - never refetched
+    # again automatically).
+    FileChecksum = Struct.new(:drive_serial, :folder_path, :relative_path, :size_bytes, :mtime, :digest,
+                              :verified_at, :status, :failed_at, :refetched_at, keyword_init: true) do
+      def ok? = status == 'ok'
+      def flagged? = %w[corrupt unreadable].include?(status)
+      def unresolved? = status == 'unresolved'
+      def refetched? = !refetched_at.nil?
+      def label = "#{folder_path}/#{relative_path}"
+    end
+
     # One row per folder seen on the NAS at the last completed placement
     # pass: placed (assigned to a drive, synced or queued), unplaced (no drive
     # has room, or nothing is mounted) or empty (no real files).
