@@ -50,7 +50,7 @@ module EasySync
           dry_walk(drive_serial, mount_point, folders, result)
         else
           walk(drive_serial, mount_point, folders, result)
-          hash_phase(drive_serial, mount_point, result) unless result.stopped_reason
+          hash_phase(drive_serial, mount_point, result, started) unless result.stopped_reason
         end
         result.elapsed_seconds = @clock.now - started
         report(result) unless @dry_run
@@ -120,9 +120,13 @@ module EasySync
 
       # -- 1b/1c: work queue, hash, record ---------------------------------
 
-      def hash_phase(drive_serial, mount_point, result)
+      def hash_phase(drive_serial, mount_point, result, started)
         rows = @manifest.checksum_frontier(drive_serial)
         return if rows.empty?
+
+        total_files = rows.size
+        total_bytes = rows.sum { |r| r.size_bytes.to_i }
+        done = 0
 
         db = @manifest.db
         db.transaction
@@ -145,8 +149,10 @@ module EasySync
               result.stopped_reason = :unmounted
               break
             end
+            done += 1
             if t - last_commit >= COMMIT_INTERVAL
               db.commit
+              progress(result, done, total_files, total_bytes, t - started)
               db.transaction
               last_commit = t
             end
@@ -154,6 +160,18 @@ module EasySync
         ensure
           db.commit if db.transaction_active?
         end
+      end
+
+      # One line per commit, so a multi-day scrub leaves a readable trail in
+      # the log instead of being silent for hours between drive summaries.
+      def progress(result, done, total_files, total_bytes, elapsed)
+        pct = total_bytes.positive? ? ((100.0 * result.bytes_read) / total_bytes).round : 100
+        rate = elapsed.positive? ? result.bytes_read / elapsed : 0
+        remaining = total_bytes - result.bytes_read
+        eta = rate.positive? && remaining.positive? ? Placement.format_duration(remaining / rate) : '0s'
+        @out.puts "  #{result.drive}: #{done}/#{total_files} files, #{Placement.format_bytes(result.bytes_read)} " \
+                  "of #{Placement.format_bytes(total_bytes)} (#{pct}%), #{format('%.1f', rate / (1024 * 1024))} MB/s, " \
+                  "ETA #{eta}"
       end
 
       def marker_present?(mount_point)

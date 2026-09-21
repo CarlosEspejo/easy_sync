@@ -231,6 +231,22 @@ RSpec.describe EasySync::Jbod::Scrubber do
     end
   end
 
+  it 'prints a progress line once per commit interval' do
+    write('a.mkv', 'aaa')
+    write('b.mkv', 'bbb')
+    write('c.mkv', 'ccc')
+
+    t = now
+    ticking = double('clock')
+    allow(ticking).to receive(:now) { t += 16 }
+    # started, last_commit, then one tick per row (+16 each): row 2's tick is
+    # 32s past last_commit, crossing COMMIT_INTERVAL (30s) exactly once.
+    scrubber2 = described_class.new(manifest, excludes: [], clock: ticking, out: out)
+    scrubber2.run(mounted_drive)
+
+    expect(out.string.lines.grep(%r{backup-04-8tb: 2/3 files, .* of .* \(\d+%\), [\d.]+ MB/s, ETA .*}).size).to eq(1)
+  end
+
   it 'stops mid-run when the drive marker disappears, and does not touch the row about to be processed' do
     write('a.mkv', 'aaa')
     write('b.mkv', 'bbb')
