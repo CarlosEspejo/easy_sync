@@ -17,6 +17,7 @@ require_relative 'jbod/dashboard'
 require_relative 'jbod/page_cache'
 require_relative 'jbod/scrubber'
 require_relative 'jbod/scrub_pool'
+require_relative 'jbod/benchmarker'
 require_relative 'jbod/runner'
 
 module EasySync

@@ -23,6 +23,8 @@ module EasySync
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
         ['scrub [NAME ...] [--all] [--jobs N] [--for DURATION] [--dry-run] [--no-keep-awake]',
          'read every tracked file back off a drive and check it against its baseline; catches bit rot rsync cannot see'],
+        ['benchmark [NAME ...] [--all] [--size SIZE] [--history]',
+         "time a drive's sequential write and read against its own earlier runs; a slowing drive can be failing"],
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT] [--force]', 'point a folder at a different drive (moves no data); refuses a drive without room unless --force'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
@@ -83,6 +85,7 @@ module EasySync
       when 'pending' then pending
       when 'clean' then clean(@argv)
       when 'scrub' then return scrub(@argv)
+      when 'benchmark' then return benchmark(@argv)
       when 'plan' then plan(@argv)
       when 'dashboard' then dashboard
       else
@@ -276,6 +279,130 @@ module EasySync
         all ? stalest : stalest.first(1)
       end
     end
+
+    DEFAULT_BENCHMARK_SIZE = '8gb' # what docs/performance.md's baseline numbers were measured with
+
+    # Writes a test file to each drive, reads it back, deletes it, and keeps
+    # the result (the last Manifest::BENCHMARKS_KEPT per drive), so a drive
+    # that is slowing down stands out against its own history. One drive at a
+    # time: drives measured together would share the enclosure and skew each
+    # other. Exits 1 if a drive failed or came out well below its own median.
+    def benchmark(args)
+      opts = { all: false, history: false, size: DEFAULT_BENCHMARK_SIZE }
+      OptionParser.new do |o|
+        o.on('--all', 'Benchmark every mounted, non-retired drive, one at a time') { opts[:all] = true }
+        o.on('--size SIZE', "Test file size (default #{DEFAULT_BENCHMARK_SIZE}; the drive needs this much free plus the reserve)") do |v|
+          opts[:size] = v
+        end
+        o.on('--history', 'List the kept runs instead of running a new one') { opts[:history] = true }
+      end.parse!(args)
+      raise Error, "benchmark takes drive NAMEs or --all, not both\n\n#{USAGE}" if opts[:all] && args.any?
+      return benchmark_history(args) if opts[:history]
+
+      size = Jbod::Placement.parse_size(opts[:size])
+      raise Error, "invalid --size #{opts[:size].inspect}" unless size&.positive?
+
+      targets = resolve_benchmark_targets(args, all: opts[:all])
+      raise Error, 'no mounted, non-retired drive to benchmark' if targets.empty?
+
+      ok = true
+      lock = Jbod::RunLock.new(settings[:lock_path])
+      lock.acquire(kind: 'benchmark') do
+        @out.puts 'Keeping the Mac awake for this run (caffeinate).' if settings.fetch(:keep_awake, true) && @keep_awake.start
+        benchmarker = Jbod::Benchmarker.new
+        targets.each do |m|
+          lock.note(m.friendly_name)
+          ok = benchmark_drive(benchmarker, m, size) && ok
+        end
+      end
+      ok ? 0 : 1
+    end
+
+    # Named drives, in the order given; otherwise every mounted, non-retired
+    # drive, the one benchmarked longest ago (never, first) leading, trimmed
+    # to just that one unless +all+. Mirrors #resolve_scrub_targets.
+    def resolve_benchmark_targets(names, all:)
+      mounted_by_serial = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+      if names.any?
+        names.map do |name|
+          drive = manifest.drive_by_name(name) or raise Error, "no drive named #{name}"
+          raise Error, "#{name} is retired" if drive.retired?
+
+          mounted_by_serial[drive.serial_number] or raise Error, "#{name} is not mounted"
+        end
+      else
+        oldest = manifest.drives.select { |d| mounted_by_serial.key?(d.serial_number) }
+                        .sort_by { |d| [manifest.last_benchmarked_at(d.serial_number) || '', d.friendly_name] }
+                        .map { |d| mounted_by_serial[d.serial_number] }
+        all ? oldest : oldest.first(1)
+      end
+    end
+
+    # Returns false when the drive failed or came out slower than usual; a
+    # drive without room for the test file is skipped, which is not a failure.
+    def benchmark_drive(benchmarker, mounted, size)
+      name = mounted.friendly_name
+      reserve = settings.fetch(:reserve_bytes, 0)
+      if mounted.free_bytes.to_i < size + reserve
+        @out.puts "#{name}: skipped, only #{bytes(mounted.free_bytes)} free; the test file needs #{bytes(size)} " \
+                  "plus the #{bytes(reserve)} reserve (a smaller --size fits)"
+        return true
+      end
+
+      @out.puts "#{name}: writing #{bytes(size)}, then reading it back..."
+      result = benchmarker.run(mounted, size: size)
+      unless result.ok?
+        @out.puts "  FAILED: #{result.error}"
+        return false
+      end
+
+      earlier = manifest.benchmarks(mounted.serial_number)
+      manifest.record_benchmark(mounted.serial_number, bytes: size, write_mb_s: result.write_mb_s.round(1),
+                                                       read_mb_s: result.read_mb_s.round(1), used_bytes: result.used_bytes,
+                                                       at: @clock.now.utc.iso8601)
+      report_benchmark(result, Jbod::Benchmarker.compare(earlier))
+    end
+
+    def report_benchmark(result, cmp)
+      @out.puts "  write #{mb_s(result.write_mb_s)}, read #{mb_s(result.read_mb_s)} (drive #{bytes(result.used_bytes)} used)"
+      if [result.write_mb_s, result.read_mb_s].max > 1000
+        @out.puts '  Over 1 GB/s: an SSD, or the page cache was measured instead of the drive (see docs/performance.md).'
+      end
+      if cmp.earlier.zero?
+        @out.puts '  First run for this drive; later runs are compared against it.'
+        return true
+      end
+
+      @out.puts "  vs. median of #{cmp.earlier} earlier run#{'s' if cmp.earlier != 1}: " \
+                "write #{mb_s(cmp.write_median)} (#{signed_pct(cmp.write_change(result.write_mb_s))}), " \
+                "read #{mb_s(cmp.read_median)} (#{signed_pct(cmp.read_change(result.read_mb_s))})" \
+                "#{" - a slowdown is only flagged from #{Jbod::Benchmarker::MIN_HISTORY} earlier runs on" unless cmp.enough?}"
+      slower = cmp.slower(result.write_mb_s, result.read_mb_s)
+      return true if slower.empty?
+
+      @out.puts "  SLOWER than usual (#{slower.join(' and ')}). Runs normally vary by about 7%; re-run to confirm. " \
+                'A drive that has filled up since writes to slower inner tracks; otherwise this can be an early ' \
+                'failure sign SMART does not show yet - check `status`.'
+      false
+    end
+
+    def benchmark_history(names)
+      drives = names.any? ? names.map { |n| manifest.drive_by_name(n) or raise Error, "no drive named #{n}" } : manifest.drives
+      drives.each_with_index do |d, i|
+        runs = manifest.benchmarks(d.serial_number)
+        @out.puts if i.positive?
+        @out.puts "#{d.friendly_name}#{runs.empty? ? ': never benchmarked' : " (#{runs.size} run#{'s' if runs.size != 1}, newest first):"}"
+        next if runs.empty?
+
+        print_table(%w[WHEN WRITE READ SIZE USED],
+                    runs.map { |r| [local_time(r.run_at, '%Y-%m-%d %H:%M'), mb_s(r.write_mb_s), mb_s(r.read_mb_s), bytes(r.bytes), bytes(r.used_bytes)] },
+                    right: [1, 2, 3, 4])
+      end
+      0
+    end
+
+    def mb_s(value) = "#{format('%.1f', value)} MB/s"
+    def signed_pct(fraction) = fraction ? format('%+d%%', (fraction * 100).round) : '?'
 
     def parse_duration(spec)
       m = spec.match(/\A(\d+)([mhd])\z/) or raise Error, "invalid --for duration #{spec.inspect} (use e.g. 90m, 8h, 2d)"

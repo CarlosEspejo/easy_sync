@@ -107,6 +107,13 @@ module EasySync
       def label = "#{folder_path}/#{relative_path}"
     end
 
+    # One `benchmark` run on one drive (see Jbod::Benchmarker). MB/s is
+    # MiB/s, the same unit scrub reports. used_bytes is how full the drive was
+    # at the time: a fuller drive writes to slower inner tracks, so a gradual
+    # decline that tracks it is expected, not a warning sign.
+    DriveBenchmark = Struct.new(:id, :drive_serial, :run_at, :bytes, :write_mb_s, :read_mb_s, :used_bytes,
+                                keyword_init: true)
+
     # One row per folder seen on the NAS at the last completed placement
     # pass: placed (assigned to a drive, synced or queued), unplaced (no drive
     # has room, or nothing is mounted) or empty (no real files).

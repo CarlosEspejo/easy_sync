@@ -1014,6 +1014,153 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'benchmark' do
+    let(:vol) { make_dirs(mount_root, 'backup-01-3tb').first }
+    let(:lock_path) { File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock') }
+
+    def register_and_mount(serial:, name:, vol:, used_kb: 1_000)
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), JSON.generate(serial_number: serial, friendly_name: name))
+      fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == vol },
+                    output: df_output(vol, capacity_kb: 3_000_000, used_kb: used_kb))
+      m = manifest
+      m.register_drive(serial_number: serial, friendly_name: name, capacity_bytes: 3 * TB)
+      m.close
+    end
+
+    def record(serial, write:, read:, day:)
+      m = manifest
+      m.record_benchmark(serial, bytes: 8 * GB, write_mb_s: write, read_mb_s: read, used_bytes: TB,
+                                 at: format('2026-09-%02dT12:00:00Z', day))
+      m.close
+    end
+
+    # 1 MiB in 1/100 s each way: 100 MB/s.
+    def stub_rates(write_seconds: 0.01, read_seconds: 0.01)
+      allow_any_instance_of(EasySync::Jbod::Benchmarker).to receive(:run) do |_, mounted, size:|
+        EasySync::Jbod::Benchmarker::Result.new(drive: mounted.friendly_name, bytes: size, used_bytes: mounted.used_bytes,
+                                                write_seconds: write_seconds, read_seconds: read_seconds)
+      end
+    end
+
+    it 'writes and reads back a test file on the named drive, records the result, and leaves nothing behind' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+
+      expect(cli('benchmark', 'backup-01-3tb', '--size', '1mb').run).to eq(0)
+      runs = manifest.benchmarks('S1')
+      expect(runs.size).to eq(1)
+      expect(runs.first).to have_attributes(bytes: 1024 * 1024, used_bytes: 1_000 * 1024)
+      expect(runs.first.write_mb_s).to be_positive
+      expect(out.string).to include('backup-01-3tb: writing 1.0 MB', 'First run for this drive')
+      expect(Dir.children(File.join(vol, EasySync::Jbod::DRIVE_DIR))).to eq(['drive.json'])
+      expect(File.exist?(lock_path)).to be(false)
+    end
+
+    it 'with no arguments benchmarks the mounted drive benchmarked longest ago, never-benchmarked first' do
+      vol2 = make_dirs(mount_root, 'backup-02-3tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-3tb', vol: vol2)
+      record('S1', write: 100, read: 100, day: 1)
+      stub_rates
+
+      expect(cli('benchmark', '--size', '1mb').run).to eq(0)
+      expect(manifest.benchmarks('S2').size).to eq(1)
+      expect(manifest.benchmarks('S1').size).to eq(1)
+    end
+
+    it 'benchmarks every mounted drive one at a time with --all, noting the current one in the lock' do
+      vol2 = make_dirs(mount_root, 'backup-02-3tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-3tb', vol: vol2)
+      seen = []
+      allow_any_instance_of(EasySync::Jbod::Benchmarker).to receive(:run) do |_, mounted, size:|
+        seen << File.read(lock_path).lines.map(&:strip)
+        EasySync::Jbod::Benchmarker::Result.new(drive: mounted.friendly_name, bytes: size, used_bytes: 0,
+                                                write_seconds: 1, read_seconds: 1)
+      end
+
+      expect(cli('benchmark', '--all', '--size', '1mb').run).to eq(0)
+      expect(seen).to eq([[Process.pid.to_s, 'benchmark', 'backup-01-3tb'], [Process.pid.to_s, 'benchmark', 'backup-02-3tb']])
+    end
+
+    it "compares a run against the drive's earlier ones and exits 1 when it is well below their median" do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      (1..3).each { |day| record('S1', write: 200, read: 100, day: day) }
+      stub_rates   # 100 MB/s both ways: write -50%, read unchanged
+
+      expect(cli('benchmark', 'backup-01-3tb', '--size', '1mb').run).to eq(1)
+      expect(out.string).to include('vs. median of 3 earlier runs: write 200.0 MB/s (-50%), read 100.0 MB/s (+0%)',
+                                    'SLOWER than usual (write)')
+    end
+
+    it 'does not flag a slowdown with fewer earlier runs than it needs, and says so' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      record('S1', write: 200, read: 200, day: 1)
+      stub_rates
+
+      expect(cli('benchmark', 'backup-01-3tb', '--size', '1mb').run).to eq(0)
+      expect(out.string).to include('vs. median of 1 earlier run:', 'only flagged from 3 earlier runs on')
+      expect(out.string).not_to include('SLOWER')
+    end
+
+    it 'skips a drive without room for the test file plus the reserve, without failing' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol, used_kb: 2_000_000)   # ~0.95 GB free, 2 GB reserve
+
+      expect(cli('benchmark', 'backup-01-3tb', '--size', '1mb').run).to eq(0)
+      expect(out.string).to include('backup-01-3tb: skipped', 'a smaller --size fits')
+      expect(manifest.benchmarks('S1')).to eq([])
+    end
+
+    it 'exits 1 and records nothing when the drive fails mid-run' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      allow_any_instance_of(EasySync::Jbod::Benchmarker).to receive(:run) do |_, mounted, size:|
+        EasySync::Jbod::Benchmarker::Result.new(drive: mounted.friendly_name, bytes: size, error: 'unmounted mid-run')
+      end
+
+      expect(cli('benchmark', 'backup-01-3tb', '--size', '1mb').run).to eq(1)
+      expect(out.string).to include('FAILED: unmounted mid-run')
+      expect(manifest.benchmarks('S1')).to eq([])
+    end
+
+    it 'lists the kept runs with --history, including drives never benchmarked, without taking the lock' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      m = manifest
+      m.register_drive(serial_number: 'S2', friendly_name: 'backup-02-3tb', capacity_bytes: 3 * TB)
+      m.close
+      record('S1', write: 180.25, read: 190, day: 1)
+      record('S1', write: 181, read: 191, day: 2)
+      File.write(lock_path.tap { |p| FileUtils.mkdir_p(File.dirname(p)) }, "#{Process.pid}\nsync\n")
+
+      expect(cli('benchmark', '--history').run).to eq(0)
+      expect(out.string).to include('backup-01-3tb (2 runs, newest first):', '181.0 MB/s', '180.2 MB/s', '8.0 GB',
+                                    'backup-02-3tb: never benchmarked')
+      expect(out.string.index('181.0 MB/s')).to be < out.string.index('180.2 MB/s')
+    end
+
+    it 'refuses to run while another run holds the lock' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      File.write(lock_path.tap { |p| FileUtils.mkdir_p(File.dirname(p)) }, "#{Process.pid}\nsync\n")
+
+      expect(cli('benchmark', 'backup-01-3tb').run).to eq(1)
+      expect(err.string).to include('already running')
+    end
+
+    it 'refuses names together with --all, an unknown or retired drive, and a bad --size' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      expect(cli('benchmark', 'backup-01-3tb', '--all').run).to eq(1)
+      expect(err.string).to include('not both')
+      expect(cli('benchmark', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+      expect(cli('benchmark', 'backup-01-3tb', '--size', 'lots').run).to eq(1)
+      expect(err.string).to include('cannot parse size')
+
+      m = manifest
+      m.retire_drive('S1')
+      m.close
+      expect(cli('benchmark', 'backup-01-3tb').run).to eq(1)
+      expect(err.string).to include('is retired')
+    end
+  end
+
   describe 'add-source / remove-source / sources' do
     let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
 

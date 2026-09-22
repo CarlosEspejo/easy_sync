@@ -8,7 +8,8 @@ module EasySync
   module Jbod
     # SQLite manifest: which folder lives on which drive, plus history.
     class Manifest
-      SCHEMA_VERSION = 4
+      SCHEMA_VERSION = 5
+      BENCHMARKS_KEPT = 25 # per drive: enough to see a trend, small enough to never matter
 
       class DuplicateFolder < Error; end
       class UnknownDrive < Error; end
@@ -660,6 +661,37 @@ module EasySync
         { checked: checked, total: total }
       end
 
+      # -- benchmarks -------------------------------------------------------
+
+      # Records one `benchmark` run and drops the drive's older runs beyond
+      # BENCHMARKS_KEPT, in one transaction.
+      def record_benchmark(drive_serial, bytes:, write_mb_s:, read_mb_s:, used_bytes:, at: now)
+        ensure_drive!(drive_serial)
+        db.transaction(:immediate) do
+          db.execute(<<~SQL, [drive_serial, at, bytes, write_mb_s, read_mb_s, used_bytes])
+            INSERT INTO drive_benchmarks (drive_serial, run_at, bytes, write_mb_s, read_mb_s, used_bytes)
+            VALUES (?, ?, ?, ?, ?, ?)
+          SQL
+          db.execute(<<~SQL, [drive_serial, drive_serial, BENCHMARKS_KEPT])
+            DELETE FROM drive_benchmarks
+             WHERE drive_serial = ?
+               AND id NOT IN (SELECT id FROM drive_benchmarks WHERE drive_serial = ?
+                               ORDER BY run_at DESC, id DESC LIMIT ?)
+          SQL
+        end
+      end
+
+      # A drive's kept runs, newest first.
+      def benchmarks(drive_serial)
+        db.execute('SELECT * FROM drive_benchmarks WHERE drive_serial = ? ORDER BY run_at DESC, id DESC', [drive_serial])
+          .map { |row| DriveBenchmark.new(**symbolize(row)) }
+      end
+
+      # When the drive was last benchmarked, or nil if never.
+      def last_benchmarked_at(drive_serial)
+        db.get_first_value('SELECT MAX(run_at) FROM drive_benchmarks WHERE drive_serial = ?', [drive_serial])
+      end
+
       private
 
       def now = @clock.now.utc.iso8601
@@ -700,6 +732,7 @@ module EasySync
         add_column('pending_deletions', 'drive_serial', 'TEXT')
         add_column('pending_deletions', 'cause', "TEXT NOT NULL DEFAULT 'missing_on_nas'")
         create_file_checksums_table!
+        create_drive_benchmarks_table!
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
       end
 
@@ -720,6 +753,21 @@ module EasySync
           );
           CREATE INDEX IF NOT EXISTS idx_file_checksums_frontier
             ON file_checksums(drive_serial, status, verified_at);
+        SQL
+      end
+
+      def create_drive_benchmarks_table!
+        db.execute_batch(<<~SQL)
+          CREATE TABLE IF NOT EXISTS drive_benchmarks (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            drive_serial TEXT    NOT NULL REFERENCES drives(serial_number),
+            run_at       TEXT    NOT NULL,
+            bytes        INTEGER NOT NULL,
+            write_mb_s   REAL    NOT NULL,
+            read_mb_s    REAL    NOT NULL,
+            used_bytes   INTEGER
+          );
+          CREATE INDEX IF NOT EXISTS idx_drive_benchmarks_drive ON drive_benchmarks(drive_serial, run_at);
         SQL
       end
 
