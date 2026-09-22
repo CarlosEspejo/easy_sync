@@ -96,6 +96,13 @@ module EasySync
     rescue Error, OptionParser::ParseError => e
       @err.puts "error: #{e.message}"
       1
+    rescue Errno::ENOENT => e
+      # du/df/diskutil/rsync/smartctl are all invoked without checking they
+      # exist first (only rsync gets a dedicated check, in `sync`); this turns
+      # a missing one into the same calm message every other failure gets,
+      # instead of a raw Ruby backtrace.
+      @err.puts "error: #{e.message} (a required command-line tool is missing)"
+      1
     rescue Interrupt
       # Ctrl-C. Everything is resumable: the lock and log are released by
       # their ensure blocks, caffeinate exits with us, rsync's own temp file for

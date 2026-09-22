@@ -1457,6 +1457,20 @@ RSpec.describe EasySync::CLI do
     expect(File.read(logs.first)).to include('Sync interrupted (Ctrl-C)')
   end
 
+  it 'turns a missing shell command into a calm error instead of a crash, releasing the lock' do
+    lock_path = File.join(temp_dir, 'jbod.lock')
+    cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
+    File.write(config_path, cfg.merge(lock_path: lock_path, sources: [File.join(temp_dir, 'nas')]).to_yaml)
+    make_dirs(temp_dir, 'nas', 'nas/photos')
+    write_file(File.join(temp_dir, 'nas', 'photos', 'x.jpg'))
+    fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+    fake_shell.on('du', output: ->(_) { raise Errno::ENOENT, 'No such file or directory - du' })
+
+    expect(cli('sync').run).to eq(1)
+    expect(err.string).to include('error:', 'No such file or directory', 'du')
+    expect(File).not_to exist(lock_path)
+  end
+
   it 'marks the log as finished when a sync runs to completion, unlike an interrupted one' do
     cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
     File.write(config_path, cfg.merge(sources: [File.join(temp_dir, 'nas')]).to_yaml)
