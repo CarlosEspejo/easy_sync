@@ -647,6 +647,19 @@ module EasySync
         db.get_first_value("SELECT MIN(verified_at) FROM file_checksums WHERE #{ok}", [drive_serial])
       end
 
+      # How many of this drive's tracked files have been verified at or
+      # after +since+ (normally the current scrub run's start time), out of
+      # how many are tracked in total. Deliberately not "ever hashed": a
+      # drive scrubbed before already has a digest for nearly every row,
+      # which would read as "done" the instant a fresh run started.
+      def checksum_progress(drive_serial, since:)
+        total = db.get_first_value('SELECT COUNT(*) FROM file_checksums WHERE drive_serial = ?', [drive_serial])
+        checked = db.get_first_value(
+          'SELECT COUNT(*) FROM file_checksums WHERE drive_serial = ? AND verified_at >= ?', [drive_serial, since]
+        )
+        { checked: checked, total: total }
+      end
+
       private
 
       def now = @clock.now.utc.iso8601
