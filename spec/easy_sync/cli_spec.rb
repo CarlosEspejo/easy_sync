@@ -328,6 +328,24 @@ RSpec.describe EasySync::CLI do
       expect(out.string).not_to include('Scrubbing now:')
     end
 
+    it 'never lists the same drive under both Overdue and Scrubbing now' do
+      m = manifest
+      # S1 is overdue and currently being scrubbed; S2 is overdue but idle.
+      m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.assign_folder('Videos', 'S2')
+      m.record_sync(folder_path: 'Videos', drive_serial: 'S2', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.close
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nscrub\nbackup-01-3tb\n")
+
+      expect(cli('status').run).to eq(0)
+      overdue_section = out.string[/Overdue for `scrub`:\n(.*?)\n\n/m, 1]
+      expect(overdue_section).to include('backup-02-6tb')
+      expect(overdue_section).not_to include('backup-01-3tb')
+      expect(out.string).to include("Scrubbing now:\n  backup-01-3tb")
+    end
+
     it 'reports the fleet-wide count of scrub findings, with a pointer to `scrub`' do
       m = manifest
       m.reconcile_checksums('S1', 'Photos', { 'a.jpg' => [1, 1] })

@@ -557,20 +557,17 @@ module EasySync
     # empty new drive is not overdue. Alongside that, the fleet-wide count of
     # rows scrub has flagged as corrupt/unreadable/unresolved.
     def print_scrub_status(run)
-      overdue = manifest.drives.select { |d| scrub_overdue?(d) }
+      active = run&.kind == 'scrub' ? run.current : []
+      overdue = manifest.drives.select { |d| scrub_overdue?(d) && !active.include?(d.friendly_name) }
       unless overdue.empty?
         @out.puts "\nOverdue for `scrub`:"
         overdue.each do |d|
-          label = if run&.kind == 'scrub' && run.current.include?(d.friendly_name)
-                    'scrubbing now'
-                  else
-                    through = manifest.scrubbed_through(d.serial_number)
-                    through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
-                  end
+          through = manifest.scrubbed_through(d.serial_number)
+          label = through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
           @out.puts "  #{d.friendly_name.ljust(16)} #{label}"
         end
       end
-      print_scrubbing_progress(run)
+      print_scrubbing_progress(run) unless active.empty?
       findings = manifest.scrub_findings.size
       return unless findings.positive?
 
@@ -581,22 +578,22 @@ module EasySync
     # How far each currently-scrubbing drive has gotten through this run:
     # files verified since the run started, not files ever hashed (a drive
     # scrubbed before already has an old digest for nearly everything, which
-    # would misleadingly read as "done" the instant this run started).
+    # would misleadingly read as "done" the instant this run started). This
+    # is the *only* place a currently-scrubbing drive is listed - #overdue
+    # above excludes it, so a drive never appears in both sections at once.
     def print_scrubbing_progress(run)
-      return unless run&.kind == 'scrub' && run.current.any?
-
-      lines = run.current.filter_map do |name|
-        drive = manifest.drive_by_name(name) or next
-        progress = manifest.checksum_progress(drive.serial_number, since: run.started_at.utc.iso8601)
-        next if progress[:total].zero?
-
-        pct = ((100.0 * progress[:checked]) / progress[:total]).round
-        "  #{name.ljust(16)} #{progress[:checked]}/#{progress[:total]} files checked (#{pct}%)"
-      end
-      return if lines.empty?
-
       @out.puts "\nScrubbing now:"
-      lines.each { |l| @out.puts l }
+      run.current.each do |name|
+        drive = manifest.drive_by_name(name)
+        progress = drive && manifest.checksum_progress(drive.serial_number, since: run.started_at.utc.iso8601)
+        label = if progress.nil? || progress[:total].zero?
+                  'scrubbing now'
+                else
+                  pct = ((100.0 * progress[:checked]) / progress[:total]).round
+                  "#{progress[:checked]}/#{progress[:total]} files checked (#{pct}%)"
+                end
+        @out.puts "  #{name.ljust(16)} #{label}"
+      end
     end
 
     def scrub_overdue?(drive)
