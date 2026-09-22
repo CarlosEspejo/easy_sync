@@ -14,9 +14,15 @@ module EasySync
       class UnknownDrive < Error; end
       class UnknownFolder < Error; end
 
+      # WAL is sticky in the file: once written, every future opener (this
+      # process or another) sees it too, so this only needs to run here, not
+      # on every #initialize. :memory: has no file to write it to and doesn't
+      # need it (Jbod::ScrubPool never runs against one).
       def self.open(path)
         FileUtils.mkdir_p(File.dirname(path)) unless path == ':memory:'
-        new(SQLite3::Database.new(path))
+        db = SQLite3::Database.new(path)
+        db.execute('PRAGMA journal_mode = WAL') unless path == ':memory:'
+        new(db)
       end
 
       attr_reader :db
@@ -26,6 +32,11 @@ module EasySync
         @clock = clock
         db.results_as_hash = true
         db.execute('PRAGMA foreign_keys = ON')
+        # WAL means several connections (Jbod::ScrubPool's workers) hold the
+        # write lock only briefly, one at a time; without a busy_timeout a
+        # connection that loses the race gets SQLITE_BUSY immediately instead
+        # of waiting its turn.
+        db.busy_timeout = 30_000
         migrate!
       end
 
@@ -79,7 +90,7 @@ module EasySync
       def swap_drive_names(serial_a, serial_b)
         a = drive(serial_a) or raise UnknownDrive, "no drive registered with serial #{serial_a}"
         b = drive(serial_b) or raise UnknownDrive, "no drive registered with serial #{serial_b}"
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', ["__renaming__#{serial_a}", serial_a])
           db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [a.friendly_name, serial_b])
           db.execute('UPDATE drives SET friendly_name = ? WHERE serial_number = ?', [b.friendly_name, serial_a])
@@ -231,7 +242,7 @@ module EasySync
         ensure_drive!(drive_serial)
         raise DuplicateFolder, "#{folder_path} is already assigned" if folder(folder_path)
 
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute(<<~SQL, [folder_path, drive_serial, size_bytes, at])
             INSERT INTO folders (folder_path, drive_serial, size_bytes, assigned_at) VALUES (?, ?, ?, ?)
           SQL
@@ -253,7 +264,7 @@ module EasySync
         current = folder(folder_path) or raise UnknownFolder, "#{folder_path} is not in the manifest"
         return current if current.drive_serial == new_drive_serial
 
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute(<<~SQL, [new_drive_serial, at, folder_path])
             UPDATE folders SET drive_serial = ?, assigned_at = ?, last_synced_at = NULL, last_sync_status = NULL
              WHERE folder_path = ?
@@ -279,7 +290,7 @@ module EasySync
 
       def remove_folder(folder_path, note: nil, at: now)
         current = folder(folder_path) or raise UnknownFolder, "#{folder_path} is not in the manifest"
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute('DELETE FROM folders WHERE folder_path = ?', [folder_path])
           record_history(folder_path, current.drive_serial, 'removed', note, at)
         end
@@ -314,7 +325,7 @@ module EasySync
                       bytes_transferred: nil, total_size_bytes: nil)
         status = exit_status.zero? ? 'ok' : 'failed'
         params = [folder_path, drive_serial, started_at, finished_at, exit_status, bytes_transferred, total_size_bytes]
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute(<<~SQL, params)
             INSERT INTO sync_runs (folder_path, drive_serial, started_at, finished_at, exit_status,
                                    bytes_transferred, total_size_bytes)
@@ -358,7 +369,7 @@ module EasySync
       # Replaces the inventory with what this run saw. +rows+ are hashes with
       # folder_path, size_bytes, state ('placed' | 'unplaced' | 'empty'), detail.
       def replace_source_inventory(rows, at: now)
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute('DELETE FROM source_inventory')
           rows.each do |r|
             db.execute('INSERT INTO source_inventory (folder_path, size_bytes, state, detail, seen_at) VALUES (?, ?, ?, ?, ?)',
@@ -383,7 +394,7 @@ module EasySync
         keys = missing.map(&:first)
         counts = { new: 0, still: 0, reappeared: 0 }
         drive_serial = folder(folder_path)&.drive_serial
-        db.transaction do
+        db.transaction(:immediate) do
           existing.each_key do |rel|
             next if keys.include?(rel)
 
@@ -429,7 +440,7 @@ module EasySync
       # Moves a candidate into the audit log once it has actually been removed.
       def record_deletion(pending, drive_serial:, at: now)
         params = [pending.folder_path, pending.relative_path, pending.kind, drive_serial, pending.first_missing_at, at]
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute(<<~SQL, params)
             INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -485,7 +496,7 @@ module EasySync
       def reconcile_checksums(drive_serial, folder_path, found)
         existing = checksum_rows(drive_serial, folder_path).to_h { |r| [r.relative_path, r] }
         added = removed = changed = 0
-        db.transaction do
+        db.transaction(:immediate) do
           found.each do |rel, (size, mtime)|
             row = existing[rel]
             if row.nil?
@@ -735,7 +746,7 @@ module EasySync
       end
 
       def migrate_to_v1!
-        db.transaction do
+        db.transaction(:immediate) do
           db.execute_batch(<<~SQL)
             CREATE TABLE IF NOT EXISTS drives (
               serial_number   TEXT PRIMARY KEY,

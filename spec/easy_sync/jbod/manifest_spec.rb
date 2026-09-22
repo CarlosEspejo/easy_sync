@@ -20,8 +20,10 @@ RSpec.describe EasySync::Jbod::Manifest do
       manifest.register_drive(serial_number: 'A', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
       path = File.join(temp_dir, 'copy', 'manifest.sqlite3')
       manifest.backup_to(path)
-      expect(described_class.open(path).drives.map(&:serial_number)).to eq(['A'])
       expect(Dir.children(File.dirname(path))).to eq(['manifest.sqlite3'])   # no .tmp left behind
+      # opening the copy switches it to WAL, which drops -wal/-shm sidecars next
+      # to it; cosmetic (see Manifest.open), not evidence of anything left behind.
+      expect(described_class.open(path).drives.map(&:serial_number)).to eq(['A'])
     end
 
     it 'persists to a file via .open' do
@@ -30,6 +32,22 @@ RSpec.describe EasySync::Jbod::Manifest do
       m.register_drive(serial_number: 'A', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
       m.close
       expect(described_class.open(path).drives.map(&:friendly_name)).to eq(['backup-01-3tb'])
+    end
+
+    it 'switches a file-backed manifest to WAL, so several Jbod::ScrubPool connections can share it' do
+      path = File.join(temp_dir, 'wal', 'manifest.sqlite3')
+      m = described_class.open(path)
+      expect(m.db.get_first_value('PRAGMA journal_mode')).to eq('wal')
+    end
+
+    it 'leaves a :memory: manifest on its default journal mode (WAL needs a real file)' do
+      expect(manifest.db.get_first_value('PRAGMA journal_mode')).not_to eq('wal')
+    end
+
+    it 'sets a busy_timeout on every connection, file-backed or in-memory' do
+      path = File.join(temp_dir, 'busy', 'manifest.sqlite3')
+      expect(described_class.open(path).db.get_first_value('PRAGMA busy_timeout')).to eq(30_000)
+      expect(manifest.db.get_first_value('PRAGMA busy_timeout')).to eq(30_000)
     end
 
     it 'upgrades a real schema-v1 database (drives table with no model column) in place' do

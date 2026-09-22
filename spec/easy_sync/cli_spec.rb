@@ -775,7 +775,7 @@ RSpec.describe EasySync::CLI do
         m2.call(*args)
       end
 
-      expect(cli('scrub', '--all').run).to eq(0)
+      expect(cli('scrub', '--all', '--jobs', '1').run).to eq(0)
       expect(seen).to eq([[Process.pid.to_s, 'scrub', 'backup-01-3tb'], [Process.pid.to_s, 'scrub', 'backup-02-3tb']])
     end
 
@@ -855,7 +855,7 @@ RSpec.describe EasySync::CLI do
       m.checksum_hashed('S1', 'pro', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
       m.close
 
-      cli('scrub', '--all').run
+      cli('scrub', '--all', '--jobs', '1').run
       order = out.string.scan(/^backup-0[12]-\w+tb:/).map { |l| l.delete_suffix(':') }
       expect(order).to eq(['backup-02-6tb', 'backup-01-3tb'])   # never-scrubbed first
     end
@@ -871,7 +871,7 @@ RSpec.describe EasySync::CLI do
       m.assign_folder('stuff', 'S2')
       m.close
 
-      cli('scrub', 'backup-01-3tb', 'backup-02-6tb').run
+      cli('scrub', 'backup-01-3tb', 'backup-02-6tb', '--jobs', '1').run
       order = out.string.scan(/^backup-0[12]-\w+tb:/).map { |l| l.delete_suffix(':') }
       expect(order).to eq(['backup-01-3tb', 'backup-02-6tb'])
     end
@@ -923,6 +923,51 @@ RSpec.describe EasySync::CLI do
     it 'refuses when no mounted drive is available' do
       expect(cli('scrub').run).to eq(1)
       expect(err.string).to include('no mounted, non-retired drive to scrub')
+    end
+
+    it 'rejects --jobs 0 and a non-integer --jobs' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      expect(cli('scrub', '--jobs', '0').run).to eq(1)
+      expect(err.string).to include('positive integer')
+
+      expect(cli('scrub', '--jobs', '-1').run).to eq(1)
+      expect(cli('scrub', '--jobs', 'x').run).to eq(1)
+    end
+
+    it 'scrubs every mounted drive with --jobs 2 --all' do
+      vol2 = make_dirs(mount_root, 'backup-02-6tb').first
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      m.close
+
+      expect(cli('scrub', '--all', '--jobs', '2').run).to eq(0)
+      expect(manifest.checksum_rows('S1', 'pro').size).to eq(1)
+      expect(manifest.checksum_rows('S2', 'stuff').size).to eq(1)
+      expect(out.string).to include('· jobs 2 ·')
+    end
+
+    it 'status shows every drive a multi-line lock file names as scrubbing now, and print_run_status lists them' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      vol2 = make_dirs(mount_root, 'backup-02-3tb').first
+      register_and_mount(serial: 'S2', name: 'backup-02-3tb', vol: vol2)
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('stuff', 'S2')
+      m.record_sync(folder_path: 'pro', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.record_sync(folder_path: 'stuff', drive_serial: 'S2', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.close
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nscrub\nbackup-01-3tb\nbackup-02-3tb\n")
+
+      expect(cli('status').run).to eq(0)
+      expect(out.string.scan('scrubbing now').size).to eq(2)
+      expect(out.string).to include('Scrub running: pid', 'on backup-01-3tb, backup-02-3tb')
     end
   end
 

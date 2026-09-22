@@ -65,17 +65,34 @@ RSpec.describe EasySync::Jbod::RunLock do
   end
 
   describe '#note' do
-    it 'updates the third line without releasing the lock or touching the start time' do
+    it 'updates the lines from the third on without releasing the lock or touching the start time' do
       lock.acquire(kind: 'scrub') do
         mtime_before = File.mtime(path)
         lock.note('backup-08-2tb')
 
         expect(File.read(path).lines.map(&:strip)).to eq([Process.pid.to_s, 'scrub', 'backup-08-2tb'])
         expect(File.mtime(path)).to eq(mtime_before)
-        expect(lock.status.current).to eq('backup-08-2tb')
+        expect(lock.status.current).to eq(['backup-08-2tb'])
 
         lock.note('backup-01-8tb')
-        expect(lock.status.current).to eq('backup-01-8tb')
+        expect(lock.status.current).to eq(['backup-01-8tb'])
+      end
+    end
+
+    it 'writes one line per name, and reports them all as current' do
+      lock.acquire(kind: 'scrub') do
+        lock.note('backup-01-8tb', 'backup-03-8tb')
+
+        expect(File.read(path).lines.map(&:strip)).to eq([Process.pid.to_s, 'scrub', 'backup-01-8tb', 'backup-03-8tb'])
+        expect(lock.status.current).to eq(['backup-01-8tb', 'backup-03-8tb'])
+      end
+    end
+
+    it 'clears the active set back to empty when called with no names' do
+      lock.acquire(kind: 'scrub') do
+        lock.note('backup-08-2tb')
+        lock.note
+        expect(lock.status.current).to eq([])
       end
     end
 
@@ -97,8 +114,8 @@ RSpec.describe EasySync::Jbod::RunLock do
       expect(lock.status).to be_nil
     end
 
-    it 'has a nil current until #note has been called' do
-      lock.acquire(kind: 'scrub') { expect(lock.status.current).to be_nil }
+    it 'has an empty current until #note has been called' do
+      lock.acquire(kind: 'scrub') { expect(lock.status.current).to eq([]) }
     end
 
     it 'reports the pid and the lock file mtime as the start time while a live process holds it' do

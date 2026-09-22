@@ -247,6 +247,59 @@ RSpec.describe EasySync::Jbod::Scrubber do
     expect(out.string.lines.grep(%r{backup-04-8tb: 2/3 files, .* of .* \(\d+%\), [\d.]+ MB/s, ETA .*}).size).to eq(1)
   end
 
+  describe 'batched writes (Jbod::ScrubPool runs several of these against one manifest at once)' do
+    it 'flushes at each commit interval crossed, and once more at the end' do
+      write('a.mkv', 'aaa')
+      write('b.mkv', 'bbb')
+      write('c.mkv', 'ccc')
+
+      t = now
+      ticking = double('clock')
+      allow(ticking).to receive(:now) { t += 16 }
+      # started, last_commit, then one tick per row (+16 each): row 2's tick is
+      # 32s past last_commit, crossing COMMIT_INTERVAL (30s) exactly once, so
+      # one mid-run flush plus the final one in the ensure.
+      scrubber2 = described_class.new(manifest, excludes: [], clock: ticking, out: out)
+      flushes = 0
+      allow(manifest.db).to receive(:transaction).with(:immediate).and_wrap_original do |m, *args, &blk|
+        flushes += 1
+        m.call(*args, &blk)
+      end
+
+      scrubber2.run(mounted_drive)
+      # +1 for the walk phase's own reconcile_checksums transaction.
+      expect(flushes).to eq(3)
+      expect(rows.map(&:digest)).to all(be_a(String))
+    end
+
+    it 'flushes hash outcomes exactly once, at the end, when the clock never crosses the commit interval' do
+      write('a.mkv', 'aaa')
+      flushes = 0
+      allow(manifest.db).to receive(:transaction).with(:immediate).and_wrap_original do |m, *args, &blk|
+        flushes += 1
+        m.call(*args, &blk)
+      end
+
+      scrubber.run(mounted_drive)
+      # +1 for the walk phase's own reconcile_checksums transaction.
+      expect(flushes).to eq(2)
+    end
+
+    it 'flushes files completed before an Interrupt, leaving the interrupted file untouched' do
+      write('a.mkv', 'aaa')
+      path_b = write('b.mkv', 'bbb')
+      write('c.mkv', 'ccc')
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with(path_b, 'rb').and_raise(Interrupt)
+
+      expect { scrubber.run(mounted_drive) }.to raise_error(Interrupt)
+      by_path = rows.to_h { |r| [r.relative_path, r.digest] }
+      expect(by_path['a.mkv']).to be_a(String)
+      expect(by_path['b.mkv']).to be_nil
+      expect(by_path['c.mkv']).to be_nil
+    end
+  end
+
   it 'stops mid-run when the drive marker disappears, and does not touch the row about to be processed' do
     write('a.mkv', 'aaa')
     write('b.mkv', 'bbb')

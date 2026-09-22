@@ -32,4 +32,17 @@ RSpec.describe EasySync::Jbod::RunLog do
     described_class.open(dir, keep: 2, out: out, clock: clock).close
     expect(Dir.children(dir).sort).to eq(%w[sync-20260903-000000.log sync-20260913-123045.log unrelated.txt])
   end
+
+  it 'never interleaves lines when several threads (Jbod::ScrubPool workers) call #puts at once' do
+    log = described_class.open(dir, keep: 5, out: out, clock: clock)
+    threads = (1..8).map do |n|
+      Thread.new { 20.times { log.puts "thread #{n}: #{'x' * 40}" } }
+    end
+    threads.each(&:join)
+    log.close
+
+    lines = File.readlines(log.path)
+    expect(lines.size).to eq(160)
+    expect(lines).to all(match(/\Athread \d: x{40}\n\z/))
+  end
 end

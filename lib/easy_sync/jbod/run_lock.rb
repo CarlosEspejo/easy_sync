@@ -11,18 +11,18 @@ module EasySync
     # forever. The file's second line names which command holds it, so
     # `status`/the dashboard can say "Scrub running" instead of assuming sync;
     # a lock file with no second line (written before this existed) reads as
-    # 'sync', its original and only kind. An optional third line is free text
-    # the holder can update as it goes (`scrub` uses it for the drive it's
-    # currently on) without disturbing the mtime that #status reads as the
-    # run's start time.
+    # 'sync', its original and only kind. Every line from the third on is free
+    # text the holder can update as it goes (Jbod::ScrubPool uses one line per
+    # drive its workers are currently on) without disturbing the mtime that
+    # #status reads as the run's start time.
     class RunLock
       class AlreadyRunning < Error; end
 
       # pid: the process holding the lock. started_at: the lock file's mtime,
       # which is set once when it's written and never touched again for the
       # life of the run, so it doubles as the run's start time. kind: 'sync',
-      # 'scrub', 'clean', or 'restore'. current: the holder's free-form
-      # progress note (see #note), or nil if it hasn't set one.
+      # 'scrub', 'clean', or 'restore'. current: an Array of the holder's
+      # free-form progress notes (see #note), empty if it hasn't set any.
       Status = Struct.new(:pid, :started_at, :kind, :current, keyword_init: true)
 
       def initialize(path)
@@ -46,14 +46,15 @@ module EasySync
         end
       end
 
-      # Updates the free-form third line without touching the file's mtime
-      # (the run's recorded start time) or releasing the lock. A no-op unless
-      # this process is the one actually holding it.
-      def note(text)
+      # Replaces the free-form lines from the third on (one per +names+, empty
+      # to clear them) without touching the file's mtime (the run's recorded
+      # start time) or releasing the lock. A no-op unless this process is the
+      # one actually holding it.
+      def note(*names)
         return unless File.exist?(@path) && pid_in_file == Process.pid
 
         mtime = File.mtime(@path)
-        File.write(@path, "#{Process.pid}\n#{kind_in_file}\n#{text}\n")
+        File.write(@path, "#{[Process.pid, kind_in_file, *names].join("\n")}\n")
         File.utime(mtime, mtime, @path)
       end
 
@@ -90,8 +91,7 @@ module EasySync
       end
 
       def current_in_file
-        line = File.read(@path).lines[2]
-        line&.strip
+        File.read(@path).lines.drop(2).map(&:strip).reject(&:empty?)
       end
     end
   end

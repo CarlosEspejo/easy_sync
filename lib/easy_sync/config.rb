@@ -24,6 +24,7 @@ module EasySync
       grace_days: 7,        # ...at least this many days
       grace_runs: 2,        # ...and confirmed missing on at least this many separate runs
       scrub_stale_days: 30, # a drive is overdue for `scrub` once it's been this long since it was last fully checked
+      scrub_jobs: 4,        # `scrub --all`/named targets scrub this many drives at once by default
       # Names skipped when choosing folders to place AND passed to every rsync as
       # --exclude, so they are never copied at any depth (Synology recycle bins and
       # thumbnail dirs, Synology Drive's .sync, macOS metadata, SMB leftovers).
@@ -47,6 +48,7 @@ module EasySync
       grace_days: '...this many days missing on the NAS',
       grace_runs: '...confirmed on this many separate runs',
       scrub_stale_days: 'a drive is overdue for `scrub` after this many days unchecked',
+      scrub_jobs: '`scrub --all`/named targets scrub this many drives at once by default',
       exclude_folders: 'never placed, and excluded from every rsync at any depth',
       rsync_args: 'extra arguments appended to every rsync'
     }.freeze
@@ -67,6 +69,7 @@ module EasySync
       :grace_days: 7                          # ...this many days missing on the NAS
       :grace_runs: 2                          # ...confirmed on this many separate runs
       :scrub_stale_days: 30                   # a drive is overdue for `scrub` after this many days unchecked
+      :scrub_jobs: 4                          # `scrub --all`/named targets scrub this many drives at once by default
       :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                          ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
       :rsync_args: []                         # extra arguments appended to every rsync

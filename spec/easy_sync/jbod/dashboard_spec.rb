@@ -202,12 +202,21 @@ RSpec.describe EasySync::Jbod::Dashboard do
 
   it "shows a drive tile as scrubbing now while a running scrub is on it, instead of never/last scrubbed" do
     running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'scrub', started_at: Time.utc(2026, 9, 13, 11, 45, 0),
-                                                  current: 'backup-01-3tb')
+                                                  current: ['backup-01-3tb'])
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)], running: running)
 
     expect(html).to match(/backup-01-3tb[\s\S]*?scrubbing now/)
     expect(html).not_to match(/backup-01-3tb[\s\S]{0,200}never scrubbed/)
     expect(html).to match(/backup-04-8tb[\s\S]*?never scrubbed/)   # untouched: the run is on a different drive
+  end
+
+  it 'shows two drive tiles as scrubbing now when Jbod::ScrubPool has both active at once' do
+    running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'scrub', started_at: Time.utc(2026, 9, 13, 11, 45, 0),
+                                                  current: ['backup-01-3tb', 'backup-04-8tb'])
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)], running: running)
+
+    expect(html).to match(/backup-01-3tb[\s\S]*?scrubbing now/)
+    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbing now/)
   end
 
   it 'lists scrub findings next to pending deletions, with the right next-step phrase for each' do

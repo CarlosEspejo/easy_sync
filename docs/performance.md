@@ -90,6 +90,28 @@ All 8 drives reading at about 190 MB/s together would use about 1,500 MB/s,
 roughly 30% of the link. So scrubbing several drives in parallel would not be
 limited by bandwidth, if that is ever wanted.
 
+Measured on 2026-09-21 with `scrub --jobs N` (docs/parallel-scrub.md), Scrubber's
+own read path (8 MB `File#read` chunks, `F_NOCACHE`), cold files, all in the
+ThunderBay 8:
+
+| drives at once | per-drive MB/s | aggregate MB/s |
+|---|---|---|
+| 1 | 169-191 | ~180 |
+| 2 | 169, 202 | ~350 |
+| 4 (7-9 GB files each) | 184, 180, 173, 172 | **641** (90% of the sum of solo speeds) |
+
+Re-measured on 2026-09-21 against the real ThunderBay 8 fleet (all 8 active
+drives, `--jobs 4`/`--jobs 8 --for 3m`, resuming from wherever each drive's
+last check left off - so file sizes and cache state vary by drive):
+
+| drives at once | per-drive MB/s | aggregate MB/s |
+|---|---|---|
+| 4 | 205, 181, 194, 202 | ~782 |
+| 8 | 120, 154, 147, 147, 162, 135, 172, 137 | **~1175** (6.5x one drive; confirmed with `iostat -w`) |
+
+8-way scales as well as 4-way did, with the enclosure's bandwidth headroom
+above easily covering it. CPU is never the limit (see "Hash speed" below).
+
 ## Hash speed (Apple Silicon)
 
 SHA-256 2514 MB/s, SHA-1 2486, MD5 763. Apple Silicon speeds up SHA but not
