@@ -570,11 +570,33 @@ module EasySync
           @out.puts "  #{d.friendly_name.ljust(16)} #{label}"
         end
       end
+      print_scrubbing_progress(run)
       findings = manifest.scrub_findings.size
       return unless findings.positive?
 
       @out.puts "\n#{findings} file#{'s' if findings != 1} flagged by scrub (corrupt, unreadable, or unresolved); " \
                 'run `easy_sync scrub` to work through them.'
+    end
+
+    # How far each currently-scrubbing drive has gotten through this run:
+    # files verified since the run started, not files ever hashed (a drive
+    # scrubbed before already has an old digest for nearly everything, which
+    # would misleadingly read as "done" the instant this run started).
+    def print_scrubbing_progress(run)
+      return unless run&.kind == 'scrub' && run.current.any?
+
+      lines = run.current.filter_map do |name|
+        drive = manifest.drive_by_name(name) or next
+        progress = manifest.checksum_progress(drive.serial_number, since: run.started_at.utc.iso8601)
+        next if progress[:total].zero?
+
+        pct = ((100.0 * progress[:checked]) / progress[:total]).round
+        "  #{name.ljust(16)} #{progress[:checked]}/#{progress[:total]} files checked (#{pct}%)"
+      end
+      return if lines.empty?
+
+      @out.puts "\nScrubbing now:"
+      lines.each { |l| @out.puts l }
     end
 
     def scrub_overdue?(drive)

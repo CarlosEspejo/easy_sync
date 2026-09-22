@@ -717,4 +717,21 @@ RSpec.describe EasySync::Jbod::Manifest, 'file checksums (scrub)' do
       expect(manifest.scrubbed_through(serial)).to eq('2026-09-01T00:00:00Z')
     end
   end
+
+  describe '#checksum_progress' do
+    it 'counts only rows verified at or after the given time, not every row that happens to have a digest' do
+      manifest.reconcile_checksums(serial, 'movies/Heat (1995)', { 'a.mkv' => [1, 1], 'b.mkv' => [1, 1], 'c.mkv' => [1, 1] })
+      # a.mkv was baselined by an earlier scrub, long before the run we're
+      # asking about; only a fresh re-verification of it should count.
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-01-01T00:00:00Z')
+      manifest.checksum_hashed(serial, 'movies/Heat (1995)', 'b.mkv', outcome: :baseline, digest: 'y', at: '2026-09-10T00:00:05Z')
+
+      progress = manifest.checksum_progress(serial, since: '2026-09-10T00:00:00Z')
+      expect(progress).to eq(checked: 1, total: 3)
+    end
+
+    it 'is zero of zero for a drive with no tracked rows' do
+      expect(manifest.checksum_progress(serial, since: '2026-09-10T00:00:00Z')).to eq(checked: 0, total: 0)
+    end
+  end
 end
