@@ -290,6 +290,19 @@ RSpec.describe EasySync::CLI do
       expect(out.string.scan('backup-02-6tb').size).to eq(1)   # only in the drive table, not the overdue list
     end
 
+    it 'says scrubbing now instead of never scrubbed for the drive a running scrub is currently on' do
+      m = manifest
+      m.record_sync(folder_path: 'Photos', drive_serial: 'S1', started_at: 't0', finished_at: 't1', exit_status: 0)
+      m.close
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nscrub\nbackup-01-3tb\n")
+
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('backup-01-3tb', 'scrubbing now')
+      expect(out.string).not_to include('never scrubbed')
+    end
+
     it 'reports the fleet-wide count of scrub findings, with a pointer to `scrub`' do
       m = manifest
       m.reconcile_checksums('S1', 'Photos', { 'a.jpg' => [1, 1] })
@@ -324,6 +337,18 @@ RSpec.describe EasySync::CLI do
 
       expect(cli('status', clock: double('clock', now: started + (3 * 86_400) + (5 * 3600))).run).to eq(0)
       expect(out.string).to include('3d 5h ago')
+    end
+
+    it 'says Scrub running, not Sync, and omits the sync ETA, while a scrub holds the shared lock' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nscrub\n")
+      started = Time.utc(2026, 9, 13, 10, 0, 0)
+      File.utime(started, started, lock_path)
+
+      expect(cli('status', clock: double('clock', now: started + (34 * 60))).run).to eq(0)
+      expect(out.string).to include("Scrub running: pid #{Process.pid}", '34m 0s ago')
+      expect(out.string).not_to include('Sync running', 'Estimating time remaining')
     end
 
     describe 'estimating time remaining for a sync in progress' do
@@ -408,6 +433,18 @@ RSpec.describe EasySync::CLI do
 
       expect(cli('dashboard').run).to eq(0)
       expect(File.read(dashboard_path)).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
+    end
+
+    it 'says Scrub in progress, not Sync, while a scrub holds the shared lock' do
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nscrub\n")
+      File.utime(Time.now, Time.now, lock_path)
+
+      expect(cli('dashboard').run).to eq(0)
+      html = File.read(dashboard_path)
+      expect(html).to match(/Scrub in progress \(started .* ago\)\./)
+      expect(html).not_to include('Sync in progress')
     end
   end
 
@@ -718,6 +755,28 @@ RSpec.describe EasySync::CLI do
       expect(rows.size).to eq(1)
       expect(rows.first.digest).not_to be_nil
       expect(out.string).to include('backup-01-3tb:')
+    end
+
+    it 'notes which drive it is currently on, so `status` can say "scrubbing now" instead of guessing' do
+      register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
+      vol2 = make_dirs(mount_root, 'backup-02-3tb').first
+      register_and_mount(serial: 'S2', name: 'backup-02-3tb', vol: vol2)
+      write_file(File.join(vol, 'pro', 'a.mkv'), 'hello')
+      write_file(File.join(vol2, 'pro2', 'b.mkv'), 'world')
+      m = manifest
+      m.assign_folder('pro', 'S1')
+      m.assign_folder('pro2', 'S2')
+      m.close
+
+      lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
+      seen = []
+      allow_any_instance_of(EasySync::Jbod::Scrubber).to receive(:run).and_wrap_original do |m2, *args|
+        seen << File.read(lock_path).lines.map(&:strip)
+        m2.call(*args)
+      end
+
+      expect(cli('scrub', '--all').run).to eq(0)
+      expect(seen).to eq([[Process.pid.to_s, 'scrub', 'backup-01-3tb'], [Process.pid.to_s, 'scrub', 'backup-02-3tb']])
     end
 
     it 'exits non-zero when a file ends the run corrupt, unreadable or unresolved' do
