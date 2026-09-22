@@ -735,3 +735,47 @@ RSpec.describe EasySync::Jbod::Manifest, 'file checksums (scrub)' do
     end
   end
 end
+
+RSpec.describe EasySync::Jbod::Manifest, 'benchmarks' do
+  let(:manifest) { memory_manifest }
+
+  before do
+    manifest.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+    manifest.register_drive(serial_number: 'S2', friendly_name: 'backup-02-6tb', capacity_bytes: 6 * TB)
+  end
+
+  def record(serial, day, write: 200.0)
+    manifest.record_benchmark(serial, bytes: 8 * GB, write_mb_s: write, read_mb_s: 210.0, used_bytes: 2 * TB,
+                                      at: format('2026-09-%02dT12:00:00Z', day))
+  end
+
+  it 'returns a drive\'s runs newest first, and nothing for a drive never benchmarked' do
+    record('S1', 1, write: 190.0)
+    record('S1', 2, write: 195.5)
+    expect(manifest.benchmarks('S1').map(&:write_mb_s)).to eq([195.5, 190.0])
+    expect(manifest.benchmarks('S1').first).to have_attributes(bytes: 8 * GB, read_mb_s: 210.0, used_bytes: 2 * TB)
+    expect(manifest.last_benchmarked_at('S1')).to eq('2026-09-02T12:00:00Z')
+    expect(manifest.benchmarks('S2')).to eq([])
+    expect(manifest.last_benchmarked_at('S2')).to be_nil
+  end
+
+  it "keeps only the newest BENCHMARKS_KEPT runs per drive, without touching another drive's" do
+    (1..(described_class::BENCHMARKS_KEPT + 3)).each { |day| record('S1', day) }
+    record('S2', 1)
+    runs = manifest.benchmarks('S1')
+    expect(runs.size).to eq(described_class::BENCHMARKS_KEPT)
+    expect(runs.last.run_at).to eq('2026-09-04T12:00:00Z')
+    expect(manifest.benchmarks('S2').size).to eq(1)
+  end
+
+  it 'refuses a run for an unregistered drive' do
+    expect { record('nope', 1) }.to raise_error(described_class::UnknownDrive)
+  end
+
+  it 'adds the table to an existing manifest that predates it' do
+    db = manifest.db
+    db.execute('DROP TABLE drive_benchmarks')
+    described_class.new(db)
+    expect { record('S1', 1) }.not_to raise_error
+  end
+end

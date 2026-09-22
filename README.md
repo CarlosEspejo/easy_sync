@@ -330,6 +330,34 @@ and leave it; a full pass over the whole fleet takes a while (SHA-256 itself
 runs at gigabytes/second, so a spinning drive's read speed is the limit, not
 the hashing).
 
+Drive speed: `benchmark`
+------------------------
+
+A drive whose write or read speed is falling can be on its way out before
+SMART says anything. `benchmark` measures it so it can be tracked:
+
+    easy_sync benchmark                  # the drive benchmarked longest ago (never, first)
+    easy_sync benchmark backup-04-8tb    # a specific drive
+    easy_sync benchmark --all            # every mounted, non-retired drive, one at a time
+    easy_sync benchmark --size 2gb       # a smaller test file (default 8gb)
+    easy_sync benchmark --history        # the kept runs for every drive, newest first
+
+It writes a test file of random data into the drive's `.easy_sync/` folder,
+bypassing the page cache and timing the closing `fsync`, reads it back
+straight off the platter, and deletes it (also on Ctrl-C or an error).
+Nothing else on the drive is touched. The last 25 runs per drive are kept and
+each new one is compared with the median of the drive's earlier runs. Once
+there are 3 earlier runs, a result more than 15% below that median is
+flagged **SLOWER** and the command exits 1. Runs normally vary by about 7%, so
+re-run before worrying. A drive that has filled up since writes to slower
+inner tracks, so each run also records how full the drive was.
+
+Drives are measured one at a time: several at once would share the
+enclosure and skew each other. A drive without room for the test file plus
+`reserve` is skipped. `benchmark` takes the same lock as `sync` and `scrub`,
+so it never measures a drive that something else is using. How to read the
+numbers, and the baselines they're compared with: docs/performance.md.
+
 Long runs
 ---------
 
@@ -418,6 +446,7 @@ Commands
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
+| `benchmark [NAME ...] \| --all [--size SIZE] [--history]` | time a drive's sequential write and read, compared with its own last 25 runs; flags one that has slowed down |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER DRIVE [--note TEXT] [--force]` | point a folder at a different drive (moves no data); refuses a drive without room unless `--force` |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
@@ -434,7 +463,7 @@ Where things live
 | `manifest.sqlite3` | `manifest.sqlite3`, a copy as of the last sync |
 | `dashboard.html` | `config.yml`, a copy as of the last sync |
 | `logs/sync-*.log`, `logs/scrub-*.log` | `README.txt` |
-| `jbod.lock` while a sync or scrub runs | |
+| `jbod.lock` while a sync, scrub or benchmark runs | `benchmark.tmp`, only while `benchmark` runs |
 
 Manifest schema
 ---------------
@@ -451,6 +480,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |
 | `deletions` | audit log of everything actually removed from a drive |
+| `drive_benchmarks` | the last 25 `benchmark` runs per drive: when, test size, write and read MB/s, how full the drive was |
 | `file_checksums` | one row per tracked file per drive: size, mtime, SHA-256 baseline, status (`ok`/`corrupt`/`unreadable`/`unresolved`), when it last failed or was refetched |
 
 Development

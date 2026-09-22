@@ -71,6 +71,10 @@ Runs vary by about ±7%, so smaller differences than that aren't real.
 backup-04 really is about 14% faster than the identical backup-01, across
 three runs. Even the slowest drive writes at 1.8× the sync rate.
 
+`easy_sync benchmark` measures each drive this way (8 GB by default) and
+keeps the last 25 runs per drive, so these numbers can be re-measured and
+tracked rather than read off this table once.
+
 How to benchmark a drive so the result is real:
 
 - With 24 GB of RAM, a test smaller than RAM measures the buffer cache, not

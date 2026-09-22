@@ -177,11 +177,14 @@ assumptions, they cannot check them.
   `split: false`. The NAS side limits sync speed, never the drives; Time
   Machine (backing up to the same Synology) is the first thing to check when
   a sync looks slow. Numbers and method: docs/performance.md.
-- **Wanted: an `easy_sync benchmark` command**, keeping the last 25 runs so
-  drive performance can be tracked over time rather than measured once. A
-  falling write rate on one drive is an early failure signal that SMART won't
-  necessarily show. How to measure correctly (it's easy to benchmark the
-  buffer cache by mistake) and the baseline numbers: docs/performance.md.
+- `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last
+  25 runs per drive). It was checked on `jbod-test-1` on 2026-09-22: 1.5 GB test
+  file, write 86-99 MB/s, read ~163 MB/s (close to scrub's ~150 MB/s on it, so
+  the page cache was bypassed), and Ctrl-C removed the test file. It has not
+  been run on the real fleet yet. The first `benchmark --all` gives each drive
+  its first entry; a SLOWER flag needs 3 earlier runs. It reports MiB/s (as
+  scrub does); the 8 GB table in docs/performance.md doesn't say whether it
+  used MB or MiB (~5% apart), so compare against it loosely.
 - `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
   someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
   tag, publishes). Not done yet as of this writing.
