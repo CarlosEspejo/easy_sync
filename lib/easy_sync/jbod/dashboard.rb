@@ -32,9 +32,12 @@ module EasySync
       # +mounted+ is the list of MountedDrive structs from the current run;
       # drives not in it are rendered with their last known numbers.
       # +source_status+ maps folder_path => :present | :missing for folders seen on the NAS.
-      # +started_at+ is the running sync's start time (from RunLock), or nil
-      # when nothing is running - only then is an ETA estimated and shown.
-      def render(mounted: [], source_status: {}, loose_files: [], started_at: nil)
+      # +running+ is the RunLock::Status of whatever holds the run lock (sync,
+      # scrub, clean, or restore all share it), or nil when nothing is
+      # running. An ETA is only estimated for a real sync; the others just
+      # say how long they've been going (see #other_running_line).
+      def render(mounted: [], source_status: {}, loose_files: [], running: nil)
+        @running = running
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         drives = manifest.drives.map { |d| drive_view(d, by_serial[d.serial_number]) }
         locals = {
@@ -53,7 +56,8 @@ module EasySync
           inventory: manifest.source_inventory,
           deletions: manifest.deletions(limit: 30),
           scrub_findings: manifest.scrub_findings,
-          eta: started_at ? SyncEta.for(manifest, started_at) : nil
+          running: running,
+          eta: running&.kind == 'sync' ? SyncEta.for(manifest, running.started_at) : nil
         }
         scope = binding
         locals.each { |name, value| scope.local_variable_set(name, value) }
@@ -108,6 +112,12 @@ module EasySync
           "About #{Placement.format_duration(eta.seconds)} remaining (#{eta.never_synced_count} folder#{'s' if eta.never_synced_count != 1} never synced, " \
             "#{eta.to_reverify} to re-verify) - rough estimate, NAS/network speed varies."
         end
+      end
+
+      # For scrub/clean/restore holding the shared lock: none of those have a
+      # sync-style ETA, so just say how long the run has been going.
+      def other_running_line(running)
+        "#{running.kind.capitalize} in progress (started #{Placement.format_duration(@clock.now - running.started_at)} ago)."
       end
 
       # The mount path is only news when macOS mounted the drive somewhere
@@ -231,12 +241,18 @@ module EasySync
         p.reassigned? ? "moved off #{names.fetch(p.drive_serial, p.drive_serial)}" : p.kind
       end
 
-      # "scrubbed N days ago" or "never scrubbed", shown on every drive tile
-      # regardless of whether it's overdue.
+      # "scrubbing now", "scrubbed N days ago", or "never scrubbed", shown on
+      # every drive tile regardless of whether it's overdue.
       def scrub_status_line(view)
+        return 'scrubbing now' if scrubbing?(view)
+
         through = manifest.scrubbed_through(view.drive.serial_number)
         through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
       end
+
+      # True while a running `scrub` (RunLock#kind) is currently on this
+      # drive - set via RunLock#note as scrub works through its targets.
+      def scrubbing?(view) = @running&.kind == 'scrub' && @running.current == view.drive.friendly_name
 
       # Same overdue rule as `status`: something has to have actually synced
       # to the drive first, so a brand-new empty drive is never overdue.

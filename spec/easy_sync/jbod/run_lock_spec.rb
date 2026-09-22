@@ -8,11 +8,15 @@ RSpec.describe EasySync::Jbod::RunLock do
     ran = false
     lock.acquire do
       expect(File).to exist(path)
-      expect(File.read(path)).to eq(Process.pid.to_s)
+      expect(File.read(path).lines.map(&:strip)).to eq([Process.pid.to_s, 'sync'])
       ran = true
     end
     expect(ran).to be true
     expect(File).not_to exist(path)
+  end
+
+  it 'records which command holds the lock' do
+    lock.acquire(kind: 'scrub') { expect(File.read(path).lines.map(&:strip)).to eq([Process.pid.to_s, 'scrub']) }
   end
 
   it 'creates parent directories as needed' do
@@ -60,9 +64,41 @@ RSpec.describe EasySync::Jbod::RunLock do
     expect(File.read(path)).to eq('424242')
   end
 
+  describe '#note' do
+    it 'updates the third line without releasing the lock or touching the start time' do
+      lock.acquire(kind: 'scrub') do
+        mtime_before = File.mtime(path)
+        lock.note('backup-08-2tb')
+
+        expect(File.read(path).lines.map(&:strip)).to eq([Process.pid.to_s, 'scrub', 'backup-08-2tb'])
+        expect(File.mtime(path)).to eq(mtime_before)
+        expect(lock.status.current).to eq('backup-08-2tb')
+
+        lock.note('backup-01-8tb')
+        expect(lock.status.current).to eq('backup-01-8tb')
+      end
+    end
+
+    it 'is a no-op when this process does not hold the lock' do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "999999\nscrub\n") # some other (dead) process's lock
+
+      lock.note('backup-08-2tb')
+      expect(File.read(path)).to eq("999999\nscrub\n")
+    end
+
+    it 'is a no-op when there is no lock file' do
+      expect { lock.note('backup-08-2tb') }.not_to raise_error
+    end
+  end
+
   describe '#status' do
     it 'is nil when no lock file exists' do
       expect(lock.status).to be_nil
+    end
+
+    it 'has a nil current until #note has been called' do
+      lock.acquire(kind: 'scrub') { expect(lock.status.current).to be_nil }
     end
 
     it 'reports the pid and the lock file mtime as the start time while a live process holds it' do
@@ -72,6 +108,17 @@ RSpec.describe EasySync::Jbod::RunLock do
       status = lock.status
       expect(status.pid).to eq(Process.pid)
       expect(status.started_at).to eq(File.mtime(path))
+    end
+
+    it "defaults to kind 'sync' for a lock file with no second line (written before scrub existed)" do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, Process.pid.to_s)
+
+      expect(lock.status.kind).to eq('sync')
+    end
+
+    it 'reports the kind the run was acquired with' do
+      lock.acquire(kind: 'scrub') { expect(lock.status.kind).to eq('scrub') }
     end
 
     it 'is nil for a stale lock left by a process that is no longer running' do

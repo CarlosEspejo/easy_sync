@@ -115,7 +115,9 @@
     <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
     <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
     <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> placed<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
-<%- if (eta_text = eta_line(eta)) -%>
+<%- if running && running.kind != 'sync' -%>
+  <p class="eta"><%= h other_running_line(running) %></p>
+<%- elsif (eta_text = eta_line(eta)) -%>
   <p class="eta">Sync in progress: <%= h eta_text %></p>
 <%- end -%>
 

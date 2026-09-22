@@ -162,7 +162,7 @@ module EasySync
         o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
       end.parse!(args)
       version = Jbod::Mirror.check_version!(@shell)
-      Jbod::RunLock.new(settings[:lock_path]).acquire do
+      Jbod::RunLock.new(settings[:lock_path]).acquire(kind: 'sync') do
         log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock)
         begin
           log.puts "easy_sync #{VERSION} · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')} · rsync #{version}" \
@@ -190,8 +190,8 @@ module EasySync
       dry_run = false
       OptionParser.new { |o| o.on('--dry-run', 'List what would be removed') { dry_run = true } }.parse!(args)
       # A dry run only reads, so it may look while a sync is running.
-      lock = dry_run ? ->(&blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
-      lock.call do
+      lock = dry_run ? ->(**, &blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
+      lock.call(kind: 'clean') do
         mounted = volume_info.mounted_drives(manifest.drives)
         raise Error, 'no registered drive is mounted' if mounted.empty?
 
@@ -226,7 +226,8 @@ module EasySync
 
       findings = false
       stopped = []
-      Jbod::RunLock.new(settings[:lock_path]).acquire do
+      lock = Jbod::RunLock.new(settings[:lock_path])
+      lock.acquire(kind: 'scrub') do
         log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock, prefix: 'scrub')
         begin
           log.puts "easy_sync #{VERSION} scrub · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')}" \
@@ -235,6 +236,7 @@ module EasySync
           scrubber = Jbod::Scrubber.new(manifest, excludes: settings[:exclude_folders], clock: @clock, out: log,
                                         deadline: deadline, dry_run: opts[:dry_run])
           targets.each do |mounted_drive|
+            lock.note(mounted_drive.friendly_name)
             result = scrubber.run(mounted_drive)
             findings ||= result.findings?
             stopped << "#{result.drive} #{result.stopped_reason == :deadline ? 'hit the --for deadline' : 'was unmounted'}" if result.stopped_reason
@@ -522,9 +524,9 @@ module EasySync
       folders = opts[:all] ? manifest.folders : restorer.resolve(args)
       raise Error, 'nothing to restore' if folders.empty?
 
-      lock = opts[:dry_run] ? ->(&blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
+      lock = opts[:dry_run] ? ->(**, &blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
       result = nil
-      lock.call { result = restorer.run(folders, volume_info.mounted_drives(manifest.drives), dry_run: opts[:dry_run]) }
+      lock.call(kind: 'restore') { result = restorer.run(folders, volume_info.mounted_drives(manifest.drives), dry_run: opts[:dry_run]) }
       @out.puts "\n#{opts[:dry_run] ? 'Would restore' : 'Restored'} #{result.restored.size}, " \
                 "skipped #{result.skipped.size}, failed #{result.failed.size}"
     end
@@ -547,23 +549,28 @@ module EasySync
     def status(args)
       all = false
       OptionParser.new { |o| o.on('--all', 'List every placed folder, one per line (for piping)') { all = true } }.parse!(args)
-      print_run_status
+      run = Jbod::RunLock.new(settings[:lock_path]).status
+      print_run_status(run)
       print_drives(all)
       all ? print_all_folders : print_folder_summary
-      print_scrub_status
+      print_scrub_status(run)
     end
 
     # A drive is overdue once it's gone scrub_stale_days without a full
     # check (or never had one) and actually has something synced to it - an
     # empty new drive is not overdue. Alongside that, the fleet-wide count of
     # rows scrub has flagged as corrupt/unreadable/unresolved.
-    def print_scrub_status
+    def print_scrub_status(run)
       overdue = manifest.drives.select { |d| scrub_overdue?(d) }
       unless overdue.empty?
         @out.puts "\nOverdue for `scrub`:"
         overdue.each do |d|
-          through = manifest.scrubbed_through(d.serial_number)
-          label = through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
+          label = if run&.kind == 'scrub' && run.current == d.friendly_name
+                    'scrubbing now'
+                  else
+                    through = manifest.scrubbed_through(d.serial_number)
+                    through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
+                  end
           @out.puts "  #{d.friendly_name.ljust(16)} #{label}"
         end
       end
@@ -689,14 +696,18 @@ module EasySync
     end
 
     # A stale lock (its process no longer running) is reported as not running,
-    # the same way RunLock itself would reclaim it on the next `sync`.
-    def print_run_status
-      run = Jbod::RunLock.new(settings[:lock_path]).status
+    # the same way RunLock itself would reclaim it on the next `sync`. The
+    # lock is shared by sync/scrub/clean/restore (RunLock#kind), so this must
+    # say which one is actually running rather than assuming sync - the ETA
+    # estimate below is sync-specific and only makes sense for a real sync.
+    def print_run_status(run)
       if run
-        @out.puts "Sync running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
+        @out.puts "#{run.kind.capitalize} running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
                   "(#{format_elapsed(@clock.now - run.started_at)} ago)"
-        eta = sync_eta(run.started_at)
-        @out.puts eta if eta
+        if run.kind == 'sync'
+          eta = sync_eta(run.started_at)
+          @out.puts eta if eta
+        end
       else
         @out.puts 'No sync currently running.'
       end
@@ -842,7 +853,7 @@ module EasySync
       mounted = volume_info.mounted_drives(manifest.drives)
       run = Jbod::RunLock.new(settings[:lock_path]).status
       path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
-                            .write(settings[:dashboard_path], mounted: mounted, started_at: run&.started_at)
+                            .write(settings[:dashboard_path], mounted: mounted, running: run)
       @out.puts "Dashboard written to #{path}"
     end
   end

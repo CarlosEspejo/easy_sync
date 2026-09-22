@@ -35,9 +35,16 @@ RSpec.describe EasySync::Jbod::Dashboard do
   end
 
   it 'shows the ETA banner, phrased the same way as `status`, while a sync is running' do
-    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)],
-                            started_at: Time.utc(2026, 9, 13, 11, 45, 0))   # after Photos synced, nothing yet this run
+    running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'sync', started_at: Time.utc(2026, 9, 13, 11, 45, 0))
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)], running: running)
     expect(html).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
+  end
+
+  it 'shows a simple running banner, not the sync ETA, while a scrub holds the lock' do
+    running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'scrub', started_at: Time.utc(2026, 9, 13, 11, 45, 0))
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)], running: running)
+    expect(html).to include('<p class="eta">Scrub in progress (started 15m 0s ago).</p>')
+    expect(html).not_to include('Sync in progress')
   end
 
   it 'omits the capacity line when no drives are registered' do
@@ -191,6 +198,16 @@ RSpec.describe EasySync::Jbod::Dashboard do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
     expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 days ago/)
     expect(html).not_to match(/backup-04-8tb[\s\S]{0,200}overdue/)
+  end
+
+  it "shows a drive tile as scrubbing now while a running scrub is on it, instead of never/last scrubbed" do
+    running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'scrub', started_at: Time.utc(2026, 9, 13, 11, 45, 0),
+                                                  current: 'backup-01-3tb')
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)], running: running)
+
+    expect(html).to match(/backup-01-3tb[\s\S]*?scrubbing now/)
+    expect(html).not_to match(/backup-01-3tb[\s\S]{0,200}never scrubbed/)
+    expect(html).to match(/backup-04-8tb[\s\S]*?never scrubbed/)   # untouched: the run is on a different drive
   end
 
   it 'lists scrub findings next to pending deletions, with the right next-step phrase for each' do
