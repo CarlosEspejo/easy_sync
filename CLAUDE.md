@@ -156,6 +156,11 @@ assumptions, they cannot check them.
   ~200 MB/s, about 2 days. `easy_sync scrub --for 8h` fits an overnight
   window; `--all` works through every mounted, non-retired drive stalest
   first.
+- Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
+  and verified against the real ThunderBay 8 fleet on 2026-09-21: see
+  docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
+  8 at once at ~1175 MB/s (both confirmed with `iostat`); the default stays
+  4 since 8-way was only measured this one pass.
 - Measured sync throughput (62.9 MB/s aggregate; any change to `sync` must
   keep the aggregate at 50 MB/s or more), per-drive benchmarks, enclosure
   bandwidth and hash speeds: docs/performance.md.

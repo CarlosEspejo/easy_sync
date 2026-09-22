@@ -62,6 +62,7 @@ by hand:
 :grace_days: 7                          # ...this many days missing on the NAS
 :grace_runs: 2                          # ...confirmed on this many separate runs
 :scrub_stale_days: 30                   # a drive is overdue for `scrub` after this many days unchecked
+:scrub_jobs: 4                          # `scrub --all`/named targets scrub this many drives at once by default
 :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                    ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
                                         # never placed, and excluded from every rsync at any depth
@@ -296,14 +297,19 @@ don't know you need to go get.
     easy_sync scrub                 # the drive that's gone longest without a full check
     easy_sync scrub backup-04-8tb   # a specific drive
     easy_sync scrub --all           # every mounted, non-retired drive, stalest first
+    easy_sync scrub --all --jobs 8  # scrub this many drives at once (default: config scrub_jobs, 4)
     easy_sync scrub --for 8h        # stop after this long; the next scrub picks up where it left off
     easy_sync scrub --dry-run       # what would be hashed, without reading or writing anything
 
-`scrub` does one drive at a time, read-only: it walks the drive's assigned
-folders to track new/removed/legitimately-changed files, then reads each
-tracked file back off the platter (bypassing the page cache) and hashes it
-with SHA-256, comparing against the hash from the first time it was ever
-checked. A mismatch is reported as **corrupt**; a read error as
+`scrub` is read-only: it walks a drive's assigned folders to track
+new/removed/legitimately-changed files, then reads each tracked file back off
+the platter (bypassing the page cache) and hashes it with SHA-256, comparing
+against the hash from the first time it was ever checked. Naming several
+drives, or `--all`, scrubs up to `--jobs` of them at once (one thread per
+drive, never two on the same one) - each drive has its own read path, so
+several at a time add real throughput instead of contending with each other;
+`--jobs 1` scrubs them one at a time instead. A mismatch is reported as
+**corrupt**; a read error as
 **unreadable**. Nothing on the drive is ever touched - repair happens the
 other way around, in `sync`: once a folder's normal copy pass succeeds, any
 files `scrub` flagged for it are re-copied from the NAS with `rsync -I`
@@ -411,7 +417,7 @@ Commands
 | `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
-| `scrub [NAME ...] \| --all [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
+| `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER DRIVE [--note TEXT] [--force]` | point a folder at a different drive (moves no data); refuses a drive without room unless `--force` |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |

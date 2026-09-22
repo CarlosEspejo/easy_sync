@@ -21,7 +21,7 @@ module EasySync
       ['Maintain', [
         ['pending', 'deletion candidates and when each expires'],
         ['clean [--dry-run]', 'remove excluded junk (#recycle, .DS_Store, ...) from the drives now'],
-        ['scrub [NAME ...] [--all] [--for DURATION] [--dry-run] [--no-keep-awake]',
+        ['scrub [NAME ...] [--all] [--jobs N] [--for DURATION] [--dry-run] [--no-keep-awake]',
          'read every tracked file back off a drive and check it against its baseline; catches bit rot rsync cannot see'],
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER DRIVE_NAME [--note TEXT] [--force]', 'point a folder at a different drive (moves no data); refuses a drive without room unless --force'],
@@ -211,39 +211,35 @@ module EasySync
     # compares it to its SHA-256 baseline, catching bit rot that rsync's
     # quick size/mtime check cannot see. See docs/integrity-scan.md.
     def scrub(args)
-      opts = { dry_run: false, all: false, keep_awake: settings.fetch(:keep_awake, true) }
+      opts = { dry_run: false, all: false, keep_awake: settings.fetch(:keep_awake, true), jobs: settings[:scrub_jobs] }
       OptionParser.new do |o|
         o.on('--all', 'Scrub every mounted, non-retired drive, stalest first') { opts[:all] = true }
+        o.on('--jobs N', Integer, 'Scrub this many drives at once (default: config scrub_jobs)') { |v| opts[:jobs] = v }
         o.on('--for DURATION', 'Stop after this long (e.g. 90m, 8h, 2d); default runs to completion') { |v| opts[:for] = v }
         o.on('--dry-run', 'Walk and report what would be hashed, without hashing or writing anything') { opts[:dry_run] = true }
         o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
       end.parse!(args)
       raise Error, "scrub takes drive NAMEs or --all, not both\n\n#{USAGE}" if opts[:all] && args.any?
+      raise Error, '--jobs must be a positive integer' unless opts[:jobs].is_a?(Integer) && opts[:jobs].positive?
 
       deadline = opts[:for] ? @clock.now + parse_duration(opts[:for]) : nil
       targets = resolve_scrub_targets(args, all: opts[:all])
       raise Error, 'no mounted, non-retired drive to scrub' if targets.empty?
 
-      findings = false
-      stopped = []
+      results = []
       lock = Jbod::RunLock.new(settings[:lock_path])
       lock.acquire(kind: 'scrub') do
         log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock, prefix: 'scrub')
         begin
           log.puts "easy_sync #{VERSION} scrub · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')}" \
-                   "#{' · DRY RUN' if opts[:dry_run]} · log #{log.path}"
+                   "#{' · DRY RUN' if opts[:dry_run]}#{" · jobs #{opts[:jobs]}" if opts[:jobs] > 1} · log #{log.path}"
           log.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
-          scrubber = Jbod::Scrubber.new(manifest, excludes: settings[:exclude_folders], clock: @clock, out: log,
-                                        deadline: deadline, dry_run: opts[:dry_run])
-          targets.each do |mounted_drive|
-            lock.note(mounted_drive.friendly_name)
-            result = scrubber.run(mounted_drive)
-            findings ||= result.findings?
-            stopped << "#{result.drive} #{result.stopped_reason == :deadline ? 'hit the --for deadline' : 'was unmounted'}" if result.stopped_reason
-            next unless result.stopped_reason == :deadline
-
-            log.puts '--for deadline reached; stopping before the next drive (if any).'
-            break
+          pool = Jbod::ScrubPool.new(jobs: opts[:jobs], open_manifest: -> { Jbod::Manifest.open(settings[:manifest_path]) },
+                                     scrubber_options: { excludes: settings[:exclude_folders], dry_run: opts[:dry_run] },
+                                     lock: lock, clock: @clock, deadline: deadline, out: log)
+          results = pool.run(targets)
+          stopped = results.select(&:stopped_reason).map do |r|
+            "#{r.drive} #{r.stopped_reason == :deadline ? 'hit the --for deadline' : 'was unmounted'}"
           end
           if stopped.empty?
             log.puts 'Scrub finished (ran to completion, not interrupted).'
@@ -257,7 +253,7 @@ module EasySync
           log.close
         end
       end
-      findings ? 1 : 0
+      results.any?(&:findings?) ? 1 : 0
     end
 
     # Named drives, in the order given (an unknown or unmounted name is an
@@ -565,7 +561,7 @@ module EasySync
       unless overdue.empty?
         @out.puts "\nOverdue for `scrub`:"
         overdue.each do |d|
-          label = if run&.kind == 'scrub' && run.current == d.friendly_name
+          label = if run&.kind == 'scrub' && run.current.include?(d.friendly_name)
                     'scrubbing now'
                   else
                     through = manifest.scrubbed_through(d.serial_number)
@@ -702,8 +698,10 @@ module EasySync
     # estimate below is sync-specific and only makes sense for a real sync.
     def print_run_status(run)
       if run
-        @out.puts "#{run.kind.capitalize} running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
-                  "(#{format_elapsed(@clock.now - run.started_at)} ago)"
+        line = "#{run.kind.capitalize} running: pid #{run.pid}, started #{run.started_at.strftime('%Y-%m-%d %H:%M:%S %Z')} " \
+               "(#{format_elapsed(@clock.now - run.started_at)} ago)"
+        line += " on #{run.current.join(', ')}" if run.kind == 'scrub' && run.current.any?
+        @out.puts line
         if run.kind == 'sync'
           eta = sync_eta(run.started_at)
           @out.puts eta if eta

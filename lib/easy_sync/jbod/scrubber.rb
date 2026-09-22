@@ -120,6 +120,12 @@ module EasySync
 
       # -- 1b/1c: work queue, hash, record ---------------------------------
 
+      # In WAL (Jbod::ScrubPool runs several of these against one manifest at
+      # once), a connection holds the single write lock from its first write
+      # until commit; keeping a transaction open for a whole COMMIT_INTERVAL
+      # would make every other worker's write wait that long. So outcomes are
+      # buffered here and only actually written in the short transactions
+      # #flush opens - milliseconds, not seconds.
       def hash_phase(drive_serial, mount_point, result, started)
         rows = @manifest.checksum_frontier(drive_serial)
         return if rows.empty?
@@ -127,9 +133,8 @@ module EasySync
         total_files = rows.size
         total_bytes = rows.sum { |r| r.size_bytes.to_i }
         done = 0
+        pending = []
 
-        db = @manifest.db
-        db.transaction
         last_commit = @clock.now
         begin
           rows.each do |row|
@@ -145,21 +150,30 @@ module EasySync
               result.stopped_reason = :unmounted
               break
             end
-            if hash_one(drive_serial, mount_point, row, result, at: t.utc.iso8601) == :unmounted
+            if hash_one(drive_serial, mount_point, row, result, at: t.utc.iso8601, pending: pending) == :unmounted
               result.stopped_reason = :unmounted
               break
             end
             done += 1
             if t - last_commit >= COMMIT_INTERVAL
-              db.commit
+              flush(pending)
               progress(result, done, total_files, total_bytes, t - started)
-              db.transaction
               last_commit = t
             end
           end
         ensure
-          db.commit if db.transaction_active?
+          # A Thread#raise(Interrupt) from Jbod::ScrubPool cancelling this
+          # worker must not land here and abort a flush half-way: everything
+          # in +pending+ was fully read and is valid to record.
+          Thread.handle_interrupt(Interrupt => :never) { flush(pending) }
         end
+      end
+
+      def flush(pending)
+        return if pending.empty?
+
+        @manifest.db.transaction(:immediate) { pending.each { |args, kwargs| @manifest.checksum_hashed(*args, **kwargs) } }
+        pending.clear
       end
 
       # One line per commit, so a multi-day scrub leaves a readable trail in
@@ -181,7 +195,7 @@ module EasySync
       # Returns :unmounted, leaving the row untouched, when the read failed
       # because the drive went away mid-file: that says nothing about the
       # file. Any other unexpected error skips just this file.
-      def hash_one(drive_serial, mount_point, row, result, at:)
+      def hash_one(drive_serial, mount_point, row, result, at:, pending:)
         path = File.join(mount_point, row.folder_path, row.relative_path)
         begin
           hex, bytes = sha256_of(path)
@@ -190,16 +204,16 @@ module EasySync
 
           case e
           when Errno::ENOENT
-            @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: :vanished)
+            pending << [[drive_serial, row.folder_path, row.relative_path], { outcome: :vanished }]
           when Errno::EIO
-            record_read_error(drive_serial, row, result, at: at)
+            record_read_error(drive_serial, row, result, at: at, pending: pending)
           else
             @out.puts "WARNING: #{row.label}: #{e.message}; skipped, left as it was"
           end
           return
         end
         result.bytes_read += bytes
-        record_hash(drive_serial, row, hex, result, at: at)
+        record_hash(drive_serial, row, hex, result, at: at, pending: pending)
       end
 
       def sha256_of(path)
@@ -224,33 +238,35 @@ module EasySync
       # already been refetched by sync (see Manifest#checksum_frontier), so
       # that alone tells us this hash is confirming a repair, not a first
       # check.
-      def record_hash(drive_serial, row, digest, result, at:)
+      def record_hash(drive_serial, row, digest, result, at:, pending:)
+        key = [drive_serial, row.folder_path, row.relative_path]
         repair_check = !row.ok?
         if row.digest.nil?
           # A flagged row with no digest was unreadable on its very first
           # read; its first good read is a repair, which also clears the flags.
           outcome = repair_check ? :repaired : :baseline
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: outcome, digest: digest, at: at)
+          pending << [key, { outcome: outcome, digest: digest, at: at }]
           repair_check ? (result.repaired += 1) : (result.baselined += 1)
         elsif digest == row.digest
           outcome = repair_check ? :repaired : :confirmed
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: outcome, digest: digest, at: at)
+          pending << [key, { outcome: outcome, digest: digest, at: at }]
           repair_check ? (result.repaired += 1) : (result.ok += 1)
         elsif repair_check
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: :unresolved)
+          pending << [key, { outcome: :unresolved }]
           result.unresolved += 1
         else
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: :corrupt, at: at)
+          pending << [key, { outcome: :corrupt, at: at }]
           result.corrupt += 1
         end
       end
 
-      def record_read_error(drive_serial, row, result, at:)
+      def record_read_error(drive_serial, row, result, at:, pending:)
+        key = [drive_serial, row.folder_path, row.relative_path]
         if row.ok?
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: :unreadable, at: at)
+          pending << [key, { outcome: :unreadable, at: at }]
           result.unreadable += 1
         else
-          @manifest.checksum_hashed(drive_serial, row.folder_path, row.relative_path, outcome: :unresolved)
+          pending << [key, { outcome: :unresolved }]
           result.unresolved += 1
         end
       end

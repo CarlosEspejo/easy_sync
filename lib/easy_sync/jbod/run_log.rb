@@ -33,17 +33,22 @@ module EasySync
         @out = out
         @path = path
         @file.sync = true
+        @mutex = Mutex.new   # Jbod::ScrubPool's workers all write through the same RunLog
       end
 
       def puts(*lines)
-        @out.puts(*lines)
-        lines = [''] if lines.empty?
-        lines.flatten.each { |l| @file.puts(l) unless l.to_s.include?("\r") }
+        @mutex.synchronize do
+          @out.puts(*lines)
+          lines = [''] if lines.empty?
+          lines.flatten.each { |l| @file.puts(l) unless l.to_s.include?("\r") }
+        end
       end
 
       def print(*args)
-        @out.print(*args)
-        @file.print(*args) unless args.join.include?("\r")
+        @mutex.synchronize do
+          @out.print(*args)
+          @file.print(*args) unless args.join.include?("\r")
+        end
       end
 
       def close = @file.close

@@ -252,7 +252,7 @@ module EasySync
 
       # True while a running `scrub` (RunLock#kind) is currently on this
       # drive - set via RunLock#note as scrub works through its targets.
-      def scrubbing?(view) = @running&.kind == 'scrub' && @running.current == view.drive.friendly_name
+      def scrubbing?(view) = @running&.kind == 'scrub' && Array(@running.current).include?(view.drive.friendly_name)
 
       # Same overdue rule as `status`: something has to have actually synced
       # to the drive first, so a brand-new empty drive is never overdue.
