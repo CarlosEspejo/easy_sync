@@ -26,7 +26,7 @@ Quick start
     easy_sync add-source /Volumes/tv                    # once per NAS share, mounted on the Mac
     easy_sync add-source /Volumes/movies
     easy_sync register-drive /Volumes/backup-01-3tb     # once per drive, while mounted
-    easy_sync plan --apply           # measures each share, writes split-or-whole for each
+    easy_sync plan                   # measures each share, checks every folder fits a drive
     easy_sync sync --dry-run         # what would be placed and copied, nothing written
     easy_sync sync                   # the real thing
     open ~/.easy_sync/dashboard.html
@@ -37,19 +37,16 @@ Configuration
 -------------
 
 The first command you run, even a bare `easy_sync`, creates
-`~/.easy_sync/config.yml`. You don't need to edit it: `add-source`,
-`remove-source` and `plan --apply` maintain it for you, and `sources` lists it.
+`~/.easy_sync/config.yml`. You don't need to edit it: `add-source` and
+`remove-source` maintain it for you, and `sources` lists it.
 The file stays readable and commented if you want to change the other settings
 by hand:
 
 ```yaml
 :sources:                               # each NAS share, as mounted on the Mac
 - :path: "/Volumes/photos"
-  :split: false                         # the whole share is one unit on one drive
 - :path: "/Volumes/tv"
-  :split: true                          # each subfolder (show) is placed on its own
 - :path: "/Volumes/movies"
-  :split: true
 :mount_root: "/Volumes"                 # where the backup drives appear
 :manifest_path: "~/.easy_sync/manifest.sqlite3"
 :dashboard_path: "~/.easy_sync/dashboard.html"
@@ -120,37 +117,56 @@ map of where everything lives even without the Mac.
 Sources and placement
 ---------------------
 
-A share with `:split: false` is one unit and lands at `/Volumes/<drive>/photos`.
-A share with `:split: true` is too big for one drive, so each of its subfolders
-is placed independently and lands at `/Volumes/<drive>/tv/<Show Name>`.
+Each top-level folder of a share is placed on its own and lands at
+`/Volumes/<drive>/tv/<Show Name>`. Loose files at the top of a share (not in
+any folder) are backed up too, together, as one more unit that lands in
+`/Volumes/<drive>/tv/` beside the folders; the dashboard lists it as
+`tv (loose files)`. There is no setting to choose: this is what mergerfs and
+unRAID do, and it means a share can be any size while every drive stays
+readable on its own in Finder.
 
-A new folder goes to the mounted drive with the most free space, if it fits
-while leaving `reserve` (2 GB by default) untouched for APFS metadata, the
-drive's `.easy_sync/` copies and rsync's temporary files. A folder with no real
-files on the NAS (a show folder left holding only a `.DS_Store`) is not placed;
-the run says so. Once placed, a folder never moves: there is no rebalancing. To move one by hand,
-copy it and then record the move with `easy_sync reassign`.
+A new folder goes to a drive that already holds part of the same share, if it
+fits there, so a share stays together on one drive for as long as that drive
+has room and only spills onto another when it must. Otherwise, or for a
+share's first folder, it goes to the mounted drive with the most free space.
+Either way it has to fit while leaving `reserve` (2 GB by default) untouched
+for APFS metadata, the drive's `.easy_sync/` copies and rsync's temporary
+files. A folder with no real files on the NAS (a show folder left holding only
+a `.DS_Store`) is not placed; the run says so.
 
-`easy_sync plan` tells you which setting each share needs. It measures every
-share (seconds for thousands of single-file movie folders, minutes for a share
-with hundreds of thousands of files) and judges it against the largest drive,
-or against `--largest-drive 8tb` before any drive is registered:
+Once placed, a folder never moves on its own: there is no automatic
+rebalancing. Moving data between drives costs time, needs both drives
+connected, and makes the offsite backup (Backblaze, taken from the drives)
+upload it all again, so it only happens when you ask. To move a folder, or
+every folder of a share, run `easy_sync reassign FOLDER|SHARE DRIVE --copy`:
+it copies drive-to-drive (much faster than the NAS), and the next sync only
+confirms the copy. The old copy is removed later, after the grace period (see
+"Deletions have a grace period" below).
 
-| share is | recommendation |
-|---|---|
-| larger than the largest drive | must split |
-| more than half the largest drive | should split: whole, it can never move and will jam its drive |
-| smaller | whole is simplest |
-| has loose files at its top level | must stay whole: only folders are placed |
+`easy_sync plan` measures every share (seconds for thousands of single-file
+movie folders, minutes for a share with hundreds of thousands of files) and
+warns about any single folder that is bigger than the largest drive, which
+could not be placed anywhere. Pass `--largest-drive 8tb` before any drive is
+registered, and name one or more shares (by folder name or full path, e.g.
+`easy_sync plan pro`) to measure just those. It only reads.
 
-It flags any share whose current setting disagrees, and `--apply` writes the
-recommendations to the config. Without `--apply` it reads only. Name one or
-more shares (by folder name or full path, e.g. `easy_sync plan pro`) to judge
-just those instead of measuring everything.
+### Shares placed whole by an earlier build
 
-Only folders are placed. A loose file at the top of a split share is never
-backed up; the run warns about it and the dashboard lists it until you move it
-into a folder on the NAS.
+Earlier builds could place a whole share as one unit (`:split: false`). A share placed
+that way keeps syncing as one unit, unchanged, and `easy_sync sources` points
+it out. To have it placed folder by folder from now on:
+
+    easy_sync split synology --dry-run   # what it would do
+    easy_sync split synology
+
+This only updates the manifest; no data is copied. The share's folders are
+already sitting at `/Volumes/<drive>/synology/<folder>`, exactly where the new
+per-folder units expect them, so they stay on the drive they're on and the
+next sync just confirms them. Pending deletions and `scrub` baselines carry
+over. A folder that is on the drive but no longer on the NAS becomes an
+ordinary missing folder and goes through the usual grace period. It needs the
+share and the drive mounted, and a leftover `:split:` line in the config is
+ignored.
 
 A sync run
 ----------
@@ -172,14 +188,15 @@ A sync run
 
 A folder that has outgrown its drive gets a distinct "drive full" status rather
 than a bare rsync error; reassign it to a roomier drive with `easy_sync
-reassign FOLDER DRIVE_NAME`, which checks the target actually has room
-first (`--force` skips that check). The next sync copies the folder to its
-new drive from scratch (rsync mirrors into an empty destination, not a
-resume), and the old, now-stale copy left on the full drive is scheduled for
-cleanup the same way a file gone from the NAS is: removed once the folder is
-verified synced to its new drive and it's been that way for `grace_days` (see
-"Deletions have a grace period" below) - it is not deleted immediately, so a
-bad reassign can still be undone before the old copy disappears.
+reassign FOLDER DRIVE_NAME --copy`, which checks the target actually has room
+first (`--force` skips that check) and copies it there from the full drive.
+Without `--copy` only the manifest changes and the next sync copies the
+folder from the NAS instead, from scratch. Either way the old, now-stale copy
+left on the full drive is scheduled for cleanup the same way a file gone from
+the NAS is: removed once the folder is verified synced to its new drive and
+it's been that way for `grace_days` (see "Deletions have a grace period"
+below) - it is not deleted immediately, so a bad reassign can still be undone
+before the old copy disappears.
 
 Replacing or upgrading a drive
 ------------------------------
@@ -434,21 +451,22 @@ Commands
 
 | command | does |
 |---|---|
-| `add-source PATH [--split \| --whole]` | add a NAS share; the split setting is inferred unless given |
+| `add-source PATH` | add a NAS share; each of its folders is placed on its own |
 | `remove-source PATH` | stop backing up a share (drives untouched) |
 | `sources` | list the configured shares and whether each is mounted |
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
 | `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
-| `plan [SHARE ...] [--largest-drive 8tb] [--apply]` | measure each share (or just those named) and recommend split or whole; `--apply` writes it |
+| `plan [SHARE ...] [--largest-drive 8tb]` | measure each share (or just those named) and check every folder fits a drive |
 | `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
 | `benchmark [NAME ...] \| --all [--size SIZE] [--history]` | time a drive's sequential write and read, compared with its own last 25 runs; flags one that has slowed down |
 | `history [FOLDER]` | where a folder has lived |
-| `reassign FOLDER DRIVE [--note TEXT] [--force]` | point a folder at a different drive (moves no data); refuses a drive without room unless `--force` |
+| `reassign FOLDER\|SHARE DRIVE [--copy] [--note TEXT] [--force]` | move a folder, or every folder of a share, to another drive; `--copy` copies it drive-to-drive now instead of the next sync pulling it from the NAS; refuses a drive without room unless `--force` |
+| `split SHARE [--dry-run]` | place a share that 2.0 placed whole folder by folder, on the drive it is already on; copies nothing |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
 | `dashboard` | regenerate the HTML report only |
 
@@ -474,8 +492,8 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 |---|---|
 | `drives` | serial (PK), name, capacity, added date, volume UUID, model, last seen usage, SMART status/detail/power-on hours, retired date |
 | `smart_checks` | one row per SMART read: drive serial, timestamp, reallocated-sector count, whether it's a manually verified checkpoint |
-| `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status |
-| `placement_history` | every `assigned`, `reassigned` and `removed` event |
+| `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status, scope (`tree`, or `root` for a share's loose top-level files) |
+| `placement_history` | every `assigned`, `reassigned`, `split` and `removed` event |
 | `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |

@@ -11,11 +11,10 @@ module EasySync
     DEFAULT_FILENAME = 'config.yml'
 
     DEFAULTS = {
-      sources: [
-        { path: '/Volumes/photos', split: false },  # the whole share is one unit
-        { path: '/Volumes/tv', split: true },       # each show is placed on its own
-        { path: '/Volumes/movies', split: true }
-      ],
+      # Each top-level folder of a share is placed on its own (kept on the
+      # same drive as the rest of the share while it fits); loose top-level
+      # files form one more unit. See docs/fine-placement.md.
+      sources: [{ path: '/Volumes/photos' }, { path: '/Volumes/tv' }, { path: '/Volumes/movies' }],
       mount_root: '/Volumes',
       reserve: '2gb',       # headroom placement always leaves on a drive: APFS metadata, the .easy_sync copies, rsync temp files
       keep_awake: true,     # hold off idle sleep (caffeinate) for the length of a sync, on macOS
@@ -119,9 +118,7 @@ module EasySync
           sources = Array(value)
           out << "#{(sources.empty? ? ':sources: []' : ':sources:').ljust(40)}# #{comment}\n"
           sources.each do |src|
-            src = { path: src.to_s, split: false } unless src.is_a?(Hash)
-            out << "- :path: #{src[:path].to_s.inspect}\n"
-            out << "  #{":split: #{src[:split] ? true : false}".ljust(38)}# #{src[:split] ? 'each subfolder placed on its own' : 'the whole share is one unit'}\n"
+            out << "- :path: #{(src.is_a?(Hash) ? src[:path] : src).to_s.inspect}\n"
           end
         elsif (value.is_a?(Array) || value.is_a?(Hash)) && !value.empty?
           # Collections always go in block form under the key; a one-element
@@ -149,27 +146,22 @@ module EasySync
 
     # -- sources, as the CLI edits them --------------------------------
 
+    # A :split: key left over from 2.0 configs is ignored here and dropped
+    # on the next save.
     def source_entries
-      Array(data[:sources]).map { |e| e.is_a?(Hash) ? { path: e[:path].to_s, split: e[:split] ? true : false } : { path: e.to_s, split: false } }
+      Array(data[:sources]).map { |e| { path: (e.is_a?(Hash) ? e[:path] : e).to_s } }
     end
 
-    def add_source(path, split:)
+    def add_source(path)
       raise Error, "#{path} is already a source" if source_entries.any? { |e| e[:path] == path }
 
-      data[:sources] = source_entries + [{ path: path, split: split }]
+      data[:sources] = source_entries + [{ path: path }]
     end
 
     def remove_source(path)
       before = source_entries
       data[:sources] = before.reject { |e| e[:path] == path }
       raise Error, "#{path} is not a source" if data[:sources].size == before.size
-    end
-
-    def set_split(path, split)
-      entries = source_entries
-      entry = entries.find { |e| e[:path] == path } or raise Error, "#{path} is not a source"
-      entry[:split] = split
-      data[:sources] = entries
     end
 
     attr_reader :data, :path
@@ -187,7 +179,7 @@ module EasySync
       merged = self.class.defaults.merge(data)
       PATH_KEYS.each { |k| merged[k] = File.expand_path(merged[k]) if merged[k].is_a?(String) }
       merged[:sources] = Array(merged[:sources]).map do |e|
-        e.is_a?(Hash) ? e.merge(path: File.expand_path(e[:path].to_s)) : File.expand_path(e.to_s)
+        { path: File.expand_path((e.is_a?(Hash) ? e[:path] : e).to_s) }
       end
       merged[:config_path] = path   # so a copy of the config can travel with the drives
       merged[:reserve_bytes] = Jbod::Placement.parse_size(merged[:reserve])

@@ -2,19 +2,12 @@
 
 module EasySync
   module Jbod
-    # `jbod plan`: measures each configured share and recommends whether it
-    # should be placed whole (split: false) or one subfolder at a time
-    # (split: true), judged against the largest drive in the fleet. Reads
-    # only; never places or copies anything.
+    # `easy_sync plan`: measures each configured share and checks that every
+    # top-level folder (each is placed on its own) fits on the largest drive
+    # in the fleet. Reads only; never places or copies anything.
     class Planner
       Row = Struct.new(:source, :mounted, :size_bytes, :subfolders, :largest_subfolder, :largest_name, :loose_files,
-                       :recommend_split, :reason, :fits, keyword_init: true) do
-        def mismatch? = mounted && !recommend_split.nil? && recommend_split != source.split
-      end
-
-      # Above this fraction of the largest drive a whole share is a bad idea:
-      # it fits today but can never move, and the drive fills around it.
-      SPLIT_ABOVE = 0.5
+                       :reason, :fits, keyword_init: true)
 
       def initialize(settings, shell: Shell.new, largest_drive_bytes: nil)
         @settings = settings
@@ -46,7 +39,7 @@ module EasySync
         sizes = du(dirs.map { |n| File.join(source.path, n) })
         row.size_bytes = sizes.values.sum
         row.largest_name, row.largest_subfolder = sizes.max_by { |_, v| v } || [nil, 0]
-        recommend(row)
+        check_fit(row)
       end
 
       # One `du -sk` over every subfolder; the tool's own `du` cost was
@@ -63,37 +56,18 @@ module EasySync
         end
       end
 
-      def recommend(row)
+      def check_fit(row)
         largest = @largest
-        if row.loose_files.positive?
-          row.recommend_split = false
-          row.reason = "#{row.loose_files} loose file#{'s' if row.loose_files != 1} at the top level; only a whole " \
-                       'share backs those up'
-        elsif row.subfolders.zero?
-          row.recommend_split = false
-          row.reason = 'no subfolders to split by'
-        elsif largest.nil?
-          row.reason = 'register a drive (or pass --largest-drive) to get a recommendation'
-        elsif row.size_bytes > largest
-          row.recommend_split = true
-          row.reason = "#{Placement.format_bytes(row.size_bytes)} is larger than the largest drive " \
-                       "(#{Placement.format_bytes(largest)}); it can only be placed one folder at a time"
-        elsif row.size_bytes > largest * SPLIT_ABOVE
-          row.recommend_split = true
-          row.reason = "#{Placement.format_bytes(row.size_bytes)} is more than half the largest drive; whole it " \
-                       'would jam one drive as it grows'
-        else
-          row.recommend_split = false
-          row.reason = "#{Placement.format_bytes(row.size_bytes)} fits comfortably; one folder on one drive is " \
-                       'simplest to browse'
-        end
-        if largest && row.largest_subfolder.to_i > largest
+        if largest.nil?
+          row.reason = 'register a drive (or pass --largest-drive) to check whether every folder fits'
+        elsif row.largest_subfolder.to_i > largest
           row.fits = false
-          row.reason += ". WARNING: #{row.largest_name} alone is #{Placement.format_bytes(row.largest_subfolder)}, " \
-                        "bigger than the largest drive currently registered (#{Placement.format_bytes(largest)}); " \
-                        'it cannot be placed on this fleet today, but will fit once you add a bigger drive'
+          row.reason = "WARNING: #{row.largest_name} alone is #{Placement.format_bytes(row.largest_subfolder)}, " \
+                       "bigger than the largest drive currently registered (#{Placement.format_bytes(largest)}); " \
+                       'it cannot be placed on this fleet today, but will fit once you add a bigger drive'
         else
           row.fits = true
+          row.reason = 'every folder fits on the largest drive'
         end
         row
       end

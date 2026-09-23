@@ -36,7 +36,7 @@ module EasySync
       # scrub, clean, or restore all share it), or nil when nothing is
       # running. An ETA is only estimated for a real sync; the others just
       # say how long they've been going (see #other_running_line).
-      def render(mounted: [], source_status: {}, loose_files: [], running: nil)
+      def render(mounted: [], source_status: {}, running: nil)
         @running = running
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         drives = manifest.drives.map { |d| drive_view(d, by_serial[d.serial_number]) }
@@ -51,7 +51,6 @@ module EasySync
           total_free_bytes: drives.sum { |d| d.free_bytes.to_i },
           warnings: drives.select { |d| %i[warning critical].include?(d.level) },
           source_status: source_status,
-          loose_files: loose_files,
           pending: manifest.pending_deletions,
           inventory: manifest.source_inventory,
           deletions: manifest.deletions(limit: 30),
@@ -166,9 +165,9 @@ module EasySync
 
       def h(text) = ERB::Util.html_escape(text.to_s)
 
-      # Groups folders by share (the first path segment): a whole-share source
-      # like "photos" is its own group of one; a split share like "tv" groups
-      # every "tv/<show>". Returns [[share, [folders...]], ...] in share order.
+      # Groups folders by share (the first path segment): "tv" groups every
+      # "tv/<show>" plus the share's own root-files unit, or a share placed
+      # whole by an earlier build. Returns [[share, [folders...]], ...] in share order.
       # +inventory+ adds shares that have nothing placed yet (nothing fit), so
       # they still get a summary line.
       def by_share(folders, inventory = [])

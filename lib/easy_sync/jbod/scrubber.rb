@@ -70,7 +70,7 @@ module EasySync
           root = File.join(mount_point, folder.folder_path)
           next unless Dir.exist?(root)
 
-          found = walk_folder(root)
+          found = walk_folder(root, root_only: folder.root?)
           unless marker_present?(mount_point)
             result.stopped_reason = :unmounted
             return
@@ -91,14 +91,16 @@ module EasySync
       # +root+, skipping symlinks and anything matching an exclude pattern
       # (pruned, so an excluded directory's contents are never even visited).
       # nil if the walk could not finish (a directory vanished or could not be
-      # read); a single file vanishing mid-walk is just left out.
-      def walk_folder(root)
+      # read); a single file vanishing mid-walk is just left out. A root-files
+      # unit (+root_only+) owns only the files directly in +root+: every
+      # subdirectory there is some other folder's.
+      def walk_folder(root, root_only: false)
         found = {}
         Find.find(root, ignore_error: false) do |path|
           next if path == root
 
           name = File.basename(path)
-          next Find.prune if excluded?(name)
+          next Find.prune if excluded?(name) || (root_only && File.directory?(path) && !File.symlink?(path))
 
           begin
             stat = File.lstat(path)

@@ -35,8 +35,12 @@ module EasySync
         # Whole folders first; their file-level candidates go with them.
         folders, paths = expired.partition(&:whole_folder?)
         folders.each do |pending|
-          purge_one(pending, by_serial, result, dry_run: dry_run) do |dest, drive|
-            FileUtils.rm_rf(dest)
+          root = @manifest.folder(pending.folder_path)&.root?
+          purge_one(pending, by_serial, result, dry_run: dry_run, root: root) do |dest, drive|
+            # A root unit is only a share's loose top-level files; the
+            # share's subfolders below dest belong to other folders.
+            root ? remove_top_level_files(dest) : FileUtils.rm_rf(dest)
+            remove_empty_dirs(root ? dest : File.dirname(dest), drive.mount_point)
             # A 'reassigned' candidate is the OLD copy of a folder that still
             # has a valid manifest row elsewhere (see #ready?); only the
             # files come out, the folder record itself must survive. A
@@ -80,10 +84,15 @@ module EasySync
         !current.nil? && current.drive_serial != pending.drive_serial && current.last_sync_status == 'ok'
       end
 
-      def purge_one(pending, by_serial, result, dry_run:)
+      def purge_one(pending, by_serial, result, dry_run:, root: false)
         drive = by_serial[pending.drive_serial]
         unless drive
           result.skipped << [pending, 'drive not mounted']
+          return
+        end
+        if pending.whole_folder? && !root && (live = overlapping_live_folder(pending, drive.serial_number))
+          result.skipped << [pending, "#{live} is a live folder that overlaps it on #{drive.friendly_name}; " \
+                                      'not deleting (resolve by hand)']
           return
         end
 
@@ -106,6 +115,41 @@ module EasySync
 
         @manifest.record_deletion(pending, drive_serial: drive.serial_number)
         result.purged << [pending, drive.friendly_name]
+      end
+
+      # Another folder placed on the same drive that deleting this whole
+      # folder would take with it (it lives below the path), or whose tree
+      # this path is part of. Either means the manifest changed shape after
+      # the candidate was recorded, and an rm_rf would destroy live data.
+      def overlapping_live_folder(pending, serial)
+        prefix = "#{pending.folder_path}/"
+        @manifest.folders_on(serial).find do |f|
+          next false if f.folder_path == pending.folder_path
+
+          f.folder_path.start_with?(prefix) || (!f.root? && pending.folder_path.start_with?("#{f.folder_path}/"))
+        end&.folder_path
+      end
+
+      # The share directory a removed folder sat in (and the root unit's own
+      # directory) is removed once nothing is left in it, so a share that
+      # has left a drive entirely leaves no empty shell behind. Never goes
+      # above the share level, and never touches the drive root.
+      def remove_empty_dirs(dir, mount_point)
+        top = File.expand_path(mount_point)
+        dir = File.expand_path(dir)
+        while dir.start_with?("#{top}/") && Dir.exist?(dir) && Dir.empty?(dir)
+          Dir.rmdir(dir)
+          dir = File.dirname(dir)
+        end
+      end
+
+      def remove_top_level_files(dir)
+        return unless Dir.exist?(dir)
+
+        Dir.children(dir).each do |name|
+          path = File.join(dir, name)
+          File.delete(path) if File.file?(path) || File.symlink?(path)
+        end
       end
 
       def inside?(path, base)

@@ -9,9 +9,9 @@ module EasySync
     # [group, [[command, description], ...]] in the order a new user meets them.
     COMMAND_GROUPS = [
       ['Set up, once', [
-        ['add-source PATH [--split | --whole]', 'add a NAS share (mounted on this Mac); split/whole is inferred unless given'],
+        ['add-source PATH', 'add a NAS share (mounted on this Mac); each of its folders is placed on its own'],
         ['register-drive MOUNT_POINT [--name NAME] [--serial SERIAL]', 'add a backup drive (mounted and unlocked)'],
-        ['plan [SHARE ...] [--largest-drive SIZE] [--apply]', 'measure each share (or just the ones named) and recommend split or whole; --apply writes it']
+        ['plan [SHARE ...] [--largest-drive SIZE]', 'measure each share (or just the ones named) and check every folder fits a drive']
       ]],
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
@@ -26,7 +26,9 @@ module EasySync
         ['benchmark [NAME ...] [--all] [--size SIZE] [--history]',
          "time a drive's sequential write and read against its own earlier runs; a slowing drive can be failing"],
         ['history [FOLDER]', 'where a folder has lived'],
-        ['reassign FOLDER DRIVE_NAME [--note TEXT] [--force]', 'point a folder at a different drive (moves no data); refuses a drive without room unless --force'],
+        ['reassign FOLDER|SHARE DRIVE_NAME [--copy] [--note TEXT] [--force]',
+         'move a folder (or every folder of a share) to another drive; --copy copies it drive-to-drive now instead of the next sync pulling it from the NAS'],
+        ['split SHARE [--dry-run]', 'place the folders of a share that was placed whole one by one, on the drive it is already on; copies nothing'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['verify-drive NAME [--note TEXT]', 'record that a full-surface scan (SpinRite etc.) found no new defects; resets the reallocated-sector baseline'],
@@ -80,6 +82,7 @@ module EasySync
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
+      when 'split' then split(@argv)
       when 'rename-drive' then rename_drive(@argv)
       when 'verify-drive' then verify_drive(@argv)
       when 'pending' then pending
@@ -451,42 +454,17 @@ module EasySync
       end
     end
 
-    # Adds a share. Without --split/--whole the setting is inferred: loose
-    # files at the top level force whole; otherwise, if a drive is registered
-    # the planner's rule decides, else split (safe for any size; `plan --apply`
-    # refines it once drives exist).
+    # Adds a share. Each of its top-level folders is placed on its own
+    # (kept with the rest of the share while a drive has room); loose
+    # top-level files are one more unit.
     def add_source(args)
-      opts = {}
-      OptionParser.new do |o|
-        o.on('--split', 'Place each subfolder on its own (for shares bigger than one drive)') { opts[:split] = true }
-        o.on('--whole', 'Place the whole share as one unit on one drive') { opts[:split] = false }
-      end.parse!(args)
       path = args.first or raise Error, "add-source needs the share's path, e.g. /Volumes/tv\n\n#{USAGE}"
       path = File.expand_path(path)
       raise Error, "#{path} is not mounted (or is empty)" unless Dir.exist?(path) && !Dir.empty?(path)
 
-      split, why = opts.key?(:split) ? [opts[:split], 'as you asked'] : infer_split(path)
-      config.add_source(path, split: split)
+      config.add_source(path)
       config.save
-      @out.puts "Added #{path} (split: #{split}, #{why}). Config: #{config.path}"
-      @out.puts 'Run `easy_sync plan` after registering your drives to check the split settings.' unless opts.key?(:split)
-    end
-
-    def infer_split(path)
-      excluded = settings[:exclude_folders]
-      children = Dir.children(path).reject { |n| n.start_with?('.') || excluded.any? { |pat| File.fnmatch?(pat, n) } }
-      loose = children.count { |n| File.file?(File.join(path, n)) }
-      dirs = children.count { |n| File.directory?(File.join(path, n)) }
-      return [false, "#{loose} loose file#{'s' if loose != 1} at the top level; only a whole share backs those up"] if loose.positive?
-      return [false, 'no subfolders to split by'] if dirs.zero?
-
-      largest = manifest.drives.map(&:capacity_bytes).max
-      return [true, 'no drive registered yet, so split, which works for any size; `plan --apply` will refine it'] unless largest
-
-      # A drive to judge against: measure the share (du) and apply the planner's rule.
-      row = Jbod::Planner.new(settings.merge(sources: [{ path: path, split: true }]), shell: @shell,
-                                                                                    largest_drive_bytes: largest).rows.first
-      [row.recommend_split, row.reason]
+      @out.puts "Added #{path}. Config: #{config.path}"
     end
 
     def remove_source(args)
@@ -505,23 +483,26 @@ module EasySync
       end
       entries.each do |e|
         state = Dir.exist?(e[:path]) && !Dir.empty?(e[:path]) ? 'mounted' : 'NOT MOUNTED'
-        @out.puts "  #{e[:path].ljust(32)} #{(e[:split] ? 'split' : 'whole').ljust(6)} #{state}"
+        name = File.basename(e[:path])
+        whole = manifest.folder(name)
+        note = whole && !whole.root? ? "  placed whole; `easy_sync split #{name}` places its folders one by one" : ''
+        @out.puts "  #{e[:path].ljust(32)} #{state}#{note}"
       end
     end
 
-    # Measures every configured share and says whether to split it.
+    # Measures every configured share (read-only) and says whether each of
+    # its folders fits on the largest drive.
     def plan(args)
       opts = {}
       OptionParser.new do |o|
         o.on('--largest-drive SIZE', 'Capacity of the biggest drive you will register, e.g. 8tb (default: from the manifest)') do |v|
           opts[:largest] = Jbod::Placement.parse_size(v)
         end
-        o.on('--apply', 'Write the recommended split settings to the config') { opts[:apply] = true }
       end.parse!(args)
       only = args.empty? ? nil : args
       largest = opts[:largest] || manifest.drives.map(&:capacity_bytes).max
       @out.puts(largest ? "Judging against the largest drive: #{Jbod::Placement.format_bytes(largest)}" \
-                        : 'No drives registered yet; pass --largest-drive 8tb for recommendations')
+                        : 'No drives registered yet; pass --largest-drive 8tb to check what fits')
       rows = Jbod::Planner.new(settings, shell: @shell, largest_drive_bytes: largest).rows(only: only)
       raise Error, "no configured source matches #{only.join(', ')}" if only && rows.empty?
 
@@ -534,19 +515,7 @@ module EasySync
         @out.puts "  #{Jbod::Placement.format_bytes(r.size_bytes)} in #{r.subfolders} folder#{'s' if r.subfolders != 1}" \
                   "#{r.largest_name ? ", largest #{r.largest_name} (#{Jbod::Placement.format_bytes(r.largest_subfolder)})" : ''}" \
                   "#{r.loose_files.positive? ? ", #{r.loose_files} loose file#{'s' if r.loose_files != 1}" : ''}"
-        @out.puts "  currently split: #{r.source.split}"
-        @out.puts "  recommend split: #{r.recommend_split.nil? ? '?' : r.recommend_split}  (#{r.reason})"
-        @out.puts '  -> CHANGE the config to match' if r.mismatch?
-      end
-      changes = rows.select(&:mismatch?)
-      if opts[:apply]
-        changes.each { |r| config.set_split(r.source.path, r.recommend_split) }
-        config.save if changes.any?
-        @out.puts(changes.empty? ? "\nConfig already matches the recommendations." \
-                                 : "\nUpdated #{changes.size} source#{'s' if changes.size != 1} in #{config.path}.")
-      elsif changes.any?
-        suggestion = (['easy_sync plan'] + Array(only) + ['--apply']).join(' ')
-        @out.puts "\nRun `#{suggestion}` to write these recommendations to the config."
+        @out.puts "  #{r.reason}"
       end
     end
 
@@ -636,6 +605,20 @@ module EasySync
       excludes = (settings[:exclude_folders] + [Jbod::DRIVE_DIR]).map { |e| "--exclude=#{e}" }
       result = @shell.run(['rsync', '-a', '--partial', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
       raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
+    end
+
+    # Converts a share placed whole into folders placed one by one, on the
+    # drive that already holds it (see Jbod::Splitter). A dry run only reads.
+    def split(args)
+      opts = { dry_run: false }
+      OptionParser.new do |o|
+        o.on('--dry-run', 'Show what would change without writing anything') { opts[:dry_run] = true }
+      end.parse!(args)
+      share = args.first or raise Error, "split needs a share name, e.g. synology\n\n#{USAGE}"
+
+      splitter = Jbod::Splitter.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out)
+      lock = opts[:dry_run] ? ->(**, &blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
+      lock.call(kind: 'split') { splitter.run(share, dry_run: opts[:dry_run]) }
     end
 
     # The reverse of `sync`: copies folders from their drives back onto the
@@ -893,21 +876,88 @@ module EasySync
       end
     end
 
+    # Points a folder, or every folder of a share, at another drive. Without
+    # --copy no data moves: the next sync copies it from the NAS. With --copy
+    # it is copied drive-to-drive now (much faster than the NAS), so the next
+    # sync only confirms it. Either way the old copy is deleted later by
+    # Purger, once the folder has synced OK on its new drive and grace_days
+    # have passed.
     def reassign(args)
-      opts = { force: false }
+      opts = { force: false, copy: false }
       OptionParser.new do |o|
         o.on('--note TEXT') { |v| opts[:note] = v }
+        o.on('--copy', 'Copy the data from its current drive now, instead of letting the next sync pull it from the NAS') { opts[:copy] = true }
         o.on('--force', 'Reassign even though the target drive does not appear to have room') { opts[:force] = true }
       end.parse!(args)
-      folder, drive_name = args
-      raise Error, "reassign needs FOLDER and DRIVE_NAME\n\n#{USAGE}" unless folder && drive_name
+      name, drive_name = args
+      raise Error, "reassign needs FOLDER (or SHARE) and DRIVE_NAME\n\n#{USAGE}" unless name && drive_name
 
       drive = manifest.drive_by_name(drive_name) or raise Error, "no drive named #{drive_name}"
-      record = manifest.folder(folder) or raise Error, "#{folder} is not in the manifest"
-      check_fits!(record, drive) unless opts[:force]
+      records = reassign_targets(name)
+      moving = records.reject { |r| r.drive_serial == drive.serial_number }
+      if moving.empty?
+        @out.puts "#{name} is already on #{drive.friendly_name}."
+        return
+      end
+      check_fits!(moving, drive) unless opts[:force]
 
-      manifest.reassign_folder(folder, drive.serial_number, note: opts[:note])
-      @out.puts "#{folder} is now recorded on #{drive.friendly_name}. No data was moved."
+      unless opts[:copy]
+        moving.each { |r| manifest.reassign_folder(r.folder_path, drive.serial_number, note: opts[:note]) }
+        @out.puts "#{describe_targets(name, moving)} now recorded on #{drive.friendly_name}. No data was moved; " \
+                  'the next sync copies it from the NAS (or use --copy to copy it from its current drive now).'
+        return
+      end
+      Jbod::RunLock.new(settings[:lock_path]).acquire(kind: 'reassign') { copy_and_reassign(moving, drive, opts[:note]) }
+    end
+
+    # A folder_path names that one folder. A share name (which is also the
+    # key of the share's root-files unit) names every folder of the share,
+    # unless the share is still placed whole.
+    def reassign_targets(name)
+      exact = manifest.folder(name)
+      return [exact] if exact && !exact.root?
+
+      records = manifest.folders.select { |f| f.share == name && (f.folder_path == name || f.folder_path.start_with?("#{name}/")) }
+      raise Error, "#{name} is not in the manifest" if records.empty?
+
+      records
+    end
+
+    def describe_targets(name, records)
+      records.size == 1 ? "#{records.first.folder_path} is" : "#{records.size} folders of #{name} are"
+    end
+
+    def copy_and_reassign(records, drive, note)
+      mounted = volume_info.mounted_drives(manifest.drives).to_h { |m| [m.serial_number, m] }
+      dst = mounted[drive.serial_number] or raise Error, "#{drive.friendly_name} is not mounted; --copy needs both drives"
+      missing = records.map(&:drive_serial).uniq.reject { |s| mounted[s] }
+      unless missing.empty?
+        names = missing.map { |s| manifest.drive(s)&.friendly_name || s }
+        raise Error, "#{names.join(', ')} not mounted; --copy needs both drives (nothing was changed)"
+      end
+
+      excludes = settings[:exclude_folders].map { |e| "--exclude=#{e}" }
+      records.each do |r|
+        src = mounted[r.drive_serial]
+        from = File.join(src.mount_point, r.folder_path)
+        to = File.join(dst.mount_point, r.folder_path)
+        if Dir.exist?(from)
+          @out.puts "Copying #{r.folder_path}: #{src.friendly_name} -> #{drive.friendly_name}..."
+          FileUtils.mkdir_p(to)
+          argv = ['rsync', '-a', '--partial', '--stats', '--info=progress2', *excludes]
+          argv << Jbod::Mirror::ROOT_ONLY if r.root?
+          result = @shell.run(argv + ["#{from}/", "#{to}/"])
+          unless result.success?
+            raise Error, "copying #{r.folder_path} failed (rsync exit #{result.status}); it is still recorded on " \
+                         "#{src.friendly_name}. Run the same command again to retry."
+          end
+        else
+          @out.puts "#{r.folder_path}: nothing on #{src.friendly_name} yet; the next sync copies it from the NAS."
+        end
+        manifest.reassign_folder(r.folder_path, drive.serial_number, note: note || "copied from #{src.friendly_name}")
+      end
+      @out.puts "#{describe_targets(records.first.share, records)} now on #{drive.friendly_name}. The next sync " \
+                'confirms the copy; the old one is deleted after that and the grace period.'
     end
 
     # Same free-space accounting `sync` uses to place new folders: whichever
@@ -915,8 +965,9 @@ module EasySync
     # promised to that drive), so reassign can't blindly send a folder
     # somewhere it won't fit either (see the backup-06-8tb overcommit this
     # was built to stop happening again).
-    def check_fits!(record, drive)
-      return unless record.size_bytes
+    def check_fits!(records, drive)
+      size = records.sum { |r| r.size_bytes.to_i }
+      return if size.zero?
 
       mounted = volume_info.mounted_drives([drive]).first
       unless mounted
@@ -926,9 +977,10 @@ module EasySync
       promised = manifest.folders_on(drive.serial_number).sum { |f| f.size_bytes.to_i }
       free = [mounted.free_bytes.to_i, drive.capacity_bytes.to_i - promised].min
       reserve = settings.fetch(:reserve_bytes, 0)
-      return unless (free - reserve) < record.size_bytes
+      return unless (free - reserve) < size
 
-      raise Error, "#{record.folder_path} (#{Jbod::Placement.format_bytes(record.size_bytes)}) does not fit on " \
+      what = records.size == 1 ? records.first.folder_path : "#{records.size} folders of #{records.first.share}"
+      raise Error, "#{what} (#{Jbod::Placement.format_bytes(size)}) does not fit on " \
                    "#{drive.friendly_name} (#{Jbod::Placement.format_bytes(free)} free, " \
                    "#{Jbod::Placement.format_bytes(reserve)} reserved). Use --force to reassign anyway."
     end

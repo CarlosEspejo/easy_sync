@@ -20,6 +20,11 @@ README.md is the user-facing truth; this file is for working on the code.
 
 ## Things learned on real hardware (do not re-derive)
 
+- rsync 3.5: `--exclude=/*/` (anchored, directories only) copies only a
+  source's top-level files, and a `--delete` probe with it but WITHOUT
+  `--delete-excluded` never reports the destination's subdirectories, even
+  ones missing from the source. That is how a share's root-files unit lives
+  in the same directory as the share's per-folder units.
 - rsync 3.5 with `--delete --max-delete=0` does NOT name the files it skips; it
   prints "N skipped" and exits 25. Deletions are found with a separate read-only
   probe: `rsync -an --itemize-changes --delete --delete-excluded`.
@@ -65,9 +70,21 @@ README.md is the user-facing truth; this file is for working on the code.
 
 - rsync never deletes. Only `Purger` deletes, only after `grace_days` AND
   `grace_runs`, only inside the folder's own destination on a mounted drive.
+  It never `rm_rf`s a whole folder that overlaps a live folder on the same
+  drive (one below it, or a `tree` folder above it), and a `root` folder's
+  whole-folder purge removes only its top-level files.
   `sync`'s refetch overwrites flagged files via `rsync -I`; `scrub` is
   read-only on the drive.
-- A placed folder never moves automatically. No rebalancing.
+- A placed folder never moves automatically. No rebalancing (Backblaze backs
+  up from the drives, so a moved folder is uploaded again). A folder changes
+  drive or shape only through `reassign` (`--copy` copies drive-to-drive) or
+  `split`.
+- Placement units: one per top-level folder of a share, plus one `root` unit
+  (keyed by the share name) for its loose top-level files. There is no
+  `split:` setting. A new unit goes to a drive already holding part of its
+  share if it fits there. A share an earlier build placed whole (a `tree` row
+  keyed by the share name) stays one unit until `easy_sync split` converts
+  it in place. See docs/fine-placement.md.
 - Drives are matched by the serial in `<drive>/.easy_sync/drive.json`, never by
   mount path. Unknown or retired volumes are never written to.
 - A missing or empty share is skipped, never mirrored.
@@ -149,6 +166,11 @@ assumptions, they cannot check them.
 
 ## Open items
 
+- Fine placement (no `split:` setting; `easy_sync split`; `reassign --copy`;
+  Purger overlap guard) is built and passed the real-hardware checklist on
+  2026-09-23 (docs/fine-placement.md). Not yet used on the real fleet: next
+  step there is `easy_sync split synology --dry-run`, then `split synology`.
+
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
   checklist on 2026-09-21 (results in docs/integrity-scan.md). No drive in
@@ -175,8 +197,10 @@ assumptions, they cannot check them.
   drives, 44.59 TB; the two `jbod-test` drives are retired in the manifest,
   not deleted. The first full sync of the real library (~31.9 TB) finished
   around 2026-09-21 — check `easy_sync status` / the dashboard for current
-  placement. `synology` has loose top-level files, so it must stay
-  `split: false`. The NAS side limits sync speed, never the drives; Time
+  placement. `synology` (~2 TB) is still placed whole, so its sync ETA sits
+  frozen for hours (SyncEta only learns when a folder finishes). Run
+  `easy_sync split synology` (share and drive mounted) to place it folder
+  by folder; nothing is copied. The NAS side limits sync speed, never the drives; Time
   Machine (backing up to the same Synology) is the first thing to check when
   a sync looks slow. Numbers and method: docs/performance.md.
 - `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last

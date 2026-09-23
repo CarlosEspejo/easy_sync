@@ -37,6 +37,15 @@ RSpec.describe EasySync::Jbod::Cleaner do
                           ['Course/.DS_Store', 'file', 'SN-backup-04-8tb'])
   end
 
+  it 'cleans only the top level of a root-files unit, leaving the share\'s subfolders to their own folders' do
+    manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
+    write_file(File.join(root, 'tv', '.DS_Store'), 'x')
+    write_file(File.join(root, 'tv', 'Unplaced Show', '.DS_Store'), 'x')
+    result = cleaner.run(mounted_list)
+    expect(result.removed).to include(['tv', '.DS_Store'])
+    expect(File).to exist(File.join(root, 'tv', 'Unplaced Show', '.DS_Store'))
+  end
+
   it 'also forgets pending rows for excluded junk that is already gone from the drive' do
     manifest.reconcile_pending('pro', [['#recycle', 'dir'], ['gone/.DS_Store', 'file'], ['real-missing.txt', 'file']])
     FileUtils.rm_rf(File.join(root, 'pro', '#recycle'))
