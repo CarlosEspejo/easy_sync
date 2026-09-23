@@ -152,10 +152,12 @@ assumptions, they cannot check them.
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
   checklist on 2026-09-21 (results in docs/integrity-scan.md). No drive in
-  the real fleet has been scrubbed yet: the first full pass is ~35 TB at
-  ~200 MB/s, about 2 days. `easy_sync scrub --for 8h` fits an overnight
-  window; `--all` works through every mounted, non-retired drive stalest
-  first.
+  the real fleet has been scrubbed yet. `--all` works through every mounted,
+  non-retired drive stalest first, defaulting to `scrub_jobs` (4) drives at
+  once (see the parallel-scrub bullet below), so the first full pass is
+  ~35 TB at the ~782 MB/s 4-way aggregate, about 12.5 hours, not the
+  ~200 MB/s single-drive rate. `easy_sync scrub --for 8h` fits an overnight
+  window either way.
 - Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
   and verified against the real ThunderBay 8 fleet on 2026-09-21: see
   docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
