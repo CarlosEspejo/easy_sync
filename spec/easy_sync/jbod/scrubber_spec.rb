@@ -49,6 +49,15 @@ RSpec.describe EasySync::Jbod::Scrubber do
     expect(result2.changed).to eq(0)
   end
 
+  it 'tracks only the top-level files of a root-files unit, never files in the share\'s subfolders' do
+    manifest.assign_folder('movies', serial, scope: 'root')
+    write_file(File.join(drive_root, 'movies', 'index.txt'), 'top level')
+    write('movie.mkv')   # movies/Heat (1995)/movie.mkv belongs to the Heat folder
+    scrubber.run(mounted_drive)
+    expect(manifest.checksum_rows(serial, 'movies').map(&:relative_path)).to eq(['index.txt'])
+    expect(rows.map(&:relative_path)).to eq(['movie.mkv'])
+  end
+
   it 'flags rot (content changed, mtime restored) as corrupt, keeping the known-good digest' do
     path = write('movie.mkv')
     scrubber.run(mounted_drive)

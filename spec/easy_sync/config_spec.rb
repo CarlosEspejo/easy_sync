@@ -4,10 +4,10 @@ RSpec.describe EasySync::Config do
   let(:path) { File.join(temp_dir, 'config.yml') }
 
   it 'loads a flat config and exposes it as settings' do
-    File.write(path, { sources: ['/Volumes/photos', { path: '/Volumes/tv', split: true }], grace_days: 9 }.to_yaml)
+    File.write(path, { sources: ['/Volumes/photos', { path: '/Volumes/tv' }], grace_days: 9 }.to_yaml)
     config, status = described_class.load(path)
     expect(status).to be_nil
-    expect(config.settings[:sources]).to eq(['/Volumes/photos', { path: '/Volumes/tv', split: true }])
+    expect(config.settings[:sources]).to eq([{ path: '/Volumes/photos' }, { path: '/Volumes/tv' }])
     expect(config.settings[:grace_days]).to eq(9)
     expect(config.settings[:config_path]).to eq(path)
     expect(config[:grace_days]).to eq(9)
@@ -25,12 +25,12 @@ RSpec.describe EasySync::Config do
 
   it 'expands ~ in every path setting, including sources' do
     File.write(path, { manifest_path: '~/.easy_sync/m.sqlite3', lock_path: '~/x.lock', log_dir: '~/logs',
-                       sources: ['~/nas/photos', { path: '~/nas/tv', split: true }] }.to_yaml)
+                       sources: ['~/nas/photos', { path: '~/nas/tv' }] }.to_yaml)
     s = described_class.load(path).first.settings
     expect(s[:manifest_path]).to eq(File.join(Dir.home, '.easy_sync/m.sqlite3'))
     expect(s[:lock_path]).to eq(File.join(Dir.home, 'x.lock'))
     expect(s[:log_dir]).to eq(File.join(Dir.home, 'logs'))
-    expect(s[:sources]).to eq([File.join(Dir.home, 'nas/photos'), { path: File.join(Dir.home, 'nas/tv'), split: true }])
+    expect(s[:sources]).to eq([{ path: File.join(Dir.home, 'nas/photos') }, { path: File.join(Dir.home, 'nas/tv') }])
   end
 
   it 'resolves the manifest, dashboard, lock and log defaults under HOME_DIR at call time' do
@@ -57,25 +57,33 @@ RSpec.describe EasySync::Config do
     expect(described_class.load(path).first.source_entries).to eq([])
   end
 
-  it 'adds, removes and re-splits sources, and writes a commented file that loads back identically' do
+  it 'adds and removes sources, and writes a commented file that loads back identically' do
     config, = described_class.load(path)
-    config.add_source('/Volumes/tv', split: true)
-    config.add_source('/Volumes/pro', split: false)
-    config.set_split('/Volumes/pro', true)
+    config.add_source('/Volumes/tv')
+    config.add_source('/Volumes/pro')
     config.save
     text = File.read(path)
     expect(text).to include('# easy_sync configuration', ':sources:                               # NAS shares',
-                            '- :path: "/Volumes/tv"', ':split: true                          # each subfolder placed on its own',
-                            ':grace_days: 7                          # ...this many days')
+                            '- :path: "/Volumes/tv"', ':grace_days: 7                          # ...this many days')
     reloaded = described_class.load(path).first
-    expect(reloaded.source_entries).to eq([{ path: '/Volumes/tv', split: true }, { path: '/Volumes/pro', split: true }])
+    expect(reloaded.source_entries).to eq([{ path: '/Volumes/tv' }, { path: '/Volumes/pro' }])
     expect(reloaded.settings.except(:config_path)).to eq(config.settings.except(:config_path))
 
     reloaded.remove_source('/Volumes/tv')
     reloaded.save
-    expect(described_class.load(path).first.source_entries).to eq([{ path: '/Volumes/pro', split: true }])
+    expect(described_class.load(path).first.source_entries).to eq([{ path: '/Volumes/pro' }])
     expect { reloaded.remove_source('/Volumes/nope') }.to raise_error(EasySync::Error, /not a source/)
-    expect { reloaded.add_source('/Volumes/pro', split: false) }.to raise_error(EasySync::Error, /already a source/)
+    expect { reloaded.add_source('/Volumes/pro') }.to raise_error(EasySync::Error, /already a source/)
+  end
+
+  it 'ignores a :split: setting left over from 2.0 and drops it on the next save' do
+    File.write(path, "---\n:sources:\n- :path: \"/Volumes/tv\"\n  :split: true\n- :path: \"/Volumes/pro\"\n  :split: false\n")
+    config, = described_class.load(path)
+    expect(config.source_entries).to eq([{ path: '/Volumes/tv' }, { path: '/Volumes/pro' }])
+    expect(config.settings[:sources]).to eq([{ path: '/Volumes/tv' }, { path: '/Volumes/pro' }])
+    config.remove_source('/Volumes/pro')
+    config.save
+    expect(File.read(path)).not_to include('split')
   end
 
   it 'keeps keys it does not know and non-scalar values when rewriting' do

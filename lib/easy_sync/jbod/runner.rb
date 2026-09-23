@@ -9,22 +9,25 @@ module EasySync
     class Runner
       class SourceUnavailable < Error; end
 
-      # A configured NAS share. +split+ means each subfolder is placed on its
-      # own; otherwise the whole share is one unit.
-      Source = Struct.new(:path, :split, keyword_init: true) do
+      # A configured NAS share.
+      Source = Struct.new(:path, keyword_init: true) do
         def name = File.basename(path)
 
         def self.from_config(entry)
-          entry.is_a?(Hash) ? new(path: entry[:path], split: entry.fetch(:split, false)) : new(path: entry.to_s, split: false)
+          new(path: entry.is_a?(Hash) ? entry[:path] : entry.to_s)
         end
       end
 
-      # A folder as seen on the NAS. +key+ is its manifest folder_path
-      # ("photos" for a whole share, "tv/Show Name" for a split one).
-      SourceFolder = Struct.new(:key, :path, keyword_init: true)
+      # A placement unit as seen on the NAS. +key+ is its manifest folder_path:
+      # "tv/Show Name" for a subfolder, or the share name ("synology") for
+      # either a share an earlier build placed whole or, with +root_only+, the
+      # share's loose top-level files (see docs/fine-placement.md).
+      SourceFolder = Struct.new(:key, :path, :root_only, keyword_init: true) do
+        def share = key.split('/').first
+      end
 
       Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, :loose_files, :unhealthy, :empty, :refetched, keyword_init: true) do
+                          :purged, :would_purge, :pending, :unhealthy, :empty, :refetched, keyword_init: true) do
         def initialize(**)
           super
           (members - [:pending]).each { |m| self[m] ||= [] }
@@ -82,6 +85,7 @@ module EasySync
         end
         new_folders = folders.count { |f| manifest.folder(f.key).nil? }
         @measured = 0
+        @placed_this_run = Hash.new { |h, k| h[k] = [] }
         if new_folders.positive?
           @out.puts "#{new_folders} new folder#{'s' if new_folders != 1} to measure and place " \
                     '(du over the network can take a while per folder)'
@@ -131,8 +135,7 @@ module EasySync
         else
           mounted = refresh_drives(report, quiet: true)
           copy_state_to_drives(mounted, report)
-          path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status,
-                                                              loose_files: report.loose_files)
+          path = @dashboard.write(settings[:dashboard_path], mounted: mounted, source_status: source_status)
           @out.puts "\nDashboard written to #{path}"
         end
         summarize(report)
@@ -154,20 +157,7 @@ module EasySync
             next
           end
           available << source.name
-          if source.split
-            subfolders(source.path).each do |name|
-              folders << SourceFolder.new(key: File.join(source.name, name), path: File.join(source.path, name))
-            end
-            loose = loose_files(source.path)
-            unless loose.empty?
-              report.loose_files.concat(loose.map { |f| File.join(source.name, f) })
-              warn(report, "#{source.path} has #{loose.size} loose file#{'s' if loose.size != 1} at the top level that " \
-                           "will NOT be backed up (only folders are placed): #{loose.first(5).join(', ')}" \
-                           "#{', ...' if loose.size > 5}. Move them into a folder on the NAS.")
-            end
-          else
-            folders << SourceFolder.new(key: source.name, path: source.path)
-          end
+          folders.concat(units_of(source))
         end
         raise SourceUnavailable, 'none of the configured sources are mounted' if available.empty?
 
@@ -176,17 +166,23 @@ module EasySync
 
       private
 
-      def loose_files(path)
-        excluded = Array(settings[:exclude_folders])
-        Dir.children(path).sort.select { |n| File.file?(File.join(path, n)) && !excluded.include?(n) && !n.start_with?('.') }
+      # A share placed whole (a 'tree' row keyed by the share name) stays one
+      # unit until `easy_sync split` converts it: placed folders never change
+      # shape on their own. Every other share is one unit per top-level
+      # subfolder, plus a root unit for its loose top-level files.
+      def units_of(source)
+        whole = manifest.folder(source.name)
+        return [SourceFolder.new(key: source.name, path: source.path)] if whole && !whole.root?
+
+        units = subfolders(source.path).map do |name|
+          SourceFolder.new(key: File.join(source.name, name), path: File.join(source.path, name))
+        end
+        units << SourceFolder.new(key: source.name, path: source.path, root_only: true) if whole || loose_files(source.path).any?
+        units
       end
 
-      def subfolders(path)
-        excluded = Array(settings[:exclude_folders])
-        Dir.children(path).sort.select do |n|
-          File.directory?(File.join(path, n)) && !excluded.include?(n) && !n.start_with?('.')
-        end
-      end
+      def loose_files(path) = ShareScan.loose_files(path, settings[:exclude_folders])
+      def subfolders(path) = ShareScan.subfolders(path, settings[:exclude_folders])
 
       def refresh_drives(report, quiet: false)
         mounted = @volume_info.mounted_drives(manifest.drives)
@@ -272,29 +268,33 @@ module EasySync
 
       # Returns [target, size, state, detail]; target is nil when not placed.
       def place(folder, mounted, free_ledger, report)
-        if empty_source?(folder.path)
+        if folder.root_only ? loose_files(folder.path).empty? : empty_source?(folder.path)
           warn(report, "#{folder.key} has no files on the NAS (only excluded or hidden ones); not placing it")
           report.empty << folder.key
           return [nil, 0, 'empty', 'no real files on the NAS']
         end
         @measured += 1
         @out.puts "  measuring #{folder.key} (new folder #{@measured})..."
-        size = @sizer.call(folder.path)
+        size = folder.root_only ? loose_bytes(folder.path) : @sizer.call(folder.path)
         candidates = mounted.map { |m| m.dup.tap { |c| c.free_bytes = free_ledger[c.serial_number] } }
-        target = Placement.choose(candidates, size_bytes: size, reserve_bytes: settings.fetch(:reserve_bytes, 0))
+        prefer = share_drives(folder.share)
+        target = Placement.choose(candidates, size_bytes: size, reserve_bytes: settings.fetch(:reserve_bytes, 0),
+                                              prefer: prefer)
+        why = prefer.include?(target.serial_number) ? "with the rest of #{folder.share}" : 'most free space'
         if @dry_run
           @out.puts "Would place new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
         else
           manifest.assign_folder(folder.key, target.serial_number, size_bytes: size,
-                                                                   note: "new folder, most free space (#{Placement.format_bytes(target.free_bytes)})")
+                                                                   scope: folder.root_only ? 'root' : 'tree',
+                                                                   note: "new folder, #{why} (#{Placement.format_bytes(target.free_bytes)} free)")
           @out.puts "Placing new folder #{folder.key} (#{Placement.format_bytes(size)}) on #{target.friendly_name}"
         end
         report.placed << [folder.key, target.friendly_name]
+        @placed_this_run[folder.share] |= [target.serial_number]
         free_ledger[target.serial_number] -= size.to_i
         [mounted.find { |m| m.serial_number == target.serial_number }, size, 'placed', "on #{target.friendly_name}"]
       rescue Placement::NoMountedDrives, Placement::DoesNotFit => e
-        hint = e.is_a?(Placement::DoesNotFit) && !folder.key.include?('/') ? ' (a whole share; set :split: true for it, see `easy_sync plan`)' : ''
-        warn(report, "cannot place #{folder.key}: #{e.message}#{hint}")
+        warn(report, "cannot place #{folder.key}: #{e.message}")
         report.unplaced << folder.key
         [nil, size, 'unplaced', e.is_a?(Placement::NoMountedDrives) ? 'no drive mounted' : 'no drive has room']
       end
@@ -303,7 +303,7 @@ module EasySync
         destination = File.join(target.mount_point, folder.key)
         @out.puts "\n------------------ #{folder.key} -> #{target.friendly_name} ------------------"
         started = @clock.now.utc.iso8601
-        result = @mirror.sync(folder.path, destination)
+        result = @mirror.sync(folder.path, destination, root_only: folder.root_only ? true : false)
         unless @dry_run
           manifest.record_sync(folder_path: folder.key, drive_serial: target.serial_number, started_at: started,
                                finished_at: @clock.now.utc.iso8601, exit_status: result.exit_status,
@@ -406,7 +406,10 @@ module EasySync
         result = @purger.run(mounted, dry_run: @dry_run)
         report.purged = result.purged.map { |p, drive| [p.folder_path, p.relative_path, drive] }
         report.would_purge = result.would_purge.map { |p, drive| [p.folder_path, p.relative_path, drive] }
-        result.skipped.each { |p, why| warn(report, "not purging #{p.folder_path}/#{p.relative_path}: #{why}") }
+        result.skipped.each do |p, why|
+          label = p.whole_folder? ? "#{p.folder_path} (whole folder)" : "#{p.folder_path}/#{p.relative_path}"
+          warn(report, "not purging #{label}: #{why}")
+        end
       end
 
       # Every mounted drive gets a fresh copy of the manifest and config in
@@ -436,6 +439,18 @@ module EasySync
         true
       rescue SystemCallError
         false   # can't tell; let rsync decide
+      end
+
+      # Drives already holding part of +share+, so its new units join them
+      # while they fit (Placement prefers these). Includes this run's own
+      # placements, which a dry run never writes to the manifest.
+      def share_drives(share)
+        placed = manifest.folders.select { |f| f.share == share }.map(&:drive_serial)
+        (placed + @placed_this_run[share]).uniq
+      end
+
+      def loose_bytes(path)
+        loose_files(path).sum { |n| File.size(File.join(path, n)) }
       end
 
       def du_bytes(path)

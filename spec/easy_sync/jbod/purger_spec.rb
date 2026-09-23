@@ -92,6 +92,89 @@ RSpec.describe EasySync::Jbod::Purger do
     expect(out.string).to include('not empty yet')
   end
 
+  describe 'a whole-folder candidate that overlaps a live folder on the same drive' do
+    let(:share) { File.join(drive_root, 'synology') }
+
+    before do
+      write_file(File.join(share, 'notes.txt'))
+      write_file(File.join(share, 'Movies', 'a.mkv'))
+    end
+
+    it 'refuses to delete a folder that a live folder now sits inside (the old whole share after a split)' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb')
+      manifest.assign_folder('synology/Movies', 'SN-backup-04-8tb')
+      expire('synology', [['', 'folder']])
+      result = purger.run(mounted_list)
+
+      expect(result.purged).to be_empty
+      expect(result.skipped.map { |p, why| [p.folder_path, why] })
+        .to eq([['synology', 'synology/Movies is a live folder that overlaps it on backup-04-8tb; not deleting (resolve by hand)']])
+      expect(File).to exist(File.join(share, 'Movies', 'a.mkv'))
+      expect(manifest.folder('synology')).not_to be_nil
+      expect(manifest.pending_deletions.map(&:folder_path)).to eq(['synology'])
+    end
+
+    it 'refuses to delete a folder that is part of a live whole-share tree (split subfolders after a merge)' do
+      manifest.assign_folder('synology/Movies', 'SN-backup-04-8tb')
+      manifest.assign_folder('synology', 'SN-backup-04-8tb')
+      expire('synology/Movies', [['', 'folder']])
+      result = purger.run(mounted_list)
+
+      expect(result.skipped.map { |_, why| why }.first).to start_with('synology is a live folder')
+      expect(File).to exist(File.join(share, 'Movies', 'a.mkv'))
+    end
+
+    it 'still deletes a subfolder whose only overlap is its share\'s root-files unit' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb', scope: 'root')
+      manifest.assign_folder('synology/Movies', 'SN-backup-04-8tb')
+      expire('synology/Movies', [['', 'folder']])
+      result = purger.run(mounted_list)
+
+      expect(result.purged.map { |p, _| p.folder_path }).to eq(['synology/Movies'])
+      expect(Dir).not_to exist(File.join(share, 'Movies'))
+      expect(File).to exist(File.join(share, 'notes.txt'))
+    end
+
+    it 'is not fooled by a name that merely starts with the same letters' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb')
+      manifest.assign_folder('synology-archive', 'SN-backup-04-8tb')
+      expire('synology', [['', 'folder']])
+      expect(purger.run(mounted_list).purged.map { |p, _| p.folder_path }).to eq(['synology'])
+    end
+
+    it 'ignores a live folder on a different drive' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb')
+      manifest.assign_folder('synology/Movies', 'SN-backup-05-8tb')
+      expire('synology', [['', 'folder']])
+      expect(purger.run(mounted_list).purged.map { |p, _| p.folder_path }).to eq(['synology'])
+    end
+
+    it 'leaves no empty share directory behind once the share\'s last folder is gone from the drive' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb', scope: 'root')
+      manifest.assign_folder('synology/Movies', 'SN-backup-04-8tb')
+      expire('synology', [['', 'folder']])
+      expire('synology/Movies', [['', 'folder']])
+      purger.run(mounted_list)
+
+      expect(Dir).not_to exist(share)
+      expect(Dir).to exist(drive_root)
+      expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
+    end
+
+    it 'removes only the top-level files of a root-files unit, never the subfolders below it' do
+      manifest.assign_folder('synology', 'SN-backup-04-8tb', scope: 'root')
+      manifest.assign_folder('synology/Movies', 'SN-backup-04-8tb')
+      expire('synology', [['', 'folder']])
+      result = purger.run(mounted_list)
+
+      expect(result.purged.map { |p, _| p.folder_path }).to eq(['synology'])
+      expect(File).not_to exist(File.join(share, 'notes.txt'))
+      expect(File).to exist(File.join(share, 'Movies', 'a.mkv'))
+      expect(manifest.folder('synology')).to be_nil
+      expect(manifest.folder('synology/Movies')).not_to be_nil
+    end
+  end
+
   describe 'a folder reassigned off a drive' do
     let(:new_root) { File.join(mount_root, 'backup-05-8tb') }
     let(:both_mounted) { mounted_list + [mounted(drives['backup-05-8tb'], free: 1 * TB, mount_point: new_root)] }

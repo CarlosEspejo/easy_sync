@@ -121,20 +121,13 @@
   <p class="eta">Sync in progress: <%= h eta_text %></p>
 <%- end -%>
 
-<%- unless warnings.empty? && loose_files.empty? && unplaced_all.empty? -%>
+<%- unless warnings.empty? && unplaced_all.empty? -%>
   <div class="alerts">
   <%- unless unplaced_all.empty? -%>
     <div class="alert critical">
       <strong><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %>
       (<%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %>) on the NAS <%= unplaced_all.size == 1 ? 'is' : 'are' %> not backed up</strong>:
       no mounted drive has room. Add or replace a drive, then sync again. The list is under Folders.
-    </div>
-  <%- end -%>
-  <%- unless loose_files.empty? -%>
-    <div class="alert">
-      <strong><%= loose_files.size %> loose file<%= 's' if loose_files.size != 1 %></strong> at the top level of a split share
-      <%= loose_files.size == 1 ? 'is' : 'are' %> not backed up. Move them into a folder on the NAS:
-      <%= h loose_files.first(10).join(', ') %><%= ', ...' if loose_files.size > 10 %>
     </div>
   <%- end -%>
   <%- warnings.each do |d| -%>
@@ -183,7 +176,7 @@
       <details><summary><%= d.folders.size %> folder<%= 's' if d.folders.size != 1 %> on this drive</summary>
         <ul>
       <%- d.folders.each do |f| -%>
-          <li><%= h f.folder_path %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+          <li><%= h f.folder_path %><%= f.root? ? " (loose files)" : "" %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
       <%- end -%>
         </ul>
       </details>

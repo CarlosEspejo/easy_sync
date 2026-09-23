@@ -37,15 +37,16 @@ module EasySync
       end
 
       # +targets+ are folder_paths ("tv/Breaking Bad") or share names ("tv"),
-      # expanded to every folder currently in the manifest under that share.
+      # expanded to every folder currently in the manifest under that share
+      # (including the share's root-files unit, which is keyed by its name).
       # Raises if a name matches nothing placed.
       def resolve(targets)
         all = @manifest.folders
         targets.flat_map do |t|
           exact = all.find { |f| f.folder_path == t }
-          next [exact] if exact
+          next [exact] if exact && !exact.root?
 
-          under_share = all.select { |f| f.folder_path.start_with?("#{t}/") }
+          under_share = [exact].compact + all.select { |f| f.folder_path.start_with?("#{t}/") }
           raise UnknownTarget, "#{t} matches no placed folder or share" if under_share.empty?
 
           under_share
@@ -96,7 +97,7 @@ module EasySync
 
         warn_about_flagged_files(folder, drive)
         @out.puts "\n------------------ #{folder.folder_path}: #{drive.friendly_name} -> NAS ------------------"
-        rsync_result = restore_copy(source, destination, dry_run: dry_run)
+        rsync_result = restore_copy(source, destination, dry_run: dry_run, root_only: folder.root?)
         if rsync_result.success?
           result.restored << folder.folder_path
         else
@@ -106,9 +107,12 @@ module EasySync
       end
 
       # No --delete, ever: restoring must never remove anything already on the NAS.
-      def restore_copy(source, destination, dry_run:)
+      # A root-files unit restores only its top-level files; the share's
+      # subfolders are folders of their own, possibly on other drives.
+      def restore_copy(source, destination, dry_run:, root_only: false)
         FileUtils.mkdir_p(File.dirname(destination)) unless dry_run
         argv = ['rsync', '-a', '--partial', '--stats', '--info=progress2', '--itemize-changes', *@excludes]
+        argv << Mirror::ROOT_ONLY if root_only
         argv << '--dry-run' if dry_run
         argv += [with_slash(source), with_slash(destination)]
         @shell.run(argv)

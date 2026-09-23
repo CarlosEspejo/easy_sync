@@ -34,7 +34,7 @@ module EasySync
             base = File.join(drive.mount_point, folder.folder_path)
             next unless Dir.exist?(base)
 
-            matches_under(base).each do |path|
+            matches_under(base, descend: !folder.root?).each do |path|
               rel = path.delete_prefix("#{base}/")
               size = size_of(path)
               if dry_run
@@ -61,14 +61,15 @@ module EasySync
       private
 
       # Deepest matches are not needed: removing a matching directory takes
-      # its contents with it, so stop descending at the first match.
-      def matches_under(dir)
+      # its contents with it, so stop descending at the first match. A
+      # root-files unit (descend: false) owns only its top level.
+      def matches_under(dir, descend: true)
         found = []
         Dir.each_child(dir) do |name|
           path = File.join(dir, name)
           if excluded?(name)
             found << path
-          elsif File.directory?(path) && !File.symlink?(path)
+          elsif descend && File.directory?(path) && !File.symlink?(path)
             found.concat(matches_under(path))
           end
         end

@@ -29,6 +29,32 @@ RSpec.describe EasySync::Jbod::Placement do
     expect(described_class.choose(candidates).friendly_name).to eq('backup-06-8tb')
   end
 
+  describe 'prefer: (drives already holding part of the same share)' do
+    let(:candidates) do
+      [mounted(drives['backup-01-3tb'], free: 1_000), mounted(drives['backup-02-6tb'], free: 800),
+       mounted(drives['backup-07-8tb'], free: 9_000)]
+    end
+
+    it 'keeps the folder with its share when it fits there, even though another drive has more room' do
+      expect(described_class.choose(candidates, size_bytes: 500, prefer: ['SN-backup-01-3tb']).friendly_name).to eq('backup-01-3tb')
+    end
+
+    it 'picks the preferred drive with the most room when the share is already on several' do
+      prefer = %w[SN-backup-01-3tb SN-backup-02-6tb]
+      expect(described_class.choose(candidates, size_bytes: 500, prefer: prefer).friendly_name).to eq('backup-01-3tb')
+    end
+
+    it 'counts the reserve when judging whether it fits on the preferred drive' do
+      expect(described_class.choose(candidates, size_bytes: 500, reserve_bytes: 600, prefer: ['SN-backup-01-3tb'])
+               .friendly_name).to eq('backup-07-8tb')
+    end
+
+    it 'falls back to the most free space when no preferred drive has room, or none is mounted' do
+      expect(described_class.choose(candidates, size_bytes: 2_000, prefer: ['SN-backup-01-3tb']).friendly_name).to eq('backup-07-8tb')
+      expect(described_class.choose(candidates, size_bytes: 10, prefer: ['SN-backup-05-8tb']).friendly_name).to eq('backup-07-8tb')
+    end
+  end
+
   it 'raises when nothing is mounted' do
     expect { described_class.choose([], size_bytes: 1) }.to raise_error(described_class::NoMountedDrives)
   end

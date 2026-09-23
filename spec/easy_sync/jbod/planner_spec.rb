@@ -6,7 +6,7 @@ RSpec.describe EasySync::Jbod::Planner do
   let(:pro) { File.join(root, 'pro') }
   let(:synology) { File.join(root, 'synology') }
   let(:settings) do
-    { sources: [{ path: tv, split: false }, { path: pro, split: true }, { path: synology, split: true }, { path: File.join(root, 'gone'), split: false }],
+    { sources: [{ path: tv }, { path: pro }, { path: synology }, { path: File.join(root, 'gone') }],
       exclude_folders: ['#recycle', '@eaDir'] }
   end
 
@@ -34,35 +34,25 @@ RSpec.describe EasySync::Jbod::Planner do
     expect(r['gone']).to have_attributes(mounted: false, reason: 'not mounted (or empty)')
   end
 
-  it 'insists on split when the share is larger than the largest drive, and flags the mismatch' do
+  it 'warns when one folder is bigger than the largest drive, since folders are the unit placed' do
     r = rows(8 * TB)['tv']
-    expect(r.recommend_split).to be true
-    expect(r.reason).to include('larger than the largest drive')
-    expect(r).to be_mismatch
     expect(r.fits).to be false
     expect(r.reason).to include('Show A alone is 8.8 TB, bigger than the largest drive currently registered',
                                 'will fit once you add a bigger drive')
   end
 
-  it 'suggests split above half the largest drive, whole below it' do
-    expect(rows(30 * TB)['tv']).to have_attributes(recommend_split: true, fits: true)   # 17.3 TB > 15 TB
-    expect(rows(30 * TB)['tv'].reason).to include('more than half')
-    expect(rows(40 * TB)['pro']).to have_attributes(recommend_split: false)
-    expect(rows(40 * TB)['pro'].reason).to include('fits comfortably')
-    expect(rows(40 * TB)['pro']).to be_mismatch   # configured split: true
+  it 'says every folder fits when the largest one does, however big the whole share is' do
+    expect(rows(10 * TB)['tv']).to have_attributes(fits: true, reason: 'every folder fits on the largest drive')
   end
 
-  it 'requires whole for a share with loose files, whatever its size' do
-    r = rows(8 * TB)['synology']
-    expect(r).to have_attributes(recommend_split: false, loose_files: 1)
-    expect(r.reason).to include('1 loose file at the top level')
+  it 'counts loose top-level files (they are backed up as one more unit)' do
+    expect(rows(8 * TB)['synology']).to have_attributes(loose_files: 1, fits: true)
   end
 
   it 'gives sizes but no verdict when no drive size is known' do
     r = rows(nil)['tv']
-    expect(r.recommend_split).to be_nil
+    expect(r.fits).to be_nil
     expect(r.reason).to include('register a drive')
-    expect(r).not_to be_mismatch
   end
 
   describe '#rows with only:' do

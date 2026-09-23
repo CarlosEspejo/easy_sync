@@ -59,8 +59,14 @@ module EasySync
       end
     end
 
+    # scope 'tree' is a folder copied with everything under it. scope 'root'
+    # is a share's loose top-level files only (folder_path is the share name);
+    # the share's subfolders are their own 'tree' folders, possibly elsewhere.
     Folder = Struct.new(:folder_path, :drive_serial, :size_bytes, :assigned_at,
-                        :last_synced_at, :last_sync_status, keyword_init: true)
+                        :last_synced_at, :last_sync_status, :scope, keyword_init: true) do
+      def root? = scope == 'root'
+      def share = folder_path.split('/').first
+    end
 
     HistoryEntry = Struct.new(:id, :folder_path, :drive_serial, :event, :recorded_at, :note,
                               keyword_init: true)

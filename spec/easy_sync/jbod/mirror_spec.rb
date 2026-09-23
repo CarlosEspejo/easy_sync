@@ -19,6 +19,25 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(mirror.probe_command('/a', '/b').last(2)).to eq(['/a/', '/b/'])
   end
 
+  # Checked against real rsync 3.5.0: the copy moves only top-level files,
+  # and the probe never lists the share's subfolders, even ones gone from the
+  # source, because they are excluded and --delete-excluded is off.
+  it 'copies only top-level files for a root-files unit, and never probes its subfolders' do
+    mirror = described_class.new(shell: fake_shell, excludes: ['.DS_Store'])
+    expect(mirror.command('/nas/synology', '/Volumes/b/synology', root_only: true)).to include('--exclude=/*/')
+    probe = mirror.probe_command('/nas/synology', '/Volumes/b/synology', root_only: true)
+    expect(probe).to include('--delete', '--exclude=/*/', '--exclude=.DS_Store')
+    expect(probe).not_to include('--delete-excluded')
+    expect(mirror.command('/a', '/b')).not_to include('--exclude=/*/')
+  end
+
+  it 'passes root_only through to both passes of a sync' do
+    source = File.join(temp_dir, 'share').tap { |d| FileUtils.mkdir_p(d) }
+    fake_shell.on('rsync', output: rsync_stats)
+    described_class.new(shell: fake_shell).sync(source, File.join(temp_dir, 'drive', 'share'), root_only: true)
+    expect(fake_shell.calls_to('rsync').map { |c| c.include?('--exclude=/*/') }).to eq([true, true])
+  end
+
   it 'appends extra arguments' do
     mirror = described_class.new(shell: fake_shell, extra_args: ['--exclude', '.DS_Store'])
     expect(mirror.command('/a/', '/b/')[-4..]).to eq(['--exclude', '.DS_Store', '/a/', '/b/'])

@@ -8,7 +8,7 @@ RSpec.describe EasySync::Jbod::Restorer do
   let(:out) { StringIO.new }
   let(:settings) do
     { exclude_folders: ['#recycle', '.DS_Store'],
-      sources: [{ path: File.join(nas, 'tv'), split: true }, { path: File.join(nas, 'pro'), split: false }] }
+      sources: [{ path: File.join(nas, 'tv') }, { path: File.join(nas, 'pro') }] }
   end
   let(:restorer) { described_class.new(settings, manifest: manifest, shell: fake_shell, out: out) }
   let(:mounted_list) { [mounted(drives['backup-04-8tb'], free: 1 * TB, mount_point: drive_root)] }
@@ -36,6 +36,11 @@ RSpec.describe EasySync::Jbod::Restorer do
       expect(restorer.resolve(['tv', 'tv/Breaking Bad']).map(&:folder_path)).to eq(['tv/Breaking Bad'])
     end
 
+    it 'expands a share name to its root-files unit plus every folder under it' do
+      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
+      expect(restorer.resolve(['tv']).map(&:folder_path)).to eq(['tv', 'tv/Breaking Bad'])
+    end
+
     it 'raises for a name matching nothing placed' do
       expect { restorer.resolve(['movies']) }.to raise_error(EasySync::Jbod::Restorer::UnknownTarget, /movies/)
     end
@@ -57,6 +62,16 @@ RSpec.describe EasySync::Jbod::Restorer do
       end
       tv_call = calls.find { |a| a.last(2).first.include?('Breaking Bad') }
       expect(tv_call.last(2)).to eq(["#{File.join(drive_root, 'tv/Breaking Bad')}/", "#{File.join(nas, 'tv/Breaking Bad')}/"])
+    end
+
+    it 'restores only the top-level files of a root-files unit' do
+      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
+      write_file(File.join(drive_root, 'tv', 'notes.txt'))
+      fake_shell.on('rsync', output: rsync_stats)
+      restorer.run([manifest.folder('tv')], mounted_list)
+      call = fake_shell.calls_to('rsync').last
+      expect(call).to include('--exclude=/*/')
+      expect(call.last(2)).to eq(["#{drive_root}/tv/", "#{nas}/tv/"])
     end
 
     it 'skips a folder whose drive is not mounted' do

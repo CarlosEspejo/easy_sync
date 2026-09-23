@@ -133,6 +133,68 @@ RSpec.describe EasySync::CLI do
       expect(pending).to have_attributes(cause: 'reassigned', drive_serial: 'S1')
     end
 
+    context 'with --copy (drive-to-drive instead of from the NAS)' do
+      def mount_drive(name, serial)
+        vol = make_dirs(mount_root, name).first
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: serial, friendly_name: name }.to_json)
+        vol
+      end
+
+      let!(:old_vol) { mount_drive('backup-01-3tb', 'S1') }
+      let!(:new_vol) { mount_drive('backup-02-6tb', 'S2') }
+
+      before do
+        fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
+        write_file(File.join(old_vol, 'Photos', '2024', 'a.jpg'))
+      end
+
+      it 'copies the folder between the drives, then records the move and schedules the old copy for cleanup' do
+        fake_shell.on('rsync', output: rsync_stats)
+        expect(cli('reassign', 'Photos', 'backup-02-6tb', '--copy').run).to eq(0)
+        call = fake_shell.calls_to('rsync').last
+        expect(call.last(2)).to eq(["#{old_vol}/Photos/", "#{new_vol}/Photos/"])
+        expect(call).not_to include('--delete', '--exclude=/*/')
+        expect(manifest.folder('Photos')).to have_attributes(drive_serial: 'S2', last_synced_at: nil)
+        expect(manifest.pending_deletions(folder_path: 'Photos').first).to have_attributes(cause: 'reassigned', drive_serial: 'S1')
+        expect(out.string).to include('Copying Photos: backup-01-3tb -> backup-02-6tb', 'The next sync confirms the copy')
+      end
+
+      it 'moves every folder of a share when given the share name, copying only loose files for its root unit' do
+        m = manifest
+        m.assign_folder('tv', 'S1', scope: 'root')
+        m.assign_folder('tv/Show A', 'S1')
+        m.assign_folder('tv/Show B', 'S2')   # already there: left alone
+        m.close
+        write_file(File.join(old_vol, 'tv', 'notes.txt'))
+        write_file(File.join(old_vol, 'tv', 'Show A', 'ep1.mkv'))
+        fake_shell.on('rsync', output: rsync_stats)
+
+        expect(cli('reassign', 'tv', 'backup-02-6tb', '--copy').run).to eq(0)
+        calls = fake_shell.calls_to('rsync')
+        expect(calls.map { |c| c.last }).to eq(["#{new_vol}/tv/", "#{new_vol}/tv/Show A/"])
+        expect(calls.first).to include('--exclude=/*/')
+        expect(calls.last).not_to include('--exclude=/*/')
+        expect(manifest.folders.select { |f| f.share == 'tv' }.map(&:drive_serial).uniq).to eq(['S2'])
+        expect(out.string).to include('2 folders of tv are now on backup-02-6tb')
+      end
+
+      it 'leaves the manifest as it was when the copy fails' do
+        fake_shell.on('rsync', output: 'rsync error', status: 23)
+        expect(cli('reassign', 'Photos', 'backup-02-6tb', '--copy').run).to eq(1)
+        expect(err.string).to include('copying Photos failed (rsync exit 23); it is still recorded on backup-01-3tb')
+        expect(manifest.folder('Photos').drive_serial).to eq('S1')
+        expect(manifest.pending_deletions).to be_empty
+      end
+
+      it 'refuses when the folder\'s current drive is not mounted, changing nothing' do
+        FileUtils.rm_rf(old_vol)
+        expect(cli('reassign', 'Photos', 'backup-02-6tb', '--copy').run).to eq(1)
+        expect(err.string).to include('backup-01-3tb not mounted; --copy needs both drives')
+        expect(manifest.folder('Photos').drive_serial).to eq('S1')
+        expect(fake_shell.calls_to('rsync')).to be_empty
+      end
+    end
+
     context 'capacity check' do
       before do
         m = manifest
@@ -680,7 +742,7 @@ RSpec.describe EasySync::CLI do
       write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-04-8tb"}')
       fake_shell.on('df', output: df_output(vol, capacity_kb: 8_000_000, used_kb: 1_000))
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      File.write(config_path, cfg.merge(sources: [{ path: tv, split: true }]).to_yaml)
+      File.write(config_path, cfg.merge(sources: [{ path: tv }]).to_yaml)
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-04-8tb', capacity_bytes: 8 * TB)
       m.assign_folder('nas-tv/Breaking Bad', 'S1')
@@ -1161,44 +1223,69 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'split' do
+    let(:nas) { File.join(temp_dir, 'nas') }
+    let(:vol) { make_dirs(mount_root, 'backup-01-3tb').first }
+
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.assign_folder('nas', 'S1')
+      m.close
+      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S1', friendly_name: 'backup-01-3tb' }.to_json)
+      write_file(File.join(nas, 'Movies', 'a.mkv'))
+      write_file(File.join(vol, 'nas', 'Movies', 'a.mkv'))
+      fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
+      fake_shell.on('du', output: ->(argv) { "4\t#{argv.last}\n" })
+    end
+
+    it 'converts a share placed whole, with a dry run that changes nothing first' do
+      expect(cli('split', 'nas', '--dry-run').run).to eq(0)
+      expect(out.string).to include('Would split nas on backup-01-3tb into 1 folder')
+      expect(manifest.folder('nas').scope).to eq('tree')
+
+      expect(cli('split', 'nas').run).to eq(0)
+      expect(manifest.folders.map { |f| [f.folder_path, f.scope] }).to eq([%w[nas root], ['nas/Movies', 'tree']])
+      expect(fake_shell.calls_to('rsync')).to be_empty
+    end
+
+    it 'needs a share name' do
+      expect(cli('split').run).to eq(1)
+      expect(err.string).to include('split needs a share name')
+    end
+  end
+
   describe 'add-source / remove-source / sources' do
     let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
 
     before { make_dirs(tv, 'Show A', 'Show B') }
 
-    it 'adds a share with an explicit setting and lists it' do
-      expect(cli('add-source', tv, '--whole').run).to eq(0)
-      expect(out.string).to include("Added #{tv} (split: false, as you asked)")
-      expect(EasySync::Config.load(config_path).first.source_entries.last).to eq({ path: tv, split: false })
+    it 'adds a share and lists it' do
+      expect(cli('add-source', tv).run).to eq(0)
+      expect(out.string).to include("Added #{tv}. Config:")
+      expect(EasySync::Config.load(config_path).first.source_entries.last).to eq({ path: tv })
       out.truncate(0); out.rewind
       cli('sources').run
-      expect(out.string).to include("#{tv}", 'whole', 'mounted')
+      expect(out.string).to include(tv, 'mounted')
+      expect(out.string).not_to include('placed whole')
     end
 
-    it 'infers split when no drive is registered yet, and whole for a share with loose files' do
+    it 'points out a share still placed whole, and how to split it' do
       cli('add-source', tv).run
-      expect(out.string).to include('split: true, no drive registered yet', 'Run `easy_sync plan`')
-      loose = make_dirs(File.join(temp_dir, 'shares'), 'synology').first
-      write_file(File.join(loose, 'Boxing.mp4'))
-      out.truncate(0); out.rewind
-      cli('add-source', loose).run
-      expect(out.string).to include('split: false, 1 loose file')
-    end
-
-    it 'uses the planner rule once a drive is registered' do
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.assign_folder('tv', 'S1')
       m.close
-      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{5 * 1024 * 1024}\t#{p}\n" }.join })   # 5 GB each
-      cli('add-source', tv).run
-      expect(out.string).to include('split: false', 'fits comfortably')
+      out.truncate(0); out.rewind
+      cli('sources').run
+      expect(out.string).to include('placed whole; `easy_sync split tv` places its folders one by one')
     end
 
     it 'refuses an unmounted or duplicate share, and removes one without touching drives' do
       expect(cli('add-source', File.join(temp_dir, 'nope')).run).to eq(1)
       expect(err.string).to include('not mounted')
-      cli('add-source', tv, '--split').run
-      expect(cli('add-source', tv, '--split').run).to eq(1)
+      cli('add-source', tv).run
+      expect(cli('add-source', tv).run).to eq(1)
       expect(err.string).to include('already a source')
       expect(cli('remove-source', tv).run).to eq(0)
       expect(out.string).to include("Removed #{tv}. Nothing on the drives was touched")
@@ -1361,21 +1448,17 @@ RSpec.describe EasySync::CLI do
   end
 
   describe 'plan' do
-    it 'prints measurements and a recommendation per share, and --apply writes it to the config' do
+    it 'prints measurements per share and whether every folder fits, without touching the config' do
       nas = make_dirs(temp_dir, 'nas').first
       make_dirs(nas, 'A', 'B')
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "#{9 * 1024 * 1024 * 1024}\t#{p}\n" }.join })
+      before = File.read(config_path)
       expect(cli('plan', '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include('Judging against the largest drive: 8.0 TB', '18.0 TB in 2 folders, largest A (9.0 TB)',
-                                    'recommend split: true', 'bigger than the largest drive currently registered',
-                                    'will fit once you add a bigger drive', 'CHANGE the config',
-                                    'Run `easy_sync plan --apply`')
-      expect(EasySync::Config.load(config_path).first.source_entries).to eq([{ path: nas, split: false }])
-
-      expect(cli('plan', '--largest-drive', '8tb', '--apply').run).to eq(0)
-      expect(out.string).to include('Updated 1 source in')
-      expect(EasySync::Config.load(config_path).first.source_entries).to eq([{ path: nas, split: true }])
-      expect(File.read(config_path)).to include('# easy_sync configuration')
+                                    'bigger than the largest drive currently registered', 'will fit once you add a bigger drive')
+      expect(out.string).not_to include('split', '--apply')
+      expect(File.read(config_path)).to eq(before)
+      expect(cli('plan', '--apply').run).to eq(1)
     end
 
     it 'rejects a size it cannot parse' do
@@ -1389,7 +1472,7 @@ RSpec.describe EasySync::CLI do
       make_dirs(pro, 'Course 1')
       make_dirs(movies, 'Film 1')
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      File.write(config_path, cfg.merge(sources: [{ path: pro, split: false }, { path: movies, split: true }]).to_yaml)
+      File.write(config_path, cfg.merge(sources: [{ path: pro }, { path: movies }]).to_yaml)
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "1024\t#{p}\n" }.join })
 
       expect(cli('plan', 'pro', '--largest-drive', '8tb').run).to eq(0)
@@ -1401,26 +1484,6 @@ RSpec.describe EasySync::CLI do
       expect(cli('plan', movies, '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include(movies)
       expect(out.string).not_to include(pro)
-    end
-
-    it 'suggests re-running with the same filter, and --apply with a filter only touches that share' do
-      pro = make_dirs(temp_dir, 'pro').first
-      movies = make_dirs(temp_dir, 'movies').first
-      make_dirs(pro, 'Course 1')
-      make_dirs(movies, 'Film 1')
-      cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      # both start mismatched against the recommendation for a tiny 1 KB folder (whole)
-      File.write(config_path, cfg.merge(sources: [{ path: pro, split: true }, { path: movies, split: true }]).to_yaml)
-      fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "1\t#{p}\n" }.join })
-
-      expect(cli('plan', 'pro', '--largest-drive', '8tb').run).to eq(0)
-      expect(out.string).to include('Run `easy_sync plan pro --apply`')
-      expect(out.string).not_to include('easy_sync plan --apply`')
-
-      expect(cli('plan', 'pro', '--largest-drive', '8tb', '--apply').run).to eq(0)
-      entries = EasySync::Config.load(config_path).first.source_entries
-      expect(entries.find { |e| e[:path] == pro }[:split]).to eq(false)
-      expect(entries.find { |e| e[:path] == movies }[:split]).to eq(true)   # untouched
     end
 
     it 'fails clearly when no configured source matches the given name' do
@@ -1514,7 +1577,7 @@ RSpec.describe EasySync::CLI do
     expect(out.string).to include('Nothing is configured yet', 'easy_sync add-source /Volumes/<share>')
     expect(fake_shell.calls).to be_empty
 
-    EasySync::Config.load(config_path).first.tap { |c| c.add_source('/Volumes/x', split: true); c.save }
+    EasySync::Config.load(config_path).first.tap { |c| c.add_source('/Volumes/x'); c.save }
     out.truncate(0); out.rewind
     cli.run
     expect(out.string).not_to include('Nothing is configured yet')

@@ -4,9 +4,11 @@ module EasySync
   module Jbod
     # Decides where a brand-new folder goes. Pure logic, no I/O.
     #
-    # Rule: the mounted drive with the most free space wins. A folder is never
-    # placed on a drive it would not fit on, and existing folders are never
-    # moved (that is what makes the JBOD layout browsable by hand).
+    # Rule: a drive in +prefer+ (one already holding part of the same share)
+    # wins if the folder fits there, so a share stays on one drive while it
+    # can; otherwise the mounted drive with the most free space wins. A folder
+    # is never placed on a drive it would not fit on, and existing folders are
+    # never moved (that is what makes the JBOD layout browsable by hand).
     module Placement
       class NoMountedDrives < Error; end
       class DoesNotFit < Error; end
@@ -14,10 +16,14 @@ module EasySync
       # +candidates+ are MountedDrive structs. +size_bytes+ is the folder size
       # (nil when unknown, in which case only the free-space ordering applies).
       # +reserve_bytes+ is headroom to leave on the drive after placement.
-      def self.choose(candidates, size_bytes: nil, reserve_bytes: 0)
+      def self.choose(candidates, size_bytes: nil, reserve_bytes: 0, prefer: [])
         raise NoMountedDrives, 'no registered drives are mounted' if candidates.empty?
 
-        best = candidates.max_by { |c| [c.free_bytes, c.friendly_name.to_s] }
+        preferred = candidates.select do |c|
+          prefer.include?(c.serial_number) && (size_bytes.nil? || c.free_bytes - reserve_bytes >= size_bytes)
+        end
+        pool = preferred.empty? ? candidates : preferred
+        best = pool.max_by { |c| [c.free_bytes, c.friendly_name.to_s] }
         if size_bytes && (best.free_bytes - reserve_bytes) < size_bytes
           raise DoesNotFit,
                 "#{format_bytes(size_bytes)} does not fit on #{best.friendly_name} " \

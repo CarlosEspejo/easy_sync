@@ -3,6 +3,7 @@
 require_relative 'jbod/models'
 require_relative 'jbod/manifest'
 require_relative 'jbod/placement'
+require_relative 'jbod/share_scan'
 require_relative 'jbod/volume_info'
 require_relative 'jbod/mirror'
 require_relative 'jbod/restorer'
@@ -19,6 +20,7 @@ require_relative 'jbod/scrubber'
 require_relative 'jbod/scrub_pool'
 require_relative 'jbod/benchmarker'
 require_relative 'jbod/runner'
+require_relative 'jbod/splitter'
 
 module EasySync
   # Folder-level mirroring from a NAS share onto independently mounted drives.

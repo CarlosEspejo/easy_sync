@@ -16,6 +16,9 @@ module EasySync
     # naming the files, and exits 25.)
     class Mirror
       MIN_VERSION = [3, 0, 0].freeze
+      # Anchored to the transfer root, directories only: a share's root-files
+      # unit copies its loose top-level files and nothing below them.
+      ROOT_ONLY = '--exclude=/*/'
 
       Result = Struct.new(:exit_status, :bytes_transferred, :total_size_bytes, :extraneous, :disk_full, :output,
                           keyword_init: true) do
@@ -35,8 +38,9 @@ module EasySync
       # --partial keeps a killed transfer's in-progress file instead of deleting
       # it, so a multi-GB file interrupted mid-copy resumes next run instead of
       # restarting from zero.
-      def command(source, destination)
+      def command(source, destination, root_only: false)
         argv = ['rsync', '-a', '--partial', '--stats', '--info=progress2', '--itemize-changes', *@excludes]
+        argv << ROOT_ONLY if root_only
         argv += @extra_args
         argv + [with_slash(source), with_slash(destination)]
       end
@@ -44,7 +48,13 @@ module EasySync
       # The deletion probe: never copies, never deletes, only reports.
       # --delete-excluded makes it also report excluded junk that an earlier
       # run copied before the exclusion existed, so the purge clears it.
-      def probe_command(source, destination)
+      # A root-files unit (root_only) drops --delete-excluded: its subfolders
+      # are excluded, and they belong to other folders, so they must never be
+      # reported as extraneous. Without --delete-excluded rsync protects them.
+      def probe_command(source, destination, root_only: false)
+        return ['rsync', '-an', '--itemize-changes', '--delete', *@excludes, ROOT_ONLY,
+                with_slash(source), with_slash(destination)] if root_only
+
         ['rsync', '-an', '--itemize-changes', '--delete', '--delete-excluded', *@excludes,
          with_slash(source), with_slash(destination)]
       end
@@ -63,23 +73,23 @@ module EasySync
         raise Error, 'rsync not found on PATH'
       end
 
-      def sync(source, destination)
+      def sync(source, destination, root_only: false)
         raise Error, "source folder #{source} does not exist" unless Dir.exist?(source)
 
         FileUtils.mkdir_p(File.dirname(destination))
-        result = @shell.run(command(source, destination))
+        result = @shell.run(command(source, destination, root_only: root_only))
         stats = self.class.parse_stats(result.output)
         # Only probe after a clean copy: a half-synced folder must not start
         # deletion clocks.
-        extraneous = result.success? ? probe(source, destination) : nil
+        extraneous = result.success? ? probe(source, destination, root_only: root_only) : nil
         Result.new(exit_status: result.status, output: result.output, extraneous: extraneous,
                    disk_full: self.class.disk_full?(result.output), **stats)
       end
 
       # Files present on the drive but gone from the source, as [[path, kind], ...].
       # nil if the probe itself failed, so the caller records nothing.
-      def probe(source, destination)
-        result = @shell.capture(probe_command(source, destination))
+      def probe(source, destination, root_only: false)
+        result = @shell.capture(probe_command(source, destination, root_only: root_only))
         result.success? ? self.class.parse_extraneous(result.output) : nil
       end
 
