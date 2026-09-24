@@ -186,9 +186,11 @@ assumptions, they cannot check them.
   `easy_sync scrub --for 8h` fits an overnight window.
   Moving a folder to another drive loses its checksums: the new drive has
   none yet, and the old drive's rows stay until that drive is scrubbed
-  again (`prune_checksums`). backup-06-8tb still holds 122,908 rows for
-  `synology`, which moved to backup-07-6tb on 2026-09-23. `split` keeps
-  checksums by moving them under the new folder names.
+  again (`prune_checksums`). `split` keeps checksums by moving them under
+  the new folder names. After `synology` moved from backup-06-8tb to
+  backup-07-6tb (2026-09-23), both drives were scrubbed on 2026-09-24:
+  backup-07-6tb holds `synology`'s 122,908 rows, all `ok`, and backup-06-8tb's
+  stale copies are pruned.
 - Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
   and verified against the real ThunderBay 8 fleet on 2026-09-21: see
   docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
