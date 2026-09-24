@@ -25,7 +25,7 @@ What is already covered, and so is out of scope:
   redundancy.
 - **Legitimate changes on the NAS**, including ransomware or a bad app write
   that sync then copies over the good backup. That is a different feature:
-  `docs/changed-file-grace.md`. `scrub` treats any change in size or mtime as
+  `docs/tripwire.md`. `scrub` treats any change in size or mtime as
   legitimate on purpose.
 
 ## How it works (summary)

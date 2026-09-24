@@ -173,7 +173,10 @@ assumptions, they cannot check them.
   rows (no data moved), and the following sync finished with all 2,712 units
   `ok`. No `tree` row keyed by a bare share name is left in the manifest.
 
-- Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
+- Ransomware tripwire (stop a sync that would replace or remove far more
+  existing files than normal): docs/tripwire.md (designed, not built). It
+  replaced the changed-file versioning design; recovery after the fact is
+  Synology snapshots + Backblaze history, not the drives.
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
   checklist on 2026-09-21 (results in docs/integrity-scan.md). The first
   full pass of the real fleet ran 2026-09-22 (02:55-14:26 UTC, ~11.5 h;
@@ -183,9 +186,11 @@ assumptions, they cannot check them.
   `easy_sync scrub --for 8h` fits an overnight window.
   Moving a folder to another drive loses its checksums: the new drive has
   none yet, and the old drive's rows stay until that drive is scrubbed
-  again (`prune_checksums`). backup-06-8tb still holds 122,908 rows for
-  `synology`, which moved to backup-07-6tb on 2026-09-23. `split` keeps
-  checksums by moving them under the new folder names.
+  again (`prune_checksums`). `split` keeps checksums by moving them under
+  the new folder names. After `synology` moved from backup-06-8tb to
+  backup-07-6tb (2026-09-23), both drives were scrubbed on 2026-09-24:
+  backup-07-6tb holds `synology`'s 122,908 rows, all `ok`, and backup-06-8tb's
+  stale copies are pruned.
 - Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
   and verified against the real ThunderBay 8 fleet on 2026-09-21: see
   docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
@@ -210,9 +215,12 @@ assumptions, they cannot check them.
 - `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last
   25 runs per drive). It was checked on `jbod-test-1` on 2026-09-22: 1.5 GB test
   file, write 86-99 MB/s, read ~163 MB/s (close to scrub's ~150 MB/s on it, so
-  the page cache was bypassed), and Ctrl-C removed the test file. It has not
-  been run on the real fleet yet. The first `benchmark --all` gives each drive
-  its first entry; a SLOWER flag needs 3 earlier runs. It reports MiB/s (as
+  the page cache was bypassed), and Ctrl-C removed the test file. The first
+  real-fleet `benchmark --all` ran 2026-09-22 (14:54-15:08, 8 GB file,
+  write/read MiB/s): 01-8tb 224/247, 07-6tb 180/196, 03-8tb 158/163,
+  04-8tb 136/154, 02-6tb 137/142, 06-8tb 130/136, 08-2tb 107/123,
+  05-3tb 106/112. Each drive has one run so far; a SLOWER flag needs 3
+  earlier runs. It reports MiB/s (as
   scrub does); the 8 GB table in docs/performance.md doesn't say whether it
   used MB or MiB (~5% apart), so compare against it loosely.
 - 2.0.0 is published only once `bundle exec rake release` has run (builds,
