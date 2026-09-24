@@ -173,7 +173,10 @@ assumptions, they cannot check them.
   rows (no data moved), and the following sync finished with all 2,712 units
   `ok`. No `tree` row keyed by a bare share name is left in the manifest.
 
-- Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
+- Ransomware tripwire (stop a sync that would replace or remove far more
+  existing files than normal): docs/tripwire.md (designed, not built). It
+  replaced the changed-file versioning design; recovery after the fact is
+  Synology snapshots + Backblaze history, not the drives.
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
   checklist on 2026-09-21 (results in docs/integrity-scan.md). The first
   full pass of the real fleet ran 2026-09-22 (02:55-14:26 UTC, ~11.5 h;
