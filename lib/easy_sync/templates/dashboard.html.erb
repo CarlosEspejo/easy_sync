@@ -106,45 +106,72 @@
   .tile details { margin-top: 6px; }
   .tile details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .tile details ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; max-height: 240px; overflow-y: auto; }
+  .verdict { background: var(--surface); border: 1px solid var(--ring); border-left: 6px solid var(--good);
+             border-radius: 8px; padding: 16px 18px; margin: 12px 0 20px; }
+  .verdict.warning { border-left-color: var(--warning); }
+  .verdict.critical { border-left-color: var(--critical); }
+  .verdict .headline { font-size: 20px; font-weight: 600; margin: 0; }
+  .verdict .headline::before { content: "●"; margin-right: 8px; color: var(--good); }
+  .verdict.warning .headline::before { color: var(--warning); }
+  .verdict.critical .headline::before { color: var(--critical); }
+  .verdict .line { color: var(--ink-2); margin: 6px 0 0; }
+  .verdict .line.muted { color: var(--muted); font-size: 13px; }
+  .verdict .alerts { margin: 14px 0 0; }
+  .section-line { margin: 28px 0 0; color: var(--muted); }
+  .section-line strong { color: var(--ink); font-size: 15px; margin-right: 6px; }
+  .tile .seen.warning { color: var(--warning); font-weight: 500; }
+  .tile .seen.critical { color: var(--critical); font-weight: 500; }
+  .tile .specs { color: var(--muted); font-size: 12px; margin: 6px 0 4px; }
+  .day { margin: 0; padding: 8px 12px; font-size: 12px; font-weight: 600; color: var(--muted);
+         border-bottom: 1px solid var(--hairline); background: var(--page); }
+  .feed { list-style: none; margin: 0; padding: 0; }
+  .feed > li { display: grid; grid-template-columns: 52px 1fr; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--hairline); }
+  .feed > li:last-child { border-bottom: 0; }
+  .feed .time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .feed .note { color: var(--muted); font-size: 13px; }
+  .feed .kind-deleted .what::before { content: "− "; color: var(--critical); }
+  .feed .kind-sync .what::before { content: "↻ "; color: var(--muted); }
+  @media (max-width: 600px) {
+    main { padding-inline: 16px; }
+    .verdict .headline { font-size: 17px; }
+    th, td { padding: 6px 8px; }
+  }
 </style>
 </head>
 <body>
 <main>
   <h1>Easy Sync Backup Status</h1>
-<%- if drives.any? -%>
-  <p class="capacity"><strong><%= bytes(total_capacity_bytes) %></strong> total capacity ·
-    <strong><%= bytes(total_free_bytes) %></strong> free right now</p>
-<%- end -%>
-  <p class="meta">Generated <%= h generated_at.strftime('%Y-%m-%d %H:%M %Z') %> ·
-    <%= drives.size %> drives, <%= drives.count(&:mounted) %> mounted ·
-    <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
-    <%- if inventory.empty? -%><%= folders.size %> folders tracked<%- else -%><%= inventory.size %> folders on the NAS, <%= inventory.count { |e| e.state == 'placed' } %> placed<%= ", #{unplaced_all.size} NOT backed up" if unplaced_all.any? %><%- end -%><%= " (#{unsynced_in(folders, source_status)} not yet synced)" if unsynced_in(folders, source_status).positive? %> · <%= pending.size %> pending deletion · drive colours show SMART health, not fullness</p>
-<%- if running && running.kind != 'sync' -%>
-  <p class="eta"><%= h other_running_line(running) %></p>
-<%- elsif (eta_text = eta_line(eta)) -%>
-  <p class="eta">Sync in progress: <%= h eta_text %></p>
-<%- end -%>
 
-<%- unless warnings.empty? && unplaced_all.empty? -%>
-  <div class="alerts">
-  <%- unless unplaced_all.empty? -%>
-    <div class="alert critical">
-      <strong><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %>
-      (<%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %>) on the NAS <%= unplaced_all.size == 1 ? 'is' : 'are' %> not backed up</strong>:
-      no mounted drive has room. Add or replace a drive, then sync again. The list is under Folders.
-    </div>
-  <%- end -%>
-  <%- warnings.each do |d| -%>
-    <div class="alert <%= d.level %>">
-      <strong><%= h d.drive.friendly_name %></strong> <%= d.level == :critical ? 'is FAILING' : 'is starting to fail' %>:
-      SMART says <%= h d.drive.smart_detail %> (checked <%= when_(d.drive.smart_checked_at) %>).
-      Plan to replace it: register a new drive, then <code>easy_sync replace-drive <%= h d.drive.friendly_name %> --to NEW_NAME --copy</code>.
-    </div>
-  <%- end -%>
-  </div>
+  <section class="verdict <%= verdict.level %>">
+    <p class="headline"><%= h verdict.headline %></p>
+<%- if running && running.kind != 'sync' -%>
+    <p class="line"><%= h other_running_line(running) %></p>
+<%- elsif (eta_text = eta_line(eta)) -%>
+    <p class="line">Sync in progress: <%= h eta_text %></p>
 <%- end -%>
+<%- if (last = runs.first) -%>
+    <p class="line">Last sync <%= relative_when(last.run_started_at) %> · <%= in_progress?(last, runs) ? 'still running' : "took #{run_duration(last)}" %> ·
+      <%= last.copied.to_i.zero? ? 'nothing needed copying' : "#{count(last.copied)} folder#{'s' if last.copied != 1} copied (#{bytes(last.bytes_transferred)})" %><%= ", #{last.failed} failed" if last.failed.to_i.positive? %></p>
+<%- end -%>
+<%- if drives.any? -%>
+    <p class="line muted"><%= bytes(total_capacity_bytes) %> total · <%= bytes(total_free_bytes) %> free ·
+      <%= drives.size %> drive<%= 's' if drives.size != 1 %>, <%= drives.count(&:mounted) %> connected · updated <%= relative_when(generated_at.utc.iso8601) %></p>
+<%- end -%>
+<%- if issues.empty? -%>
+    <p class="line muted">Nothing needs your attention.</p>
+<%- else -%>
+    <div class="alerts">
+  <%- issues.each do |i| -%>
+      <div class="alert <%= i.level %>"><%= i.html %></div>
+  <%- end -%>
+    </div>
+<%- end -%>
+  </section>
 
   <h2>Drives</h2>
+<%- if drives.any? -%>
+  <p class="meta">Tile colour shows SMART health, not fullness: a drive near 100% is doing its job.</p>
+<%- end -%>
 <%- if drives.empty? -%>
   <p class="empty">No drives registered. Run <code>easy_sync register-drive /Volumes/&lt;drive&gt;</code>.</p>
 <%- else -%>
@@ -153,224 +180,49 @@
     <div class="tile <%= d.level %><%= d.mounted ? '' : ' unmounted' %>">
       <div class="name"><span><%= h d.drive.friendly_name %></span>
       <%- unless d.mounted -%>
-        <span class="badge unknown">not mounted</span>
+        <span class="badge unknown">not connected</span>
       <%- end -%>
       </div>
-      <%- serial_text, serial_full = serial_line(d.drive) -%>
-      <div class="serial"<%= serial_full ? %( title="#{h serial_full}") : '' %>><%= h serial_text %></div>
       <div class="value"><%= percent(d.used_fraction) %> <span class="unit">full</span></div>
       <div class="meter" role="img" aria-label="<%= percent(d.used_fraction) %> used"><span style="width: <%= ((d.used_fraction || 0) * 100).clamp(0, 100).round(1) %>%"></span></div>
-      <div class="sub"><%= bytes(d.free_bytes) %> free · <%= bytes(d.used_bytes) %> of <%= bytes(d.capacity_bytes) %> used</div>
-    <%- if !d.mounted -%>
-      <div class="sub muted">last seen <%= when_(d.drive.last_seen_at) %></div>
+      <div class="sub"><%= bytes(d.free_bytes) %> free of <%= bytes(d.capacity_bytes) %></div>
+    <%- if (seen = seen_line(d)) -%>
+      <div class="sub muted seen <%= seen_level(d) %>"><%= h seen %></div>
     <%- elsif unexpected_mount?(d) -%>
       <div class="sub muted">at <%= h d.mount_point %></div>
     <%- end -%>
       <div class="health <%= d.health %>" title="<%= h d.drive.smart_detail %>"><%= h health_line(d) %><%- if health_detail_shown?(d) -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
-    <%- if d.drive.power_on_label -%>
-      <div class="sub muted">powered on <%= h d.drive.power_on_label %></div>
-    <%- end -%>
       <div class="sub muted"><%= h scrub_status_line(d) %><%- if scrub_overdue?(d) -%> <span class="badge warning">overdue</span><%- end -%></div>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>
-        <li><span><%= h share %><%= fs.size == 1 && fs.first.folder_path == share ? '' : " · #{fs.size} folder#{'s' if fs.size != 1}" %></span><span><%= bytes(total_size(fs)) %></span></li>
+        <li><span><%= h share %><%= fs.size == 1 && fs.first.folder_path == share ? '' : " · #{count(fs.size)} folder#{'s' if fs.size != 1}" %></span><span><%= bytes(total_size(fs)) %></span></li>
       <%- end -%>
       </ul>
-      <details><summary><%= d.folders.size %> folder<%= 's' if d.folders.size != 1 %> on this drive</summary>
-        <ul>
-      <%- d.folders.each do |f| -%>
-          <li><%= h f.folder_path %><%= f.root? ? " (loose files)" : "" %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
-      <%- end -%>
-        </ul>
-      </details>
     <%- end -%>
+      <details><summary>Drive details<%= d.folders.empty? ? '' : " and #{count(d.folders.size)} folder#{'s' if d.folders.size != 1}" %></summary>
+        <div class="specs"><%= h d.drive.serial_number %><%= d.drive.branded_model ? " · #{h d.drive.branded_model}" : '' %><%- if d.drive.power_on_label -%><br>powered on <%= h d.drive.power_on_label %><%- end -%></div>
+      <%- unless d.folders.empty? -%>
+        <ul>
+        <%- d.folders.each do |f| -%>
+          <li><%= h f.folder_path %><%= f.root? ? " (loose files)" : "" %> <span style="color:var(--muted)">(<%= bytes(f.size_bytes) %>)</span></li>
+        <%- end -%>
+        </ul>
+      <%- end -%>
+      </details>
     </div>
   <%- end -%>
   </div>
 <%- end -%>
 
-  <h2>Folders</h2>
-  <div class="table-wrap">
-<%- if folders.empty? -%>
-  <p class="empty">No folders placed yet.</p>
-<%- else -%>
-  <%- attention = folders.reject { |f| EasySync::Jbod::Dashboard::NEUTRAL.include?(folder_status(f, source_status)) } -%>
-  <%- unless attention.empty? -%>
-  <details class="share attention" open>
-    <summary>
-      <span class="share-name">Needs attention</span>
-      <span class="share-problems"><%= attention.size %> folder<%= 's' if attention.size != 1 %> not in a good state</span>
-    </summary>
-    <%= folder_rows(attention, source_status, pending, names) %>
-  </details>
-  <%- end -%>
-  <%- by_share(folders, inventory).each do |share, fs| -%>
-    <%- problems = problems_in(fs, source_status) -%>
-    <%- unsynced = unsynced_in(fs, source_status) -%>
-  <details class="share">
-    <summary>
-      <span class="share-name"><%= h share %></span>
-    <%- inv = inventory_for(inventory, share) -%>
-      <span class="share-meta"><%- if inv[:total].positive? -%><%= inv[:placed] %> of <%= inv[:total] %> folders on the NAS placed · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= fs.size %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{unsynced} not yet synced" if unsynced.positive? %></span>
-      <%- if inv[:unplaced].any? -%><span class="share-problems"><%= inv[:unplaced].size %> not backed up</span><%- end -%>
-      <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
-    </summary>
-    <%- if fs.empty? -%><p class="empty">Nothing from this share fits on the mounted drives yet.</p><%- else -%><%= folder_rows(fs, source_status, pending, names) %><%- end -%>
-  </details>
-  <%- end -%>
-  <%- unless unplaced_all.empty? -%>
-  <details class="share attention">
-    <summary>
-      <span class="share-name">Not backed up</span>
-      <span class="share-problems"><%= unplaced_all.size %> folder<%= 's' if unplaced_all.size != 1 %> · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
-    </summary>
-    <table>
-      <thead><tr><th>Folder</th><th class="num">Size</th><th>Why</th><th>Seen</th></tr></thead>
-      <tbody>
-    <%- unplaced_all.each do |e| -%>
-        <tr><td><%= h e.folder_path %></td><td class="num"><%= bytes(e.size_bytes) %></td><td><%= h e.detail %></td><td><%= when_(e.seen_at) %></td></tr>
-    <%- end -%>
-      </tbody>
-    </table>
-  </details>
-  <%- end -%>
-<%- end -%>
-  </div>
-
-  <h2>Pending deletions</h2>
-  <p class="meta">Files rsync no longer finds on the NAS, plus the old copy left behind whenever a folder is reassigned to a different drive. A "missing on NAS" entry is removed once it has been missing for <%= grace_days %> days and confirmed on two separate runs (anything that reappears drops off this list); a "moved off" entry is removed once the folder is verified synced to its new drive and that same grace period has passed.</p>
-  <div class="table-wrap">
-<%- if pending.empty? -%>
-  <p class="empty">Nothing pending.</p>
-<%- else -%>
-  <table>
-    <thead><tr><th>Path</th><th>Kind</th><th>Since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
-    <tbody>
-  <%- pending.each do |p| -%>
-      <tr>
-        <td><%= h pending_label(p) %></td>
-        <td><%= h pending_kind(p, names) %></td>
-        <td><%= when_(p.first_missing_at) %></td>
-        <td class="num"><%= p.reassigned? ? '—' : p.missing_runs %></td>
-        <td><%= expiry(p) %></td>
-      </tr>
-  <%- end -%>
-    </tbody>
-  </table>
-<%- end -%>
-  </div>
-
-  <h2>Scrub findings</h2>
-  <p class="meta">Files <code>easy_sync scrub</code> read back off a drive and found rotted, unreadable, or still bad after a refetch. Read-only: nothing here is ever deleted or copied by scrub itself.</p>
-  <div class="table-wrap">
-<%- if scrub_findings.empty? -%>
-  <p class="empty">No findings. Run <code>easy_sync scrub</code> to check a drive.</p>
-<%- else -%>
-  <table>
-    <thead><tr><th>Drive</th><th>Path</th><th>Status</th><th>Next step</th></tr></thead>
-    <tbody>
-  <%- scrub_findings.each do |f| -%>
-      <tr>
-        <td class="drive"><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
-        <td><%= h f.label %></td>
-        <td><span class="status <%= f.status == 'ok' ? 'ok' : 'failed' %>"><%= h f.status %></span></td>
-        <td><%= h scrub_finding_phrase(f) %></td>
-      </tr>
-  <%- end -%>
-    </tbody>
-  </table>
-<%- end -%>
-  </div>
-
-  <h2>Deleted from drives</h2>
-  <div class="table-wrap">
-<%- if deletions.empty? -%>
-  <p class="empty">Nothing has been deleted yet.</p>
-<%- else -%>
-  <table>
-    <thead><tr><th>When</th><th>Drive</th><th>What</th></tr></thead>
-    <tbody>
-  <%- deletions.each do |g| -%>
-      <tr>
-        <td class="when"><%= when_(g.at) %></td>
-        <td class="drive"><%= h names.fetch(g.drive_serial, g.drive_serial) %></td>
-        <td>
-    <%- if g.items.size == 1 -%>
-          <%= h deletion_label(g.items.first) %> <span class="muted">(missing on the NAS since <%= when_(g.items.first.first_missing_at) %>)</span>
-    <%- else -%>
-          <details class="group"><summary><%= deletion_summary(g) %></summary>
-            <ul>
-      <%- g.items.each do |d| -%>
-              <li><%= h deletion_label(d) %> <span class="muted">(missing since <%= when_(d.first_missing_at) %>)</span></li>
-      <%- end -%>
-            </ul>
-          </details>
-    <%- end -%>
-        </td>
-      </tr>
-  <%- end -%>
-    </tbody>
-  </table>
-<%- end -%>
-  </div>
-
-  <h2>Placement history</h2>
-  <div class="table-wrap">
-<%- if history.empty? -%>
-  <p class="empty">Nothing recorded yet.</p>
-<%- else -%>
-  <table>
-    <thead><tr><th>When</th><th>What</th><th>Why</th></tr></thead>
-    <tbody>
-  <%- history.each do |g| -%>
-      <tr>
-        <td class="when"><%= when_(g.at) %></td>
-        <td>
-    <%- if g.items.size == 1 -%>
-          <%= h history_summary(g, names) %>
-    <%- else -%>
-          <details class="group"><summary><%= h history_summary(g, names) %></summary>
-            <ul>
-      <%- g.items.each do |e| -%>
-              <li><%= h history_item(e, g, names) %></li>
-      <%- end -%>
-            </ul>
-          </details>
-    <%- end -%>
-        </td>
-        <td class="muted"><%= h readable_note(g.note, names) %></td>
-      </tr>
-  <%- end -%>
-    </tbody>
-  </table>
-<%- end -%>
-  </div>
-
-  <h2>Recent sync runs</h2>
+  <h2>Latest sync</h2>
   <div class="table-wrap">
 <%- if runs.empty? -%>
   <p class="empty">No sync runs recorded yet.</p>
 <%- else -%>
-  <table>
-    <thead><tr><th>Started</th><th>Took</th><th class="num">Folders</th><th class="num">Copied</th><th class="num">Transferred</th><th>Problems</th></tr></thead>
-    <tbody>
-  <%- runs.each do |r| -%>
-      <tr>
-        <td class="when"><%= when_(r.run_started_at) %></td>
-        <td><%= in_progress?(r, runs) ? 'in progress' : run_duration(r) %></td>
-        <td class="num"><%= r.folders %></td>
-        <td class="num"><%= r.copied %></td>
-        <td class="num"><%= bytes(r.bytes_transferred) %></td>
-        <td><%- if r.failed.to_i.zero? -%><span class="status ok">none</span><%- else -%><span class="status failed"><%= r.failed %> failed</span><%- end -%></td>
-      </tr>
-  <%- end -%>
-    </tbody>
-  </table>
   <%- latest = runs.first -%>
-  <h3>What the latest run changed</h3>
   <%- if latest_notable.empty? -%>
-  <p class="empty">Nothing changed: <%= latest.folders %> folder<%= 's' if latest.folders != 1 %> checked, already up to date.</p>
+  <p class="empty"><%= in_progress?(latest, runs) ? 'Nothing copied so far' : 'Nothing changed' %>: <%= count(latest.folders) %> folder<%= 's' if latest.folders != 1 %> checked, already up to date.</p>
   <%- else -%>
   <table>
     <thead><tr><th>Folder</th><th>Drive</th><th>Result</th><th class="num">Transferred</th><th class="num">Folder size</th></tr></thead>
@@ -386,10 +238,138 @@
     <%- end -%>
     </tbody>
   </table>
-  <%- unchanged = latest.folders - latest_notable.size -%>
-  <%- if unchanged.positive? -%>
-  <p class="empty"><%= unchanged %> other folder<%= 's' if unchanged != 1 %> <%= unchanged == 1 ? 'was' : 'were' %> already up to date.</p>
+    <%- unchanged = latest.folders - latest_notable.size -%>
+    <%- if unchanged.positive? -%>
+  <p class="empty"><%= count(unchanged) %> other folder<%= 's' if unchanged != 1 %> <%= unchanged == 1 ? 'was' : 'were' %> already up to date.</p>
+    <%- end -%>
   <%- end -%>
+<%- end -%>
+  </div>
+
+  <h2>Folders</h2>
+  <div class="table-wrap">
+<%- if folders.empty? -%>
+  <p class="empty">No folders placed yet.</p>
+<%- else -%>
+  <%- unplaced_all = inventory.select { |e| e.state == 'unplaced' } -%>
+  <%- attention = folders.reject { |f| EasySync::Jbod::Dashboard::NEUTRAL.include?(folder_status(f, source_status)) } -%>
+  <%- unless attention.empty? -%>
+  <details class="share attention" open>
+    <summary>
+      <span class="share-name">Needs attention</span>
+      <span class="share-problems"><%= count(attention.size) %> folder<%= 's' if attention.size != 1 %> not in a good state</span>
+    </summary>
+    <%= folder_rows(attention, source_status, pending, names) %>
+  </details>
+  <%- end -%>
+  <%- by_share(folders, inventory).each do |share, fs| -%>
+    <%- problems = problems_in(fs, source_status) -%>
+    <%- unsynced = unsynced_in(fs, source_status) -%>
+  <details class="share">
+    <summary>
+      <span class="share-name"><%= h share %></span>
+    <%- inv = inventory_for(inventory, share) -%>
+      <span class="share-meta"><%- if inv[:total].positive? -%><%= count(inv[:placed]) %> of <%= count(inv[:total]) %> folders on the NAS placed · <%= bytes(total_size(fs)) %> of <%= bytes(inv[:total_bytes]) %><%- else -%><%= count(fs.size) %> folder<%= 's' if fs.size != 1 %> · <%= bytes(total_size(fs)) %><%- end -%><%= " · #{count(unsynced)} not yet synced" if unsynced.positive? %></span>
+      <%- if inv[:unplaced].any? -%><span class="share-problems"><%= count(inv[:unplaced].size) %> not backed up</span><%- end -%>
+      <%- if problems.positive? -%><span class="share-problems"><%= problems %> need<%= 's' if problems == 1 %> attention</span><%- end -%>
+    </summary>
+    <%- if fs.empty? -%><p class="empty">Nothing from this share fits on the mounted drives yet.</p><%- else -%><%= folder_rows(fs, source_status, pending, names) %><%- end -%>
+  </details>
+  <%- end -%>
+  <%- unless unplaced_all.empty? -%>
+  <details class="share attention">
+    <summary>
+      <span class="share-name">Not backed up</span>
+      <span class="share-problems"><%= count(unplaced_all.size) %> folder<%= 's' if unplaced_all.size != 1 %> · <%= bytes(unplaced_all.sum { |e| e.size_bytes.to_i }) %> · no drive has room</span>
+    </summary>
+    <table>
+      <thead><tr><th>Folder</th><th class="num">Size</th><th>Why</th><th>Seen</th></tr></thead>
+      <tbody>
+    <%- unplaced_all.each do |e| -%>
+        <tr><td><%= h e.folder_path %></td><td class="num"><%= bytes(e.size_bytes) %></td><td><%= h e.detail %></td><td><%= when_(e.seen_at) %></td></tr>
+    <%- end -%>
+      </tbody>
+    </table>
+  </details>
+  <%- end -%>
+<%- end -%>
+  </div>
+
+<%- if scrub_findings.empty? -%>
+  <p class="section-line"><strong>Scrub findings</strong> none. <code>easy_sync scrub</code> reads files back off a drive to catch rot.</p>
+<%- else -%>
+  <h2>Scrub findings</h2>
+  <p class="meta">Files <code>easy_sync scrub</code> read back off a drive and found rotted, unreadable, or still bad after a refetch. Read-only: nothing here is ever deleted or copied by scrub itself.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Drive</th><th>Path</th><th>Status</th><th>Next step</th></tr></thead>
+    <tbody>
+  <%- scrub_findings.each do |f| -%>
+      <tr>
+        <td class="drive"><%= h names.fetch(f.drive_serial, f.drive_serial) %></td>
+        <td><%= h f.label %></td>
+        <td><span class="status <%= f.status == 'ok' ? 'ok' : 'failed' %>"><%= h f.status %></span></td>
+        <td><%= h scrub_finding_phrase(f) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+  </div>
+<%- end -%>
+
+<%- if pending.empty? -%>
+  <p class="section-line"><strong>Pending deletions</strong> none. Anything gone from the NAS waits <%= grace_days %> days here before it is deleted from a drive.</p>
+<%- else -%>
+  <h2>Pending deletions</h2>
+  <p class="meta">Gone from the NAS, or the old copy left by a move. Deleted from the drive after <%= grace_days %> days and two syncs that confirm it (a move also waits for the new copy to sync). Anything that reappears drops off.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Path</th><th>Kind</th><th>Since</th><th class="num">Runs</th><th>Deleted after</th></tr></thead>
+    <tbody>
+  <%- pending.each do |p| -%>
+      <tr>
+        <td><%= h pending_label(p) %></td>
+        <td><%= h pending_kind(p, names) %></td>
+        <td class="when"><%= when_(p.first_missing_at) %></td>
+        <td class="num"><%= p.reassigned? ? '—' : p.missing_runs %></td>
+        <td><%= expiry(p) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+  </div>
+<%- end -%>
+
+  <h2>Activity</h2>
+  <div class="table-wrap">
+<%- if activity.empty? -%>
+  <p class="empty">Nothing recorded yet.</p>
+<%- else -%>
+  <%- activity.each do |day, items| -%>
+  <p class="day"><%= h day %></p>
+  <ul class="feed">
+    <%- items.each do |i| -%>
+    <li class="kind-<%= i.kind %>">
+      <span class="time"><%= Time.parse(i.at).localtime.strftime('%H:%M') %></span>
+      <div>
+      <%- if i.items.empty? -%>
+        <span class="what"><%= h i.summary %></span>
+      <%- else -%>
+        <details class="group"><summary><span class="what"><%= h i.summary %></span></summary>
+          <ul>
+        <%- i.items.each do |line| -%>
+            <li><%= h line %></li>
+        <%- end -%>
+          </ul>
+        </details>
+      <%- end -%>
+      <%- if i.note && !i.note.empty? -%>
+        <div class="note"><%= h i.note %></div>
+      <%- end -%>
+      </div>
+    </li>
+    <%- end -%>
+  </ul>
   <%- end -%>
 <%- end -%>
   </div>

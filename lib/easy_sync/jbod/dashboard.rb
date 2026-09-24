@@ -40,22 +40,30 @@ module EasySync
         @running = running
         by_serial = mounted.to_h { |m| [m.serial_number, m] }
         drives = manifest.drives.map { |d| drive_view(d, by_serial[d.serial_number]) }
+        runs = manifest.run_summaries(limit: RUNS_SHOWN)
+        inventory = manifest.source_inventory
+        folders = manifest.folders
+        names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] }
+        scrub_findings = manifest.scrub_findings
+        issues = issues(drives: drives, folders: folders, inventory: inventory, source_status: source_status,
+                        runs: runs, scrub_findings: scrub_findings)
         locals = {
           drives: drives,
-          folders: manifest.folders,
-          names: manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] },
-          history: history_groups(manifest.history(limit: HISTORY_ROWS)),
-          runs: (run_list = manifest.run_summaries(limit: 10)),
-          latest_notable: run_list.empty? ? [] : manifest.notable_sync_runs(run_list.first.run_started_at),
+          folders: folders,
+          names: names,
+          issues: issues,
+          verdict: verdict(issues, inventory, folders, source_status),
+          activity: activity_days(history_groups(manifest.history(limit: HISTORY_ROWS)),
+                                  deletion_groups(manifest.deletions(limit: HISTORY_ROWS)), runs, names),
+          runs: runs,
+          latest_notable: runs.empty? ? [] : manifest.notable_sync_runs(runs.first.run_started_at),
           generated_at: @clock.now,
           total_capacity_bytes: drives.sum { |d| d.capacity_bytes.to_i },
           total_free_bytes: drives.sum { |d| d.free_bytes.to_i },
-          warnings: drives.select { |d| %i[warning critical].include?(d.level) },
           source_status: source_status,
           pending: manifest.pending_deletions,
-          inventory: manifest.source_inventory,
-          deletions: deletion_groups(manifest.deletions(limit: HISTORY_ROWS)),
-          scrub_findings: manifest.scrub_findings,
+          inventory: inventory,
+          scrub_findings: scrub_findings,
           running: running,
           eta: running&.kind == 'sync' ? SyncEta.for(manifest, running.started_at) : nil
         }
@@ -146,7 +154,174 @@ module EasySync
           total_bytes: rows.sum { |e| e.size_bytes.to_i } }
       end
 
+      # -- status: what needs you ------------------------------------------
+
+      # Backblaze Personal drops a drive from the current backup once it has
+      # not been connected for 30 days (history keeps it for a year). Warn
+      # with time to act.
+      BACKBLAZE_WARN_DAYS = 21
+      BACKBLAZE_DROP_DAYS = 30
+      STALE_SYNC_DAYS = 7
+      RUNS_SHOWN = 30
+
+      Issue = Struct.new(:level, :html, keyword_init: true)
+      Verdict = Struct.new(:level, :headline, keyword_init: true)
+
+      # Everything worth your attention, most serious first. Each is one line
+      # of trusted HTML (every interpolated value is escaped here).
+      def issues(drives:, folders:, inventory:, source_status:, runs:, scrub_findings:)
+        list = []
+        unplaced = inventory.select { |e| e.state == 'unplaced' }
+        unless unplaced.empty?
+          list << Issue.new(level: :critical,
+                            html: "<strong>#{count(unplaced.size)} folder#{'s' if unplaced.size != 1} " \
+                                  "(#{bytes(unplaced.sum { |e| e.size_bytes.to_i })}) on the NAS " \
+                                  "#{unplaced.size == 1 ? 'is' : 'are'} not backed up</strong>: no drive has room. " \
+                                  'Add or replace a drive, then sync again (list under Folders).')
+        end
+        drives.select { |d| %i[warning critical].include?(d.level) }.each do |d|
+          name = h(d.drive.friendly_name)
+          list << Issue.new(level: d.level,
+                            html: "<strong>#{name} #{d.level == :critical ? 'is FAILING' : 'is starting to fail'}</strong>: " \
+                                  "SMART says #{h d.drive.smart_detail} (checked #{when_(d.drive.smart_checked_at)}). " \
+                                  "Register a new drive, then <code>easy_sync replace-drive #{name} --to NEW_NAME --copy</code>.")
+        end
+        drives.each do |d|
+          days = unseen_days(d)
+          next unless days && days >= BACKBLAZE_WARN_DAYS
+
+          name = h(d.drive.friendly_name)
+          list << if days >= BACKBLAZE_DROP_DAYS
+                    Issue.new(level: :critical,
+                              html: "<strong>#{name} not connected for #{days} days</strong>: it has dropped out of " \
+                                    "Backblaze's current backup (history keeps it for a year). Connect it and let Backblaze catch up.")
+                  else
+                    Issue.new(level: :warning,
+                              html: "<strong>#{name} not connected for #{days} days</strong>: Backblaze drops it from the " \
+                                    "current backup at #{BACKBLAZE_DROP_DAYS}. Connect it within #{BACKBLAZE_DROP_DAYS - days} days.")
+                  end
+        end
+        bad = folders.reject { |f| NEUTRAL.include?(folder_status(f, source_status)) }
+        unless bad.empty?
+          list << Issue.new(level: :warning,
+                            html: "<strong>#{count(bad.size)} folder#{'s' if bad.size != 1} not in a good state</strong> " \
+                                  '(failed, drive full, missing on the NAS or not mounted): see Needs attention under Folders.')
+        end
+        latest = runs.first
+        if latest && latest.failed.to_i.positive?
+          list << Issue.new(level: :warning,
+                            html: "<strong>The last sync had #{latest.failed} failure#{'s' if latest.failed != 1}</strong>; " \
+                                  'they are retried on the next sync (see Latest sync).')
+        end
+        if latest && days_ago(latest.run_started_at) >= STALE_SYNC_DAYS
+          list << Issue.new(level: :warning,
+                            html: "<strong>No sync for #{days_ago(latest.run_started_at)} days</strong>: run <code>easy_sync sync</code>.")
+        end
+        unless scrub_findings.empty?
+          list << Issue.new(level: :critical,
+                            html: "<strong>#{count(scrub_findings.size)} file#{'s' if scrub_findings.size != 1} flagged by scrub</strong> " \
+                                  '(rot or read errors): see Scrub findings.')
+        end
+        overdue = drives.select { |d| scrub_overdue?(d) }
+        unless overdue.empty?
+          list << Issue.new(level: :warning,
+                            html: "<strong>#{overdue.size} drive#{'s' if overdue.size != 1} overdue for a scrub</strong> " \
+                                  "(#{h overdue.map { |d| d.drive.friendly_name }.join(', ')}): <code>easy_sync scrub --all</code>.")
+        end
+        list.sort_by { |i| i.level == :critical ? 0 : 1 }
+      end
+
+      def verdict(issues, inventory, folders, source_status)
+        level = if issues.any? { |i| i.level == :critical } then :critical
+                elsif issues.any? then :warning
+                else :ok
+                end
+        total = inventory.empty? ? folders.size : inventory.count { |e| e.state != 'empty' }
+        unplaced = inventory.count { |e| e.state == 'unplaced' }
+        # Backed up = copied at least once. A folder whose drive was simply
+        # offline for the last sync still is; one never copied is not.
+        backed = [folders.count(&:last_synced_at), total].min
+        waiting = unsynced_in(folders, source_status)
+        headline = if total.zero? then 'Nothing backed up yet'
+                   elsif unplaced.positive? then "#{count(unplaced)} of #{count(total)} folders are not backed up"
+                   elsif backed == total then "All #{count(total)} folders backed up"
+                   elsif waiting.positive? then "#{count(backed)} of #{count(total)} folders backed up, #{count(waiting)} waiting for their first copy"
+                   else "#{count(backed)} of #{count(total)} folders backed up"
+                   end
+        Verdict.new(level: level, headline: headline)
+      end
+
+      # Days since a drive was last connected; nil while it is connected now.
+      def unseen_days(view)
+        return nil if view.mounted || view.drive.last_seen_at.nil?
+
+        days_ago(view.drive.last_seen_at)
+      end
+
+      def seen_level(view)
+        days = unseen_days(view) or return nil
+        return 'critical' if days >= BACKBLAZE_DROP_DAYS
+
+        'warning' if days >= BACKBLAZE_WARN_DAYS
+      end
+
+      # -- activity feed ---------------------------------------------------
+
+      ActivityItem = Struct.new(:at, :kind, :summary, :note, :items, keyword_init: true)
+
+      # Sync runs, placement changes and deletions in one newest-first feed,
+      # grouped by local day: [[day_label, [ActivityItem, ...]], ...].
+      def activity_days(history, deletions, runs, names)
+        items = runs.map do |r|
+          summary = in_progress?(r, runs) ? "Sync in progress: #{count(r.folders)} folder#{'s' if r.folders != 1} checked so far" : run_line(r)
+          ActivityItem.new(at: r.run_started_at, kind: 'sync', summary: summary, note: nil, items: [])
+        end
+        # A removal is already in the feed as its deletion from the drive.
+        items += history.reject { |g| g.event == 'removed' }.map do |g|
+          ActivityItem.new(at: g.at, kind: g.event, summary: history_summary(g, names), note: readable_note(g.note, names),
+                           items: g.items.size == 1 ? [] : g.items.map { |e| history_item(e, g, names) })
+        end
+        items += deletions.map do |g|
+          drive = names.fetch(g.drive_serial, g.drive_serial)
+          single = g.items.size == 1
+          ActivityItem.new(at: g.at, kind: 'deleted',
+                           summary: "#{single ? deletion_label(g.items.first) : deletion_summary(g)} deleted from #{drive}",
+                           note: single ? deletion_reason(g.items.first) : nil,
+                           items: single ? [] : g.items.map { |d| "#{deletion_label(d)} (#{deletion_reason(d)})" })
+        end
+        items.sort_by(&:at).reverse.first(ACTIVITY_SHOWN).group_by { |i| day_label(i.at) }.to_a
+      end
+
+      ACTIVITY_SHOWN = 40
+
+      def run_line(run)
+        copied = run.copied.to_i.zero? ? 'nothing to copy' : "#{count(run.copied)} copied (#{bytes(run.bytes_transferred)})"
+        failed = run.failed.to_i.positive? ? ", #{run.failed} failed" : ''
+        "Sync: #{count(run.folders)} folder#{'s' if run.folders != 1} checked, #{copied}#{failed} in #{run_duration(run)}"
+      end
+
       # -- template helpers ------------------------------------------------
+
+      # 2692 -> "2,692"
+      def count(n) = n.to_i.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+
+      # "today 20:18", "yesterday 08:50", "Sep 21 13:45" (or with the year
+      # when it isn't this year).
+      def relative_when(iso)
+        return 'never' if iso.nil? || iso.empty?
+
+        t = Time.parse(iso).localtime
+        "#{day_label(iso).sub(/\A(Today|Yesterday)\z/) { |w| w.downcase }} #{t.strftime('%H:%M')}"
+      end
+
+      def day_label(iso)
+        t = Time.parse(iso).localtime
+        today = @clock.now.localtime.to_date
+        return 'Today' if t.to_date == today
+        return 'Yesterday' if t.to_date == today - 1
+
+        t.year == today.year ? t.strftime('%a %b %-d') : t.strftime('%a %b %-d %Y')
+      end
 
       def bytes(value) = Placement.format_bytes(value)
 
@@ -214,6 +389,14 @@ module EasySync
       end
 
       def deletion_label(d) = d.kind == 'folder' ? "#{d.folder_path} (whole folder)" : "#{d.folder_path}/#{d.relative_path}"
+
+      # The old copy a move left behind is recorded with its drive's serial
+      # where a path would be (see PendingDeletion); it was never missing.
+      def moved_copy?(d) = d.kind == 'folder' && d.relative_path == d.drive_serial
+
+      def deletion_reason(d)
+        moved_copy?(d) ? "old copy, after the move on #{when_(d.first_missing_at)}" : "missing on the NAS since #{when_(d.first_missing_at)}"
+      end
 
       # Notes written by earlier code name drives by serial ("moved from
       # WKD1SH4M"); show the drive's name instead, and timestamps the way the
@@ -357,6 +540,15 @@ module EasySync
 
       def days_ago(iso)
         ((@clock.now - Time.parse(iso)) / 86_400).floor
+      end
+
+      # "connected", or "last seen 3 days ago" for a drive not mounted now.
+      def seen_line(view)
+        return nil if view.mounted
+        return 'never seen' unless view.drive.last_seen_at
+
+        days = days_ago(view.drive.last_seen_at)
+        days.zero? ? "last seen #{relative_when(view.drive.last_seen_at)}" : "last seen #{days} day#{'s' if days != 1} ago"
       end
 
       def scrub_finding_phrase(row)

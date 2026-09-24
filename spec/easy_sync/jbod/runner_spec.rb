@@ -697,7 +697,7 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(report.purged).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
       expect(File).not_to exist(File.join(drive_root, 'photos', 'old.jpg'))
       expect(manifest.deletions.size).to eq(1)
-      expect(File.read(dashboard_path)).to include('Deleted from drives', 'photos/old.jpg')
+      expect(File.read(dashboard_path)).to include('photos/old.jpg deleted from backup-04-8tb')
     end
 
     it 'does not purge a file that reappeared on the NAS' do
