@@ -33,6 +33,7 @@
   main { max-width: 1400px; margin: 0 auto; padding-block: 32px; padding-inline: 20px; }
   h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
   h2 { font-size: 15px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  h3 { font-size: 13px; font-weight: 600; margin: 20px 0 8px; color: var(--ink); }
   .capacity { color: var(--ink-2); font-size: 16px; margin: 0 0 6px; }
   .capacity strong { color: var(--ink); font-weight: 600; }
   .meta { color: var(--muted); margin: 0 0 20px; }
@@ -329,20 +330,44 @@
   <p class="empty">No sync runs recorded yet.</p>
 <%- else -%>
   <table>
-    <thead><tr><th>Started</th><th>Folder</th><th>Drive</th><th>Result</th><th class="num">Transferred</th><th class="num">Folder size</th></tr></thead>
+    <thead><tr><th>Started</th><th>Took</th><th class="num">Folders</th><th class="num">Copied</th><th class="num">Transferred</th><th>Problems</th></tr></thead>
     <tbody>
   <%- runs.each do |r| -%>
       <tr>
-        <td><%= when_(r.started_at) %></td>
-        <td><%= h r.folder_path %></td>
-        <td class="drive"><%= h names.fetch(r.drive_serial, r.drive_serial) %></td>
-        <td><span class="status <%= r.exit_status.to_i.zero? ? 'ok' : 'failed' %>"><%= r.exit_status.to_i.zero? ? 'ok' : "failed (exit #{r.exit_status})" %></span></td>
+        <td><%= when_(r.run_started_at) %></td>
+        <td><%= in_progress?(r, runs) ? 'in progress' : run_duration(r) %></td>
+        <td class="num"><%= r.folders %></td>
+        <td class="num"><%= r.copied %></td>
         <td class="num"><%= bytes(r.bytes_transferred) %></td>
-        <td class="num"><%= bytes(r.total_size_bytes) %></td>
+        <td><%- if r.failed.to_i.zero? -%><span class="status ok">none</span><%- else -%><span class="status failed"><%= r.failed %> failed</span><%- end -%></td>
       </tr>
   <%- end -%>
     </tbody>
   </table>
+  <%- latest = runs.first -%>
+  <h3>What the latest run changed</h3>
+  <%- if latest_notable.empty? -%>
+  <p class="empty">Nothing changed: <%= latest.folders %> folder<%= 's' if latest.folders != 1 %> checked, already up to date.</p>
+  <%- else -%>
+  <table>
+    <thead><tr><th>Folder</th><th>Drive</th><th>Result</th><th class="num">Transferred</th><th class="num">Folder size</th></tr></thead>
+    <tbody>
+    <%- latest_notable.each do |r| -%>
+      <tr>
+        <td><%= h r.folder_path %></td>
+        <td class="drive"><%= h names.fetch(r.drive_serial, r.drive_serial) %></td>
+        <td><span class="status <%= r.exit_status.to_i.zero? ? 'ok' : 'failed' %>"><%= r.exit_status.to_i.zero? ? 'copied' : "failed (exit #{r.exit_status})" %></span></td>
+        <td class="num"><%= bytes(r.bytes_transferred) %></td>
+        <td class="num"><%= bytes(r.total_size_bytes) %></td>
+      </tr>
+    <%- end -%>
+    </tbody>
+  </table>
+  <%- unchanged = latest.folders - latest_notable.size -%>
+  <%- if unchanged.positive? -%>
+  <p class="empty"><%= unchanged %> other folder<%= 's' if unchanged != 1 %> <%= unchanged == 1 ? 'was' : 'were' %> already up to date.</p>
+  <%- end -%>
+  <%- end -%>
 <%- end -%>
   </div>
 </main>

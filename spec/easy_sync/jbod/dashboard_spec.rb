@@ -29,6 +29,41 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(%r{<p class="capacity"><strong>47\.0 TB</strong> total capacity ·\s*<strong>3\.0 TB</strong> free right now</p>})
   end
 
+  describe 'recent sync runs' do
+    let(:run) { '2026-09-13T11:40:00Z' }
+
+    def sync(folder, bytes:, exit_status: 0)
+      manifest.assign_folder(folder, 'SN-backup-04-8tb') unless manifest.folder(folder)
+      manifest.record_sync(folder_path: folder, drive_serial: 'SN-backup-04-8tb', started_at: '2026-09-13T11:40:00Z',
+                           finished_at: '2026-09-13T11:45:00Z', exit_status: exit_status, bytes_transferred: bytes,
+                           total_size_bytes: 1_000, run_started_at: run)
+    end
+
+    it 'shows one line per run, and only the folders of the latest run that copied something or failed' do
+      sync('tv/Unchanged', bytes: 0)
+      sync('tv/New Episode', bytes: 2 * GB)
+      sync('tv/Broken', bytes: nil, exit_status: 23)
+      html = dashboard.render
+      section = html[html.index('Recent sync runs')..]
+
+      expect(section).to match(%r{<td>5m 0s</td>\s*<td class="num">3</td>\s*<td class="num">1</td>\s*<td class="num">2\.0 GB</td>})
+      expect(section).to include('1 failed', 'What the latest run changed', 'tv/New Episode', 'copied', 'tv/Broken', 'failed (exit 23)',
+                                 '1 other folder was already up to date')
+      expect(section).not_to include('tv/Unchanged')
+    end
+
+    it 'says so when the latest run changed nothing' do
+      sync('tv/Unchanged', bytes: 0)
+      expect(dashboard.render).to include('Nothing changed: 1 folder checked, already up to date.')
+    end
+
+    it 'marks the newest run as in progress while its sync still holds the lock' do
+      sync('tv/Unchanged', bytes: 0)
+      running = EasySync::Jbod::RunLock::Status.new(pid: 1, kind: 'sync', started_at: Time.utc(2026, 9, 13, 11, 39, 59))
+      expect(dashboard.render(running: running)).to match(%r{<td>in progress</td>\s*<td class="num">1</td>})
+    end
+  end
+
   it 'shows no ETA banner when no sync is running' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
     expect(html).not_to include('class="eta"', 'Sync in progress')

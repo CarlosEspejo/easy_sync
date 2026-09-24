@@ -443,8 +443,11 @@ Folders are grouped by share so thousands of them stay readable: each drive tile
 shows one line per share with a count and total size, and the folders table has
 a collapsible section per share with a "Needs attention" list on top for
 anything failed, full, missing or unmounted. Every share starts collapsed;
-only "Needs attention" starts open. Pending and completed deletions,
-placement history and recent runs follow.
+only "Needs attention" starts open. Pending and completed deletions and
+placement history follow. Last comes one line per recent sync run (when it
+started, how long it took, how many folders it checked and copied, bytes
+transferred, failures), then just the folders the latest run actually copied
+or failed on; the rest only confirmed nothing had changed.
 
 Commands
 --------
@@ -494,7 +497,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `smart_checks` | one row per SMART read: drive serial, timestamp, reallocated-sector count, whether it's a manually verified checkpoint |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status, scope (`tree`, or `root` for a share's loose top-level files) |
 | `placement_history` | every `assigned`, `reassigned`, `split` and `removed` event |
-| `sync_runs` | one row per rsync run: exit status and `--stats` byte counts |
+| `sync_runs` | one row per folder synced: exit status, `--stats` byte counts, and the start time of the `sync` run it belonged to |
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |
 | `deletions` | audit log of everything actually removed from a drive |

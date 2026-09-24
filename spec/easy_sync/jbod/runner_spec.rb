@@ -149,6 +149,7 @@ RSpec.describe EasySync::Jbod::Runner do
                                                                 last_sync_status: 'ok', last_synced_at: '2026-09-13T12:00:00Z')
       expect(manifest.history('photos/2024').map(&:event)).to eq(['assigned'])
       expect(manifest.sync_runs.size).to eq(1)
+      expect(manifest.run_summaries.map(&:run_started_at)).to eq(['2026-09-13T12:00:00Z'])
     end
 
     it 'does not place a new folder where the manifest already promises more than df shows as used' do
