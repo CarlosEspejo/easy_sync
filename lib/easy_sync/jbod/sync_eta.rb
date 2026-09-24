@@ -8,7 +8,11 @@ module EasySync
     # actually done so far this run: folders it copied real bytes for (their
     # rate extrapolates to every not-yet-synced folder still queued) plus
     # folders it merely re-verified (their average time extrapolates to every
-    # already-synced folder not yet touched this run). The two behave nothing
+    # already-synced folder not yet touched this run, unless that folder has
+    # a verify of its own from an earlier run, which is used instead: a
+    # share's folders run together, so the first few verifies of a run can
+    # be one slow share's (many small files over SMB) and say nothing about
+    # thousands of single-file movie folders still to come). The two behave nothing
     # alike - an unchanged folder verifies in under a second, a first-time
     # folder moves real bytes over the network - so averaging them together
     # would be meaningless; this keeps them separate instead. Shared by
@@ -41,8 +45,8 @@ module EasySync
 
         folders = @manifest.folders
         never_synced = folders.select { |f| f.last_synced_at.nil? }
-        to_reverify = folders.count { |f| f.last_synced_at && f.last_synced_at < since }
-        return nil if never_synced.empty? && to_reverify.zero?
+        reverify = folders.select { |f| f.last_synced_at && f.last_synced_at < since }
+        return nil if never_synced.empty? && reverify.empty?
 
         if never_synced.any? && transfer_rate.nil?
           return Estimate.new(status: :waiting_for_first_transfer, never_synced_count: never_synced.size,
@@ -50,8 +54,10 @@ module EasySync
         end
 
         transfer_part = transfer_rate ? never_synced.sum { |f| f.size_bytes.to_i } / transfer_rate : 0
-        Estimate.new(status: :estimate, never_synced_count: never_synced.size, to_reverify: to_reverify,
-                    seconds: transfer_part + (to_reverify * avg_verify_seconds))
+        history = @manifest.last_verify_seconds(before: since)
+        reverify_part = reverify.sum { |f| history.fetch(f.folder_path, avg_verify_seconds) }
+        Estimate.new(status: :estimate, never_synced_count: never_synced.size, to_reverify: reverify.size,
+                    seconds: transfer_part + reverify_part)
       end
 
       private

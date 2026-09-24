@@ -294,12 +294,12 @@ RSpec.describe EasySync::Jbod::VolumeInfo do
       fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk7'] }, output: "APFS Physical Store: disk7s2\n")
     end
 
-    it 'tries smartctl plainly, then through a SAT bridge, then falls back to diskutil' do
+    it 'tries smartctl plainly, then through a SAT bridge, twice over, then falls back to diskutil' do
       fake_shell.on('smartctl', output: "Smartctl open device failed: Operation not supported by device\n", status: 2)
       h = info.smart_health('/Volumes/x')
       expect(h).to have_attributes(status: 'unknown', source: 'none')
       expect(h.detail).to include('not exposed by this enclosure')
-      expect(fake_shell.calls_to('smartctl')).to eq([['smartctl', '-a', '/dev/disk7s2'], ['smartctl', '-d', 'sat', '-a', '/dev/disk7s2']])
+      expect(fake_shell.calls_to('smartctl')).to eq([['smartctl', '-a', '/dev/disk7s2'], ['smartctl', '-d', 'sat', '-a', '/dev/disk7s2']] * 2)
     end
 
     it 'uses the SAT bridge answer when the plain call is refused' do

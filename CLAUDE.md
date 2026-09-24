@@ -34,6 +34,10 @@ README.md is the user-facing truth; this file is for working on the code.
 - `diskutil apfs list` shows a locked volume by name with "FileVault: Yes (Locked)"
   and "Mount Point: Not Mounted"; the Name and FileVault lines are several lines
   apart. `diskutil apfs lockVolume/unlockVolume` accept the volume name.
+- A smartctl read can fail once on a drive that reads fine minutes before
+  and after (backup-07-6tb in the ThunderBay, 2026-09-23). `smart_health`
+  retries, and `Runner#check_health` keeps the last known status rather
+  than overwriting it with 'unknown'.
 - Physical disk for smartctl: `diskutil info <mount>` -> "Part of Whole" ->
   `diskutil info <that>` -> "APFS Physical Store".
 - `caffeinate -i -w <pid>` exits on its own when the pid does; spawn it detached.
