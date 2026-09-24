@@ -64,6 +64,52 @@ RSpec.describe EasySync::Jbod::Dashboard do
     end
   end
 
+  describe 'placement history and deletions' do
+    def history_section(html) = html[html.index('Placement history')...html.index('Recent sync runs')]
+    def deletions_section(html) = html[html.index('Deleted from drives')...html.index('Placement history')]
+
+    it 'shows a bulk move as one expandable line, with drive names in place of serials' do
+      %w[A B C].each { |f| manifest.assign_folder("movies/#{f}", 'SN-backup-06-8tb', at: '2026-09-13T06:00:00Z') }
+      %w[A B C].each do |f|
+        manifest.reassign_folder("movies/#{f}", 'SN-backup-07-8tb', note: 'moved off SN-backup-06-8tb: drive overcommitted',
+                                                                   at: '2026-09-13T06:46:10Z')
+      end
+      section = history_section(dashboard.render)
+
+      expect(section).to include('3 folders moved to backup-07-8tb', 'moved off backup-06-8tb: drive overcommitted',
+                                 '<li>movies/A</li>', '3 folders placed on backup-06-8tb')
+      expect(section).not_to include('SN-backup-06-8tb')
+      expect(section.scan('<tr>').size).to eq(1 + 3)   # header + moves + placements + Photos
+    end
+
+    it 'groups a batch spread over several drives, whatever free space each note mentions' do
+      manifest.assign_folder('tv/A', 'SN-backup-01-3tb', note: 'new folder, most free space (1.4 TB)', at: '2026-09-13T00:48:10Z')
+      manifest.assign_folder('tv/B', 'SN-backup-02-6tb', note: 'new folder, most free space (1.3 TB)', at: '2026-09-13T00:48:40Z')
+      section = history_section(dashboard.render)
+      expect(section).to include('2 folders placed on 2 drives', 'new folder, most free space<', 'tv/A → backup-01-3tb')
+    end
+
+    it 'shows a removal\'s note without repeating the drive, with a readable date' do
+      manifest.assign_folder('tv/Gone', 'SN-backup-01-3tb')
+      manifest.remove_folder('tv/Gone', note: 'deleted from backup-01-3tb: missing on NAS since 2026-09-01T04:56:05Z')
+      expect(history_section(dashboard.render)).to match(/tv\/Gone deleted from backup-01-3tb[\s\S]*?missing on NAS since 2026-09-0\d.\d\d:\d\d</)
+    end
+
+    it 'names the folder itself when a line stands for just one' do
+      expect(history_section(dashboard.render)).to include('Photos placed on backup-04-8tb')
+    end
+
+    it 'groups deletions made together on one drive, and counts folders and files' do
+      [['tv/Old', '', 'folder'], ['tv/A', '.DS_Store', 'file'], ['tv/B', '.DS_Store', 'file']].each do |folder, rel, kind|
+        manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
+                            'VALUES (?, ?, ?, ?, ?, ?)', [folder, rel, kind, 'SN-backup-01-3tb', '2026-09-01T00:00:00Z', '2026-09-13T11:03:20Z'])
+      end
+      section = deletions_section(dashboard.render)
+      expect(section).to include('backup-01-3tb', '1 folder and 2 files', 'tv/Old (whole folder)', 'tv/A/.DS_Store')
+      expect(section.scan('<tr>').size).to eq(2)   # header + one group
+    end
+  end
+
   it 'shows no ETA banner when no sync is running' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
     expect(html).not_to include('class="eta"', 'Sync in progress')
@@ -231,7 +277,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
     manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1] })
     manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :baseline, digest: 'x', at: '2026-09-12T00:00:00Z')
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
-    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 days ago/)
+    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 day ago/)
     expect(html).not_to match(/backup-04-8tb[\s\S]{0,200}overdue/)
   end
 

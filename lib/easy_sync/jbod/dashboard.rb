@@ -44,7 +44,7 @@ module EasySync
           drives: drives,
           folders: manifest.folders,
           names: manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] },
-          history: manifest.history(limit: 50),
+          history: history_groups(manifest.history(limit: HISTORY_ROWS)),
           runs: (run_list = manifest.run_summaries(limit: 10)),
           latest_notable: run_list.empty? ? [] : manifest.notable_sync_runs(run_list.first.run_started_at),
           generated_at: @clock.now,
@@ -54,7 +54,7 @@ module EasySync
           source_status: source_status,
           pending: manifest.pending_deletions,
           inventory: manifest.source_inventory,
-          deletions: manifest.deletions(limit: 30),
+          deletions: deletion_groups(manifest.deletions(limit: HISTORY_ROWS)),
           scrub_findings: manifest.scrub_findings,
           running: running,
           eta: running&.kind == 'sync' ? SyncEta.for(manifest, running.started_at) : nil
@@ -149,6 +149,81 @@ module EasySync
       # -- template helpers ------------------------------------------------
 
       def bytes(value) = Placement.format_bytes(value)
+
+      # Enough raw rows to fill GROUPS_SHOWN groups even when one bulk
+      # operation (a first placement, a reassign of dozens of folders)
+      # produced thousands of them.
+      HISTORY_ROWS = 5_000
+      GROUPS_SHOWN = 20
+
+      # Rows recorded in the same minute for the same reason, as one line: a
+      # bulk operation (a first placement across every drive, a reassign of
+      # dozens of folders) reads as one event instead of pushing everything
+      # else off the list. The note's trailing "(4.8 TB free)"-style detail
+      # differs row to row within one batch, so it is left out of the match.
+      HistoryGroup = Struct.new(:at, :event, :note, :items, keyword_init: true) do
+        def drive_serials = items.map(&:drive_serial).uniq
+      end
+      DeletionGroup = Struct.new(:at, :drive_serial, :items, keyword_init: true) do
+        def folders = items.count { |d| d.kind == 'folder' }
+        def files = items.size - folders
+      end
+
+      def history_groups(entries)
+        group_rows(entries, ->(e) { [minute(e.recorded_at), e.event, note_gist(e.note)] }).map do |g|
+          HistoryGroup.new(at: g.first.recorded_at, event: g.first.event,
+                           note: g.size == 1 ? g.first.note : note_gist(g.first.note), items: g)
+        end
+      end
+
+      def deletion_groups(deletions)
+        group_rows(deletions, ->(d) { [minute(d.deleted_at), d.drive_serial] }).map do |g|
+          DeletionGroup.new(at: g.first.deleted_at, drive_serial: g.first.drive_serial, items: g)
+        end
+      end
+
+      # Newest first, like the rows themselves.
+      def group_rows(rows, key) = rows.group_by { |r| key.call(r) }.values.first(GROUPS_SHOWN)
+
+      def minute(iso) = iso.to_s[0, 16]
+      def note_gist(note) = note.to_s.sub(/\s*\([^()]*\)\z/, '')
+
+      EVENT_VERBS = { 'assigned' => 'placed on', 'reassigned' => 'moved to', 'removed' => 'deleted from',
+                      'split' => 'split on' }.freeze
+
+      # "3 folders placed on backup-07-6tb" / "2,666 folders placed on 8
+      # drives", or the folder itself when alone.
+      def history_summary(group, names)
+        serials = group.drive_serials
+        where = serials.size == 1 ? names.fetch(serials.first, serials.first) : "#{serials.size} drives"
+        what = group.items.size == 1 ? group.items.first.folder_path : "#{group.items.size} folders"
+        "#{what} #{EVENT_VERBS.fetch(group.event, group.event)} #{where}"
+      end
+
+      def history_item(entry, group, names)
+        return entry.folder_path if group.drive_serials.size == 1
+
+        "#{entry.folder_path} → #{names.fetch(entry.drive_serial, entry.drive_serial)}"
+      end
+
+      def deletion_summary(group)
+        parts = []
+        parts << "#{group.folders} folder#{'s' if group.folders != 1}" if group.folders.positive?
+        parts << "#{group.files} file#{'s' if group.files != 1}" if group.files.positive?
+        parts.join(' and ')
+      end
+
+      def deletion_label(d) = d.kind == 'folder' ? "#{d.folder_path} (whole folder)" : "#{d.folder_path}/#{d.relative_path}"
+
+      # Notes written by earlier code name drives by serial ("moved from
+      # WKD1SH4M"); show the drive's name instead, and timestamps the way the
+      # rest of the page does. A removal's note repeats "deleted from <drive>:",
+      # which the line itself already says.
+      def readable_note(note, names)
+        text = names.reduce(note.to_s) { |t, (serial, name)| t.gsub(serial, name) }
+        text = text.sub(/\Adeleted from [^:]+: /, '')
+        text.gsub(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ/) { |iso| when_(iso) }
+      end
 
       # "2h 14m" from a run's start to its last folder finishing.
       def run_duration(run)
@@ -261,7 +336,10 @@ module EasySync
         return 'scrubbing now' if scrubbing?(view)
 
         through = manifest.scrubbed_through(view.drive.serial_number)
-        through ? "scrubbed #{days_ago(through)} days ago" : 'never scrubbed'
+        return 'never scrubbed' unless through
+
+        days = days_ago(through)
+        "scrubbed #{days} day#{'s' if days != 1} ago"
       end
 
       # True while a running `scrub` (RunLock#kind) is currently on this

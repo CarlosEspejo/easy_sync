@@ -78,7 +78,10 @@
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   tr:last-child td { border-bottom: 0; }
   td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-  td.drive { white-space: nowrap; }
+  td.drive, td.when { white-space: nowrap; }
+  td.muted, span.muted { color: var(--muted); }
+  details.group > summary { cursor: pointer; }
+  details.group ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); max-height: 240px; overflow-y: auto; }
   th.num { text-align: right; }
   .status { white-space: nowrap; }
   .status::before { content: "●"; margin-right: 4px; color: var(--muted); }
@@ -286,15 +289,25 @@
   <p class="empty">Nothing has been deleted yet.</p>
 <%- else -%>
   <table>
-    <thead><tr><th>Deleted</th><th>Path</th><th>Kind</th><th>Drive</th><th>Was missing since</th></tr></thead>
+    <thead><tr><th>When</th><th>Drive</th><th>What</th></tr></thead>
     <tbody>
-  <%- deletions.each do |d| -%>
+  <%- deletions.each do |g| -%>
       <tr>
-        <td><%= when_(d.deleted_at) %></td>
-        <td><%= h(d.kind == 'folder' ? "#{d.folder_path} (whole folder)" : "#{d.folder_path}/#{d.relative_path}") %></td>
-        <td><%= h d.kind %></td>
-        <td class="drive"><%= h names.fetch(d.drive_serial, d.drive_serial) %></td>
-        <td><%= when_(d.first_missing_at) %></td>
+        <td class="when"><%= when_(g.at) %></td>
+        <td class="drive"><%= h names.fetch(g.drive_serial, g.drive_serial) %></td>
+        <td>
+    <%- if g.items.size == 1 -%>
+          <%= h deletion_label(g.items.first) %> <span class="muted">(missing on the NAS since <%= when_(g.items.first.first_missing_at) %>)</span>
+    <%- else -%>
+          <details class="group"><summary><%= deletion_summary(g) %></summary>
+            <ul>
+      <%- g.items.each do |d| -%>
+              <li><%= h deletion_label(d) %> <span class="muted">(missing since <%= when_(d.first_missing_at) %>)</span></li>
+      <%- end -%>
+            </ul>
+          </details>
+    <%- end -%>
+        </td>
       </tr>
   <%- end -%>
     </tbody>
@@ -308,15 +321,25 @@
   <p class="empty">Nothing recorded yet.</p>
 <%- else -%>
   <table>
-    <thead><tr><th>When</th><th>Folder</th><th>Event</th><th>Drive</th><th>Note</th></tr></thead>
+    <thead><tr><th>When</th><th>What</th><th>Why</th></tr></thead>
     <tbody>
-  <%- history.each do |e| -%>
+  <%- history.each do |g| -%>
       <tr>
-        <td><%= when_(e.recorded_at) %></td>
-        <td><%= h e.folder_path %></td>
-        <td><%= h e.event %></td>
-        <td class="drive"><%= h names.fetch(e.drive_serial, e.drive_serial) %></td>
-        <td><%= h e.note %></td>
+        <td class="when"><%= when_(g.at) %></td>
+        <td>
+    <%- if g.items.size == 1 -%>
+          <%= h history_summary(g, names) %>
+    <%- else -%>
+          <details class="group"><summary><%= h history_summary(g, names) %></summary>
+            <ul>
+      <%- g.items.each do |e| -%>
+              <li><%= h history_item(e, g, names) %></li>
+      <%- end -%>
+            </ul>
+          </details>
+    <%- end -%>
+        </td>
+        <td class="muted"><%= h readable_note(g.note, names) %></td>
       </tr>
   <%- end -%>
     </tbody>
@@ -334,7 +357,7 @@
     <tbody>
   <%- runs.each do |r| -%>
       <tr>
-        <td><%= when_(r.run_started_at) %></td>
+        <td class="when"><%= when_(r.run_started_at) %></td>
         <td><%= in_progress?(r, runs) ? 'in progress' : run_duration(r) %></td>
         <td class="num"><%= r.folders %></td>
         <td class="num"><%= r.copied %></td>
