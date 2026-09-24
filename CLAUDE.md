@@ -175,13 +175,17 @@ assumptions, they cannot check them.
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
-  checklist on 2026-09-21 (results in docs/integrity-scan.md). No drive in
-  the real fleet has been scrubbed yet. `--all` works through every mounted,
-  non-retired drive stalest first, defaulting to `scrub_jobs` (4) drives at
-  once (see the parallel-scrub bullet below), so the first full pass is
-  ~35 TB at the ~782 MB/s 4-way aggregate, about 12.5 hours, not the
-  ~200 MB/s single-drive rate. `easy_sync scrub --for 8h` fits an overnight
-  window either way.
+  checklist on 2026-09-21 (results in docs/integrity-scan.md). The first
+  full pass of the real fleet ran 2026-09-22 (02:55-14:26 UTC, ~11.5 h;
+  backup-06-8tb's ~125k files were last to finish): 137,805 files, all
+  `ok`. `--all` works through every mounted, non-retired drive stalest
+  first, `scrub_jobs` drives at once (default 4; the real config sets 8).
+  `easy_sync scrub --for 8h` fits an overnight window.
+  Moving a folder to another drive loses its checksums: the new drive has
+  none yet, and the old drive's rows stay until that drive is scrubbed
+  again (`prune_checksums`). backup-06-8tb still holds 122,908 rows for
+  `synology`, which moved to backup-07-6tb on 2026-09-23. `split` keeps
+  checksums by moving them under the new folder names.
 - Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
   and verified against the real ThunderBay 8 fleet on 2026-09-21: see
   docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
