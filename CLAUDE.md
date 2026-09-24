@@ -5,7 +5,7 @@ README.md is the user-facing truth; this file is for working on the code.
 
 ## Run the suite before every push
 
-    bundle exec rake            # ~0.3 s, 200+ examples, no drives or rsync needed
+    bundle exec rake            # a few seconds, 500+ examples, no drives or rsync needed
 
 - Every external call (rsync, df, du, diskutil, smartctl, caffeinate) goes through
   `EasySync::Shell`; specs inject `FakeShell` (spec/support/fake_shell.rb) and
@@ -147,13 +147,9 @@ assumptions, they cannot check them.
   protection). If you ever re-add required reviews, remember
   `enforce_admins: false` lets the owner bypass them — a solo-maintainer PR
   can't self-approve otherwise.
-- **After any backgrounded or slow `git commit`/`git push`, verify it actually
-  landed** (`git log --oneline -1`, `git log origin/<branch>..HEAD`) before
-  assuming success. One happened silently: a `commit && push` chain timed out
-  and got auto-backgrounded, the tool call *looked* like it completed, but
-  `git log` afterward showed the old HEAD — had to redo it in the foreground.
-  A "failed" background-task notification for a command you've since
-  superseded isn't necessarily a live problem, but check, don't assume either way.
+- A slow `commit && push` can be auto-backgrounded and look finished when it
+  isn't: confirm with `git log origin/<branch>..HEAD` (empty = pushed) before
+  reporting it done.
 - 2.0.0 dropped ALL 1.x compatibility on purpose (single-user gem, no reason
   to carry it): no snapshot mode, no nested `:jbod:` config layout, no
   `~/.easy_syncrc.yml` migration, no `easy_sync jbod <cmd>` alias, no legacy
@@ -211,6 +207,6 @@ assumptions, they cannot check them.
   its first entry; a SLOWER flag needs 3 earlier runs. It reports MiB/s (as
   scrub does); the 8 GB table in docs/performance.md doesn't say whether it
   used MB or MiB (~5% apart), so compare against it loosely.
-- `gem install easy_sync` still fetches the old 0.0.5 from rubygems.org until
-  someone runs `bundle exec rake release` (builds, tags `v2.0.0`, pushes the
-  tag, publishes). Not done yet as of this writing.
+- 2.0.0 is published only once `bundle exec rake release` has run (builds,
+  tags `v2.0.0`, pushes the tag, publishes); until then `gem install easy_sync`
+  fetches 0.0.5. `git tag -l v2.0.0` tells you which.
