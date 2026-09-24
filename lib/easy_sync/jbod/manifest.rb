@@ -361,15 +361,18 @@ module EasySync
 
       # -- sync runs ------------------------------------------------------
 
+      # +run_started_at+ is when the whole `sync` began: every folder synced by
+      # one run shares it, which is what #run_summaries groups on.
       def record_sync(folder_path:, drive_serial:, started_at:, finished_at:, exit_status:,
-                      bytes_transferred: nil, total_size_bytes: nil)
+                      bytes_transferred: nil, total_size_bytes: nil, run_started_at: nil)
         status = exit_status.zero? ? 'ok' : 'failed'
-        params = [folder_path, drive_serial, started_at, finished_at, exit_status, bytes_transferred, total_size_bytes]
+        params = [folder_path, drive_serial, started_at, finished_at, exit_status, bytes_transferred, total_size_bytes,
+                  run_started_at || started_at]
         db.transaction(:immediate) do
           db.execute(<<~SQL, params)
             INSERT INTO sync_runs (folder_path, drive_serial, started_at, finished_at, exit_status,
-                                   bytes_transferred, total_size_bytes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   bytes_transferred, total_size_bytes, run_started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           SQL
           if exit_status.zero?
             db.execute(<<~SQL, [finished_at, status, total_size_bytes, folder_path])
@@ -393,7 +396,30 @@ module EasySync
         end
         sql += ' ORDER BY id DESC LIMIT ?'
         params << limit
-        db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row)) }
+        db.execute(sql, params).map { |row| SyncRun.new(**symbolize(row).except(:run_started_at)) }
+      end
+
+      # One row per `sync` run, newest first: how many folders it synced, how
+      # many actually copied data (and how much), and how many failed.
+      def run_summaries(limit: 10)
+        db.execute(<<~SQL, [limit]).map { |row| RunSummary.new(**symbolize(row)) }
+          SELECT run_started_at, MAX(finished_at) AS last_finished_at, COUNT(*) AS folders,
+                 SUM(CASE WHEN COALESCE(bytes_transferred, 0) > 0 THEN 1 ELSE 0 END) AS copied,
+                 COALESCE(SUM(bytes_transferred), 0) AS bytes_transferred,
+                 SUM(CASE WHEN exit_status <> 0 THEN 1 ELSE 0 END) AS failed
+            FROM sync_runs WHERE run_started_at IS NOT NULL
+           GROUP BY run_started_at ORDER BY run_started_at DESC LIMIT ?
+        SQL
+      end
+
+      # The folders in one run that copied something or failed: the rest only
+      # confirmed nothing had changed.
+      def notable_sync_runs(run_started_at, limit: 100)
+        db.execute(<<~SQL, [run_started_at, limit]).map { |row| SyncRun.new(**symbolize(row).except(:run_started_at)) }
+          SELECT * FROM sync_runs
+           WHERE run_started_at = ? AND (exit_status <> 0 OR COALESCE(bytes_transferred, 0) > 0)
+           ORDER BY id LIMIT ?
+        SQL
       end
 
       # Every successful sync_run since +since+ (ISO8601), oldest first, no
@@ -401,7 +427,7 @@ module EasySync
       # of folders, unlike #sync_runs' recent-activity display.
       def sync_runs_since(since)
         db.execute('SELECT * FROM sync_runs WHERE started_at >= ? AND exit_status = 0 ORDER BY id', [since])
-          .map { |row| SyncRun.new(**symbolize(row)) }
+          .map { |row| SyncRun.new(**symbolize(row).except(:run_started_at)) }
       end
 
       # -- source inventory ----------------------------------------------
@@ -791,6 +817,10 @@ module EasySync
         add_column('pending_deletions', 'drive_serial', 'TEXT')
         add_column('pending_deletions', 'cause', "TEXT NOT NULL DEFAULT 'missing_on_nas'")
         add_column('folders', 'scope', "TEXT NOT NULL DEFAULT 'tree'")
+        if add_column('sync_runs', 'run_started_at', 'TEXT')
+          backfill_run_started_at!
+          db.execute('CREATE INDEX IF NOT EXISTS idx_sync_runs_run ON sync_runs(run_started_at)')
+        end
         create_file_checksums_table!
         create_drive_benchmarks_table!
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
@@ -860,12 +890,43 @@ module EasySync
         SQL
       end
 
-      # No-op for a table that doesn't exist (nothing to add to).
+      # No-op for a table that doesn't exist (nothing to add to). True when
+      # the column was added just now.
       def add_column(table, name, type)
         columns = db.execute("PRAGMA table_info(#{table})")
-        return if columns.empty? || columns.any? { |c| c['name'] == name }
+        return false if columns.empty? || columns.any? { |c| c['name'] == name }
 
         db.execute("ALTER TABLE #{table} ADD COLUMN #{name} #{type}")
+        true
+      end
+
+      # Runs recorded before run_started_at existed are grouped once. A run
+      # syncs each folder at most once, back to back, and a restarted run
+      # starts over from its first folder. So a new run began wherever a
+      # folder repeats within the current run, or where more than
+      # RUN_GAP_SECONDS passed between one folder finishing and the next
+      # starting.
+      RUN_GAP_SECONDS = 600
+
+      def backfill_run_started_at!
+        rows = db.execute('SELECT id, folder_path, started_at, finished_at FROM sync_runs ORDER BY id')
+        return if rows.empty?
+
+        run_start = nil
+        last_end = nil
+        seen = Set.new
+        db.transaction(:immediate) do
+          rows.each do |r|
+            started = Time.parse(r['started_at'])
+            if last_end.nil? || started - last_end > RUN_GAP_SECONDS || seen.include?(r['folder_path'])
+              run_start = r['started_at']
+              seen.clear
+            end
+            seen << r['folder_path']
+            db.execute('UPDATE sync_runs SET run_started_at = ? WHERE id = ?', [run_start, r['id']])
+            last_end = r['finished_at'] ? Time.parse(r['finished_at']) : started
+          end
+        end
       end
 
       def migrate_to_v1!

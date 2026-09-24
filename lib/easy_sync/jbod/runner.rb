@@ -63,6 +63,7 @@ module EasySync
 
       def run
         report = Report.new
+        @run_started_at = @clock.now.utc.iso8601
         folders, available = source_folders(report)
         mounted = refresh_drives(report)
         copy_state_to_drives(mounted, report)   # at the start too, so an interrupted run still leaves a copy
@@ -307,7 +308,8 @@ module EasySync
         unless @dry_run
           manifest.record_sync(folder_path: folder.key, drive_serial: target.serial_number, started_at: started,
                                finished_at: @clock.now.utc.iso8601, exit_status: result.exit_status,
-                               bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes)
+                               bytes_transferred: result.bytes_transferred, total_size_bytes: result.total_size_bytes,
+                               run_started_at: @run_started_at)
         end
         if result.success?
           report.synced << folder.key

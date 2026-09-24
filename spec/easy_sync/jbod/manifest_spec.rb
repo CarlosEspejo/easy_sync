@@ -388,6 +388,65 @@ RSpec.describe EasySync::Jbod::Manifest do
     end
   end
 
+  describe 'run summaries' do
+    before do
+      register_fleet(manifest)
+      %w[A B C].each { |f| manifest.assign_folder("tv/#{f}", 'SN-backup-04-8tb') }
+    end
+
+    def sync(folder, run, bytes: 0, exit_status: 0, at: '12:00')
+      manifest.record_sync(folder_path: "tv/#{folder}", drive_serial: 'SN-backup-04-8tb', started_at: "2026-09-23T#{at}:00Z",
+                           finished_at: "2026-09-23T#{at}:30Z", exit_status: exit_status, bytes_transferred: bytes,
+                           run_started_at: run)
+    end
+
+    it 'sums each run over its folders, newest run first' do
+      old = '2026-09-22T20:00:00Z'
+      new = '2026-09-23T20:00:00Z'
+      sync('A', old, bytes: 100)
+      sync('B', old)
+      sync('A', new, at: '20:01')
+      sync('B', new, bytes: 5_000, at: '20:02')
+      sync('C', new, exit_status: 23, at: '20:03')
+
+      expect(manifest.run_summaries.map(&:to_h)).to eq([
+        { run_started_at: new, last_finished_at: '2026-09-23T20:03:30Z', folders: 3, copied: 1, bytes_transferred: 5_000, failed: 1 },
+        { run_started_at: old, last_finished_at: '2026-09-23T12:00:30Z', folders: 2, copied: 1, bytes_transferred: 100, failed: 0 }
+      ])
+      expect(manifest.run_summaries(limit: 1).size).to eq(1)
+    end
+
+    it 'lists only the folders of a run that copied something or failed' do
+      run = '2026-09-23T20:00:00Z'
+      sync('A', run)
+      sync('B', run, bytes: 5_000)
+      sync('C', run, exit_status: 23)
+      expect(manifest.notable_sync_runs(run).map(&:folder_path)).to eq(['tv/B', 'tv/C'])
+    end
+  end
+
+  describe 'grouping sync runs recorded before runs were tracked' do
+    it 'assigns each old row to a run: a new run starts after a gap of more than ten minutes, or when a folder repeats' do
+      db = SQLite3::Database.new(':memory:')
+      described_class.new(db, clock: clock)   # full schema
+      db.execute('DROP INDEX idx_sync_runs_run')
+      db.execute('ALTER TABLE sync_runs DROP COLUMN run_started_at')
+      rows = [%w[A 20:00:00 20:05:00], %w[B 20:05:10 20:40:00], %w[C 20:41:00 20:41:05],   # one run
+              %w[A 22:00:00 22:00:02], %w[B 22:00:03 22:00:04],                          # the next, 79 min later
+              %w[A 22:00:05 22:00:06]]                                                  # restarted right away
+      rows.each do |f, s, e|
+        db.execute('INSERT INTO sync_runs (folder_path, drive_serial, started_at, finished_at, exit_status) VALUES (?, ?, ?, ?, 0)',
+                   ["tv/#{f}", 'SN', "2026-09-23T#{s}Z", "2026-09-23T#{e}Z"])
+      end
+
+      m = described_class.new(db, clock: clock)
+      expect(db.execute('SELECT run_started_at FROM sync_runs ORDER BY id').map { |r| r['run_started_at'] })
+        .to eq(['2026-09-23T20:00:00Z'] * 3 + ['2026-09-23T22:00:00Z'] * 2 + ['2026-09-23T22:00:05Z'])
+      expect(m.run_summaries.map(&:folders)).to eq([1, 2, 3])
+      expect { described_class.new(db, clock: clock) }.not_to(change { db.execute('SELECT * FROM sync_runs') })
+    end
+  end
+
   describe '#sync_runs_since' do
     before { register_fleet(manifest) }
 

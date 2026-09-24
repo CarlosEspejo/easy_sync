@@ -45,7 +45,8 @@ module EasySync
           folders: manifest.folders,
           names: manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] },
           history: manifest.history(limit: 50),
-          runs: manifest.sync_runs(limit: 30),
+          runs: (run_list = manifest.run_summaries(limit: 10)),
+          latest_notable: run_list.empty? ? [] : manifest.notable_sync_runs(run_list.first.run_started_at),
           generated_at: @clock.now,
           total_capacity_bytes: drives.sum { |d| d.capacity_bytes.to_i },
           total_free_bytes: drives.sum { |d| d.free_bytes.to_i },
@@ -148,6 +149,20 @@ module EasySync
       # -- template helpers ------------------------------------------------
 
       def bytes(value) = Placement.format_bytes(value)
+
+      # "2h 14m" from a run's start to its last folder finishing.
+      def run_duration(run)
+        return '—' unless run.last_finished_at
+
+        Placement.format_duration(Time.parse(run.last_finished_at) - Time.parse(run.run_started_at))
+      end
+
+      # The newest run is still going when a sync holds the lock and started
+      # no later than it (the lock is taken just before the run begins).
+      def in_progress?(run, runs)
+        @running&.kind == 'sync' && run.equal?(runs.first) &&
+          @running.started_at.utc.iso8601 <= run.run_started_at
+      end
 
       def percent(fraction)
         fraction.nil? ? '—' : format('%.0f%%', fraction * 100)

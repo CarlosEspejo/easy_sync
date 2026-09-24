@@ -74,6 +74,12 @@ module EasySync
     SyncRun = Struct.new(:id, :folder_path, :drive_serial, :started_at, :finished_at, :exit_status,
                          :bytes_transferred, :total_size_bytes, keyword_init: true)
 
+    # One whole `sync` run, summed over its folders (Manifest#run_summaries).
+    # copied counts folders that transferred any bytes; the rest only
+    # confirmed nothing had changed.
+    RunSummary = Struct.new(:run_started_at, :last_finished_at, :folders, :copied, :bytes_transferred, :failed,
+                            keyword_init: true)
+
     # A path on a drive that is a candidate for deletion, either because
     # rsync reported it gone from the NAS (cause 'missing_on_nas';
     # relative_path is '' with kind 'folder' when the whole folder is gone)
