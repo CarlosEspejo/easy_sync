@@ -466,9 +466,10 @@ Commands
 | `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
+| `forget-drive NAME [...] [--dry-run]` | delete a retired drive and all its history (placements, sync runs, checksums, benchmarks, SMART checks) from the manifest; for test drives. Touches no drive |
 | `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
 | `plan [SHARE ...] [--largest-drive 8tb]` | measure each share (or just those named) and check every folder fits a drive |
-| `status` | whether a sync is running (and for how long), drives, health and folders, in the terminal |
+| `status [--all] [--smart]` | whether a sync is running (and for how long), drives, health and folders, in the terminal. Health is the last sync's SMART reading (an `n/a` says when it was taken); `--smart` reads the mounted drives now, without saving it |
 | `pending` | deletion candidates and their expiry dates |
 | `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
 | `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |

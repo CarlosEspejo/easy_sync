@@ -505,6 +505,38 @@ RSpec.describe EasySync::Jbod::Manifest, 'retiring drives' do
     expect(manifest.drive('SN-backup-04-8tb')).to be_retired
   end
 
+  describe '#forget_drive' do
+    it 'deletes a retired drive and every row that refers to it, leaving other drives alone' do
+      manifest.move_all_folders('SN-backup-04-8tb', 'SN-backup-07-8tb', note: 'replaced')
+      manifest.record_sync(folder_path: 'movies/A', drive_serial: 'SN-backup-04-8tb', started_at: '2026-09-01T00:00:00Z',
+                           finished_at: '2026-09-01T00:01:00Z', exit_status: 0)
+      manifest.record_benchmark('SN-backup-04-8tb', bytes: GB, write_mb_s: 100.0, read_mb_s: 120.0, used_bytes: 0)
+      manifest.record_smart_check('SN-backup-04-8tb', reallocated_sector_ct: 0)
+      manifest.retire_drive('SN-backup-04-8tb')
+
+      removed = manifest.forget_drive('SN-backup-04-8tb')
+      expect(removed).to include('placement_history', 'sync_runs', 'drive_benchmarks', 'smart_checks', 'pending_deletions')
+      expect(manifest.drive('SN-backup-04-8tb')).to be_nil
+      expect(manifest.drive_references('SN-backup-04-8tb')).to be_empty
+      expect(manifest.folders_on('SN-backup-07-8tb').map(&:folder_path)).to eq(['movies/A', 'movies/B'])
+      expect(manifest.history('movies/A').map(&:drive_serial)).to all(eq('SN-backup-07-8tb'))
+      expect(manifest.folder('photos').drive_serial).to eq('SN-backup-01-3tb')
+    end
+
+    it 'refuses a drive that is not retired, or still holds folders' do
+      expect { manifest.forget_drive('SN-backup-04-8tb') }.to raise_error(EasySync::Error, /not retired/)
+      manifest.retire_drive('SN-backup-04-8tb')
+      expect { manifest.forget_drive('SN-backup-04-8tb') }.to raise_error(EasySync::Error, /still holds folders/)
+      expect(manifest.drive('SN-backup-04-8tb')).not_to be_nil
+    end
+
+    it 'covers every table with a drive_serial column' do
+      tables = manifest.db.execute("SELECT name FROM sqlite_master WHERE type='table'").map { |r| r['name'] }
+      with_serial = tables.select { |t| manifest.db.execute("PRAGMA table_info(#{t})").any? { |c| c['name'] == 'drive_serial' } }
+      expect(described_class::DRIVE_TABLES).to match_array(with_serial)
+    end
+  end
+
   it 'moves every folder of a drive to another, recording each' do
     moved = manifest.move_all_folders('SN-backup-04-8tb', 'SN-backup-07-8tb', note: 'replaced')
     expect(moved).to eq(['movies/A', 'movies/B'])

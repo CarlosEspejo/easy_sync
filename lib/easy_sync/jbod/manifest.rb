@@ -107,6 +107,35 @@ module EasySync
         drive(serial_number)
       end
 
+      # Every table with a drive_serial column. #forget_drive clears all of them.
+      DRIVE_TABLES = %w[folders placement_history sync_runs pending_deletions deletions
+                        file_checksums drive_benchmarks smart_checks].freeze
+
+      # Rows that still refer to a drive, per table, nonzero only.
+      def drive_references(serial_number)
+        DRIVE_TABLES.to_h { |t| [t, db.get_first_value("SELECT COUNT(*) FROM #{t} WHERE drive_serial = ?", [serial_number])] }
+                    .select { |_, n| n.positive? }
+      end
+
+      # Deletes a retired drive and every row that refers to it, including
+      # the placement history and sync runs of folders that once lived on it.
+      # Only for a drive whose history is not worth keeping (a test drive):
+      # #retire_drive is the normal way out. Refuses a drive that is not
+      # retired or still holds folders. Returns what was deleted, as
+      # #drive_references.
+      def forget_drive(serial_number)
+        drive = drive(serial_number) or raise UnknownDrive, "no drive registered with serial #{serial_number}"
+        raise Error, "#{drive.friendly_name} is not retired; retire it first with `replace-drive`" unless drive.retired?
+        raise Error, "#{drive.friendly_name} still holds folders" if folders_on(serial_number).any?
+
+        removed = drive_references(serial_number)
+        db.transaction(:immediate) do
+          DRIVE_TABLES.each { |t| db.execute("DELETE FROM #{t} WHERE drive_serial = ?", [serial_number]) }
+          db.execute('DELETE FROM drives WHERE serial_number = ?', [serial_number])
+        end
+        removed
+      end
+
       # Moves every folder on +from_serial+ to +to_serial+ (recording each), or
       # when +to_serial+ is nil removes their rows so the next sync places them
       # afresh. Returns the folder paths affected.
