@@ -430,6 +430,22 @@ module EasySync
           .map { |row| SyncRun.new(**symbolize(row).except(:run_started_at)) }
       end
 
+      # How long each folder's most recent verify-only sync (nothing
+      # transferred, exit 0) that started before +before+ (ISO8601) took, as
+      # { folder_path => seconds }. Lets a run in progress estimate an
+      # unchanged folder from its own history instead of from whichever
+      # folders happened to finish first this run.
+      def last_verify_seconds(before:)
+        db.execute(<<~SQL, [before]).to_h { |row| [row['folder_path'], row['seconds'].to_f] }
+          SELECT folder_path, (julianday(finished_at) - julianday(started_at)) * 86400.0 AS seconds
+            FROM sync_runs
+           WHERE id IN (SELECT MAX(id) FROM sync_runs
+                         WHERE started_at < ? AND exit_status = 0 AND finished_at IS NOT NULL
+                           AND COALESCE(bytes_transferred, 0) = 0
+                         GROUP BY folder_path)
+        SQL
+      end
+
       # -- source inventory ----------------------------------------------
 
       # Replaces the inventory with what this run saw. +rows+ are hashes with

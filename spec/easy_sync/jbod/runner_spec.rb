@@ -530,6 +530,27 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(out.string).to include("Dashboard written to #{dashboard_path}")
     end
 
+    it "keeps a drive's last SMART reading when this run's read comes back unknown" do
+      manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · 38°C', checked_at: '2026-09-13T11:00:00Z')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      report = runner.run
+      expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(smart_status: 'ok', smart_detail: 'PASSED · 38°C',
+                                                                     smart_checked_at: '2026-09-13T11:00:00Z')
+      expect(report.warnings).to include(a_string_matching(/could not read SMART on backup-04-8tb.*keeping its last reading \(ok/))
+    end
+
+    it 'still alerts on a failing drive whose SMART read comes back unknown this run' do
+      manifest.update_drive_health('SN-backup-04-8tb', status: 'failing', detail: 'FAILED!')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:sync).and_return(ok_result)
+
+      report = runner.run
+      expect(report.unhealthy).to eq([%w[backup-04-8tb failing]])
+      expect(manifest.drive('SN-backup-04-8tb').smart_status).to eq('failing')
+    end
+
     it 'backfills a drive model that smartctl can now provide but the manifest never recorded' do
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
       allow(volume_info).to receive(:smartctl_model).with("#{mount_root}/backup-04-8tb").and_return('WDC WD80EFZZ-68BTXN0')

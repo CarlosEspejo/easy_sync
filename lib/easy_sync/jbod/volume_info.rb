@@ -145,11 +145,13 @@ module EasySync
       # physical disk (plainly, then through a SAT USB bridge), and when that
       # yields nothing falls back to the one-word SMART Status that
       # `diskutil info` reports. Never raises: an enclosure that hides SMART
-      # is reported as 'unknown' with the reason, not as an error.
+      # is reported as 'unknown' with the reason, not as an error. Both
+      # smartctl forms are tried twice: a drive that reads fine has been seen
+      # to fail a single read.
       def smart_health(mount_point)
         disk = physical_disk_for(mount_point)
         if disk
-          [[], ['-d', 'sat']].each do |extra|
+          [[], ['-d', 'sat'], [], ['-d', 'sat']].each do |extra|
             out = @shell.capture(['smartctl', *extra, '-a', "/dev/#{disk}"]).output
             health = self.class.parse_smartctl(out)
             return health if health

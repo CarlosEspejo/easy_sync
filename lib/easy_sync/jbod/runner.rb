@@ -223,8 +223,20 @@ module EasySync
       # (or since it was first seen) is old, stable damage, not an active
       # failure in progress, and gets the quieter 'degraded_stable' status
       # instead of nagging on every run.
+      #
+      # A drive whose SMART was read before but comes back 'unknown' this run
+      # keeps its last reading: one failed read (seen on a ThunderBay bay that
+      # read fine 20 minutes earlier and again right after) must not turn a
+      # known status into 'n/a', which would also hide a failing drive.
       def check_health(mounted_drive, report)
         health = @volume_info.smart_health(mounted_drive.mount_point) or return
+        previous = manifest.drive(mounted_drive.serial_number)
+        if health.status == 'unknown' && previous&.smart_status && previous.smart_status != 'unknown'
+          warn(report, "could not read SMART on #{mounted_drive.friendly_name} this run (#{health.detail}); " \
+                       "keeping its last reading (#{previous.smart_status}, #{previous.smart_checked_at})")
+          return alert_unhealthy(mounted_drive, previous.smart_status, previous.smart_detail, report)
+        end
+
         status = health.status
         unless @dry_run
           if health.reallocated_sector_ct
@@ -234,11 +246,15 @@ module EasySync
           manifest.update_drive_health(mounted_drive.serial_number, status: status, detail: health.detail,
                                                                      power_on_hours: health.power_on_hours)
         end
+        alert_unhealthy(mounted_drive, status, health.detail, report)
+      end
+
+      def alert_unhealthy(mounted_drive, status, detail, report)
         return if %w[ok unknown degraded_stable].include?(status)
 
         report.unhealthy << [mounted_drive.friendly_name, status]
         verb = status == 'failing' ? 'is FAILING' : 'is starting to fail'
-        warn(report, "drive #{mounted_drive.friendly_name} #{verb}: SMART says #{health.detail}. " \
+        warn(report, "drive #{mounted_drive.friendly_name} #{verb}: SMART says #{detail}. " \
                      "Plan to replace it: register a new drive, then " \
                      "`easy_sync replace-drive #{mounted_drive.friendly_name} --to NEW_NAME --copy`.")
       end

@@ -31,6 +31,25 @@ RSpec.describe EasySync::Jbod::SyncEta do
     expect(e).to have_attributes(status: :estimate, never_synced_count: 1, to_reverify: 1, seconds: 102.0)
   end
 
+  it "estimates a folder to re-verify from its own last verify, not this run's average" do
+    %w[synology/photos movies/A movies/B].each { |f| manifest.assign_folder(f, 'S1', size_bytes: GB) }
+    # last run: each movie verified in 0.5s
+    %w[movies/A movies/B].each do |f|
+      manifest.record_sync(folder_path: f, drive_serial: 'S1', started_at: '2026-09-14T08:00:00Z',
+                           finished_at: '2026-09-14T08:00:00.500Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: GB)
+    end
+    # a transfer is never used as a folder's verify time
+    manifest.record_sync(folder_path: 'movies/B', drive_serial: 'S1', started_at: '2026-09-14T09:00:00Z',
+                         finished_at: '2026-09-14T09:10:00Z', exit_status: 0, bytes_transferred: GB, total_size_bytes: GB)
+    # this run so far: one slow share folder, 30s
+    manifest.record_sync(folder_path: 'synology/photos', drive_serial: 'S1', started_at: '2026-09-15T08:00:00Z',
+                         finished_at: '2026-09-15T08:00:30Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: GB)
+
+    e = described_class.for(manifest, started)
+    expect(e.to_reverify).to eq(2)
+    expect(e.seconds).to be_within(0.01).of(1.0)   # not 2 x 30s
+  end
+
   it 'says it is waiting for a first real transfer when only verifies have finished so far this run' do
     manifest.assign_folder('Movies/Y', 'S1', size_bytes: 50 * GB)
     manifest.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
