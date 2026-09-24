@@ -213,9 +213,12 @@ assumptions, they cannot check them.
 - `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last
   25 runs per drive). It was checked on `jbod-test-1` on 2026-09-22: 1.5 GB test
   file, write 86-99 MB/s, read ~163 MB/s (close to scrub's ~150 MB/s on it, so
-  the page cache was bypassed), and Ctrl-C removed the test file. It has not
-  been run on the real fleet yet. The first `benchmark --all` gives each drive
-  its first entry; a SLOWER flag needs 3 earlier runs. It reports MiB/s (as
+  the page cache was bypassed), and Ctrl-C removed the test file. The first
+  real-fleet `benchmark --all` ran 2026-09-22 (14:54-15:08, 8 GB file,
+  write/read MiB/s): 01-8tb 224/247, 07-6tb 180/196, 03-8tb 158/163,
+  04-8tb 136/154, 02-6tb 137/142, 06-8tb 130/136, 08-2tb 107/123,
+  05-3tb 106/112. Each drive has one run so far; a SLOWER flag needs 3
+  earlier runs. It reports MiB/s (as
   scrub does); the 8 GB table in docs/performance.md doesn't say whether it
   used MB or MiB (~5% apart), so compare against it loosely.
 - 2.0.0 is published only once `bundle exec rake release` has run (builds,
