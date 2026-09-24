@@ -164,8 +164,10 @@ assumptions, they cannot check them.
 
 - Fine placement (no `split:` setting; `easy_sync split`; `reassign --copy`;
   Purger overlap guard) is built and passed the real-hardware checklist on
-  2026-09-23 (docs/fine-placement.md). Not yet used on the real fleet: next
-  step there is `easy_sync split synology --dry-run`, then `split synology`.
+  2026-09-23 (docs/fine-placement.md). Used on the real fleet the same
+  evening: `split synology` and `split pro` converted the last two whole-share
+  rows (no data moved), and the following sync finished with all 2,712 units
+  `ok`. No `tree` row keyed by a bare share name is left in the manifest.
 
 - Versioning of changed files: see docs/changed-file-grace.md (designed, not built).
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
@@ -193,10 +195,8 @@ assumptions, they cannot check them.
   drives, 44.59 TB; the two `jbod-test` drives are retired in the manifest,
   not deleted. The first full sync of the real library (~31.9 TB) finished
   around 2026-09-21 — check `easy_sync status` / the dashboard for current
-  placement. `synology` (~2 TB) is still placed whole, so its sync ETA sits
-  frozen for hours (SyncEta only learns when a folder finishes). Run
-  `easy_sync split synology` (share and drive mounted) to place it folder
-  by folder; nothing is copied. The NAS side limits sync speed, never the drives; Time
+  placement. Every share is now placed folder by folder (see the fine-placement
+  bullet above). The NAS side limits sync speed, never the drives; Time
   Machine (backing up to the same Synology) is the first thing to check when
   a sync looks slow. Numbers and method: docs/performance.md.
 - `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last
