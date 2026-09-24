@@ -15,7 +15,8 @@ module EasySync
       ]],
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
-        ['status [--all]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder'],
+        ['status [--all] [--smart]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder; ' \
+                                     '--smart reads SMART from the mounted drives now instead of showing the last sync\'s reading'],
         ['dashboard', 'regenerate the HTML report']
       ]],
       ['Maintain', [
@@ -31,6 +32,7 @@ module EasySync
         ['split SHARE [--dry-run]', 'place the folders of a share that was placed whole one by one, on the drive it is already on; copies nothing'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
+        ['forget-drive NAME [...] [--dry-run]', 'delete a retired drive and all its history from the manifest (for test drives); touches no data'],
         ['verify-drive NAME [--note TEXT]', 'record that a full-surface scan (SpinRite etc.) found no new defects; resets the reallocated-sector baseline'],
         ['restore FOLDER|SHARE [...] | --all [--dry-run]', 'copy folders back onto the NAS from wherever they live (reverse of sync)'],
         ['remove-source PATH', 'stop backing up a share (drives are left alone)'],
@@ -84,6 +86,7 @@ module EasySync
       when 'reassign' then reassign(@argv)
       when 'split' then split(@argv)
       when 'rename-drive' then rename_drive(@argv)
+      when 'forget-drive' then forget_drive(@argv)
       when 'verify-drive' then verify_drive(@argv)
       when 'pending' then pending
       when 'clean' then clean(@argv)
@@ -661,10 +664,14 @@ module EasySync
 
     def status(args)
       all = false
-      OptionParser.new { |o| o.on('--all', 'List every placed folder, one per line (for piping)') { all = true } }.parse!(args)
+      live_smart = false
+      OptionParser.new do |o|
+        o.on('--all', 'List every placed folder, one per line (for piping)') { all = true }
+        o.on('--smart', 'Read SMART from each mounted drive now (shown, not saved; the next sync saves its own reading)') { live_smart = true }
+      end.parse!(args)
       run = Jbod::RunLock.new(settings[:lock_path]).status
       print_run_status(run)
-      print_drives(all)
+      print_drives(all, live_smart: live_smart)
       all ? print_all_folders : print_folder_summary
       print_scrub_status(run)
     end
@@ -726,7 +733,10 @@ module EasySync
 
     RETIRED_SHOWN = 5   # most recent; older ones are still in the manifest, just not printed by default
 
-    def print_drives(all = false)
+    # SMART comes from the manifest (the last sync's reading) unless
+    # live_smart, which reads each mounted drive now. A live reading is only
+    # printed: status stays read-only, and it can run while a sync holds the lock.
+    def print_drives(all = false, live_smart: false)
       drives = manifest.drives
       mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
@@ -736,9 +746,13 @@ module EasySync
           [d.friendly_name, d.branded_model ? "#{d.serial_number} · #{d.branded_model}" : d.serial_number,
            m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
            m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
-           smart_summary(d), drive_note(d, m)]
+           m && live_smart ? live_smart_summary(m) : smart_summary(d), drive_note(d, m)]
         end
         print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
+        if live_smart
+          @out.puts
+          @out.puts '  SMART read just now from the mounted drives (not saved); unmounted drives show their last reading.'
+        end
         total_capacity = drives.sum(&:capacity_bytes)
         total_free = drives.sum { |d| (mounted[d.serial_number]&.free_bytes || d.last_free_bytes).to_i }
         @out.puts
@@ -768,13 +782,28 @@ module EasySync
 
     # The verdict plus only what's worth reading: zero counters and the
     # PASSED verdict (implied by ok/warning) are dropped; ok keeps just the temperature.
+    # An n/a says when it was read: a stale one (a single failed read) stays
+    # until the next sync reads the drive again.
     def smart_summary(drive)
       return 'unchecked' unless drive.smart_status
-      return 'n/a' if drive.smart_status == 'unknown'
+      if drive.smart_status == 'unknown'
+        return drive.smart_checked_at ? "n/a (as of #{local_time(drive.smart_checked_at, '%Y-%m-%d %H:%M')})" : 'n/a'
+      end
 
-      parts = drive.smart_detail.to_s.split(' · ').reject { |p| p == 'PASSED' || p.match?(/\A[a-z ]+ 0\z/) }
-      parts = parts.grep(/°C\z/) if drive.smart_status == 'ok'
-      [SMART_STATUS_LABELS.fetch(drive.smart_status, drive.smart_status), *parts].join(' · ')
+      format_smart(drive.smart_status, drive.smart_detail)
+    end
+
+    def live_smart_summary(mounted_drive)
+      health = volume_info.smart_health(mounted_drive.mount_point)
+      return 'n/a (read now)' if health.status == 'unknown'
+
+      format_smart(Jbod::Runner.alert_status(manifest, mounted_drive.serial_number, health), health.detail)
+    end
+
+    def format_smart(status, detail)
+      parts = detail.to_s.split(' · ').reject { |p| p == 'PASSED' || p.match?(/\A[a-z ]+ 0\z/) }
+      parts = parts.grep(/°C\z/) if status == 'ok'
+      [SMART_STATUS_LABELS.fetch(status, status), *parts].join(' · ')
     end
 
     # Only the unusual: not mounted, locked, or mounted somewhere other than under its own name.
@@ -1012,6 +1041,30 @@ module EasySync
         relabel_marker(old.serial_number, new_name, mounted)
         rename_volume_hint(old.serial_number, new_name, mounted)
       end
+    end
+
+    # Deletes retired drives and every manifest row that refers to them, for
+    # drives whose history isn't worth keeping (the jbod-test drives). All
+    # names are checked before anything is deleted. Touches no drive.
+    def forget_drive(args)
+      dry_run = false
+      OptionParser.new { |o| o.on('--dry-run', 'Show what would be deleted') { dry_run = true } }.parse!(args)
+      raise Error, "forget-drive needs at least one drive name\n\n#{USAGE}" if args.empty?
+
+      drives = args.map do |name|
+        drive = manifest.drive_by_name(name) or raise Error, "no drive named #{name}"
+        raise Error, "#{name} is not retired; retire it first with `replace-drive`" unless drive.retired?
+        raise Error, "#{name} still holds folders" if manifest.folders_on(drive.serial_number).any?
+
+        drive
+      end
+      drives.each do |d|
+        removed = dry_run ? manifest.drive_references(d.serial_number) : manifest.forget_drive(d.serial_number)
+        rows = removed.map { |t, n| "#{n} #{t}" }.join(', ')
+        @out.puts "#{dry_run ? 'Would forget' : 'Forgot'} #{d.friendly_name} (#{d.serial_number})" \
+                  "#{rows.empty? ? '' : " and its rows: #{rows}"}."
+      end
+      @out.puts 'Dry run: nothing deleted.' if dry_run
     end
 
     # Manually confirms that a drive flagged 'warning' or 'degraded_stable'

@@ -259,6 +259,68 @@ RSpec.describe EasySync::CLI do
       expect(rows.map { |l| l.index(/ok ·|warning ·/) }.uniq.size).to eq(1)   # SMART column lines up
     end
 
+    it 'says when an n/a SMART reading was taken, so a stale one is recognisable' do
+      m = manifest
+      m.update_drive_health('S1', status: 'unknown', detail: 'SMART not exposed by this enclosure',
+                                  checked_at: '2026-09-24T03:25:29Z')
+      m.close
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include("n/a (as of #{Time.parse('2026-09-24T03:25:29Z').localtime.strftime('%Y-%m-%d %H:%M')})")
+    end
+
+    describe '--smart' do
+      let!(:vol) do
+        make_dirs(mount_root, 'backup-02-6tb').first.tap do |v|
+          write_file(File.join(v, EasySync::Jbod::MARKER_FILE), { serial_number: 'S2', friendly_name: 'backup-02-6tb' }.to_json)
+          fake_shell.on(->(argv) { argv[0] == 'df' && argv.last == v }, output: df_output(v, capacity_kb: 6 * 1024**3, used_kb: 0))
+        end
+      end
+
+      def smartctl_reports(reallocated:)
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: disk3\n")
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', 'disk3'] }, output: "APFS Physical Store: disk0s2\n")
+        fake_shell.on(->(argv) { argv[0] == 'smartctl' }, output: <<~OUT)
+          SMART overall-health self-assessment test result: PASSED
+          ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+            5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       #{reallocated}
+          194 Temperature_Celsius     0x0022   036   049   000    Old_age   Always       -       37
+        OUT
+      end
+
+      before do
+        m = manifest
+        m.update_drive_health('S1', status: 'ok', detail: 'PASSED · 44°C')
+        m.update_drive_health('S2', status: 'unknown', detail: 'SMART not exposed by this enclosure')
+        m.close
+      end
+
+      it 'reads SMART from the mounted drives now, without saving it' do
+        smartctl_reports(reallocated: 0)
+        expect(cli('status', '--smart').run).to eq(0)
+        expect(out.string.lines.grep(/backup-02-6tb/).first).to include('ok · 37°C')
+        expect(out.string.lines.grep(/backup-01-3tb/).first).to include('ok · 44°C')   # unmounted: last reading
+        expect(out.string).to include('SMART read just now from the mounted drives (not saved)')
+        expect(manifest.drive('S2')).to have_attributes(smart_status: 'unknown')
+      end
+
+      it 'shows reallocated sectors at the verified baseline as stable wear, as a sync would' do
+        smartctl_reports(reallocated: 24)
+        m = manifest
+        m.record_smart_check('S2', reallocated_sector_ct: 24)
+        m.verify_drive_stable('S2')
+        m.close
+        expect(cli('status', '--smart').run).to eq(0)
+        expect(out.string.lines.grep(/backup-02-6tb/).first).to include('stable wear · reallocated 24')
+      end
+
+      it 'is not run without the flag' do
+        smartctl_reports(reallocated: 0)
+        expect(cli('status').run).to eq(0)
+        expect(fake_shell.calls_to('smartctl')).to be_empty
+        expect(out.string.lines.grep(/backup-02-6tb/).first).to include('n/a')
+      end
+    end
+
     it 'sums capacity and free space across all drives, live numbers where mounted, last-known otherwise' do
       m = manifest
       m.update_drive_usage('S1', used_bytes: 1 * TB, free_bytes: 2 * TB)   # S1 stays unmounted: falls back to this
@@ -1429,6 +1491,42 @@ RSpec.describe EasySync::CLI do
     it 'fails cleanly when --config has no path' do
       expect(described_class.new(['--config'], out: out, err: err, shell: fake_shell).run).to eq(1)
       expect(err.string).to include('--config needs a path')
+    end
+  end
+
+  describe 'forget-drive' do
+    before do
+      m = manifest
+      m.register_drive(serial_number: 'T1', friendly_name: 'jbod-test-1', capacity_bytes: TB)
+      m.register_drive(serial_number: 'T2', friendly_name: 'jbod-test-2', capacity_bytes: TB)
+      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
+      m.assign_folder('Photos', 'T1')
+      m.move_all_folders('T1', 'S1', note: 'replaced')
+      m.retire_drive('T1')
+      m.retire_drive('T2')
+      m.close
+    end
+
+    it 'deletes retired drives and their history, so status no longer lists them' do
+      expect(cli('forget-drive', 'jbod-test-1', 'jbod-test-2').run).to eq(0)
+      expect(out.string).to include('Forgot jbod-test-1 (T1) and its rows: 1 placement_history.', 'Forgot jbod-test-2 (T2).')
+      expect(manifest.drives(include_retired: true).map(&:friendly_name)).to eq(['backup-01-3tb'])
+      expect(manifest.folder('Photos').drive_serial).to eq('S1')
+      out.truncate(0)
+      cli('status').run
+      expect(out.string).not_to include('Retired', 'jbod-test')
+    end
+
+    it 'deletes nothing with --dry-run' do
+      expect(cli('forget-drive', 'jbod-test-1', '--dry-run').run).to eq(0)
+      expect(out.string).to include('Would forget jbod-test-1 (T1) and its rows: 1 placement_history.', 'nothing deleted')
+      expect(manifest.drive('T1')).not_to be_nil
+    end
+
+    it 'checks every name before deleting any' do
+      expect(cli('forget-drive', 'jbod-test-1', 'backup-01-3tb').run).to eq(1)
+      expect(err.string).to include('backup-01-3tb is not retired')
+      expect(manifest.drive('T1')).not_to be_nil
     end
   end
 

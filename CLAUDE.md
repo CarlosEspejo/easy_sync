@@ -205,8 +205,10 @@ assumptions, they cannot check them.
   the *current* backup but stays in history, so it is a ~1-year countdown, not
   instant loss. `drives.last_seen_at` already has what a warning would need.
 - **The OWC ThunderBay 8 (Thunderbolt) has replaced the Drobo.** 8 active
-  drives, 44.59 TB; the two `jbod-test` drives are retired in the manifest,
-  not deleted. The first full sync of the real library (~31.9 TB) finished
+  drives, 44.59 TB. The two `jbod-test` drives were retired in the real
+  manifest; `easy_sync forget-drive` (2026-09-24) deletes a retired drive and
+  all its history, for exactly this case. Live testing on them uses a scratch
+  `--config`, so the real manifest never needs them. The first full sync of the real library (~31.9 TB) finished
   around 2026-09-21 — check `easy_sync status` / the dashboard for current
   placement. Every share is now placed folder by folder (see the fine-placement
   bullet above). The NAS side limits sync speed, never the drives; Time

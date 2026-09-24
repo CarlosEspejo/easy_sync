@@ -37,6 +37,18 @@ module EasySync
 
       attr_reader :settings, :manifest
 
+      # The status a SMART reading is recorded (and shown) as: a 'warning'
+      # caused solely by a reallocated count no higher than the drive's
+      # verified baseline is 'degraded_stable'. Any other reason for 'warning'
+      # (pending or uncorrectable sectors, media errors, an NVMe critical
+      # flag) is left alone. `status --smart` uses this for its live readings.
+      def self.alert_status(manifest, serial_number, health)
+        return health.status unless health.status == 'warning' && !health.other_bad
+
+        baseline = manifest.reallocated_baseline(serial_number)
+        baseline && health.reallocated_sector_ct.to_i > baseline ? 'warning' : 'degraded_stable'
+      end
+
       # +settings+ is Config#jbod. +sizer+ returns the byte size of a source folder.
       def initialize(settings, manifest:, volume_info: nil, mirror: nil, dashboard: nil, purger: nil,
                      shell: Shell.new, out: $stdout, clock: Time, sizer: nil, dry_run: false, purge: nil)
@@ -259,16 +271,8 @@ module EasySync
                      "`easy_sync replace-drive #{mounted_drive.friendly_name} --to NEW_NAME --copy`.")
       end
 
-      # Downgrades a 'warning' caused solely by a non-growing reallocated
-      # count to 'degraded_stable'. Any other reason for 'warning' (pending
-      # sectors, uncorrectable sectors, media errors, an NVMe critical flag)
-      # is left alone regardless of reallocated-count trend.
       def resolve_alert_status(serial_number, health)
-        return health.status unless health.status == 'warning' && !health.other_bad
-
-        baseline = manifest.reallocated_baseline(serial_number)
-        current = health.reallocated_sector_ct.to_i
-        baseline && current > baseline ? 'warning' : 'degraded_stable'
+        self.class.alert_status(manifest, serial_number, health)
       end
 
       # Best-effort: says *why* a drive isn't mounted when it's detectably a
