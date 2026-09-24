@@ -45,14 +45,17 @@ module EasySync
         folders = manifest.folders
         names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] }
         scrub_findings = manifest.scrub_findings
+        trips = current_trips(runs)
         issues = issues(drives: drives, folders: folders, inventory: inventory, source_status: source_status,
-                        runs: runs, scrub_findings: scrub_findings)
+                        runs: runs, scrub_findings: scrub_findings, trips: trips)
         locals = {
           drives: drives,
           folders: folders,
           names: names,
           issues: issues,
-          verdict: verdict(issues, inventory, folders, source_status),
+          verdict: verdict(issues, inventory, folders, source_status, trips),
+          trips: trips,
+          accepted_trips: manifest.accepted_trips(limit: ACCEPTED_TRIPS_SHOWN),
           activity: activity_days(history_groups(manifest.history(limit: HISTORY_ROWS)),
                                   deletion_groups(manifest.deletions(limit: HISTORY_ROWS)), runs, names),
           runs: runs,
@@ -163,14 +166,41 @@ module EasySync
       BACKBLAZE_DROP_DAYS = 30
       STALE_SYNC_DAYS = 7
       RUNS_SHOWN = 30
+      ACCEPTED_TRIPS_SHOWN = 10
+
+      # The tripwire's unaccepted trips from the latest run, unless a later
+      # run has synced since. A stopped run records no sync_runs, so its
+      # trips outrank the last run that did copy; a folder-only trip shares
+      # its run_started_at with the folders that did copy.
+      def current_trips(runs)
+        latest = manifest.latest_trips.reject(&:accepted?)
+        return [] if latest.empty?
+        return [] if runs.first && runs.first.run_started_at > latest.first.run_started_at
+
+        latest
+      end
+
+      def run_stopped?(trips) = trips.any? { |t| t.scope == 'run' }
 
       Issue = Struct.new(:level, :html, keyword_init: true)
       Verdict = Struct.new(:level, :headline, keyword_init: true)
 
       # Everything worth your attention, most serious first. Each is one line
       # of trusted HTML (every interpolated value is escaped here).
-      def issues(drives:, folders:, inventory:, source_status:, runs:, scrub_findings:)
+      def issues(drives:, folders:, inventory:, source_status:, runs:, scrub_findings:, trips: [])
         list = []
+        if run_stopped?(trips)
+          list << Issue.new(level: :critical,
+                            html: "<strong>The last sync was stopped by the tripwire</strong> #{when_(trips.first.run_started_at)}: " \
+                                  "#{count(trips.sum(&:changed))} existing files would have been overwritten or are gone from the NAS. " \
+                                  'Nothing was copied or purged. Check the NAS for ransomware first; if you made this change yourself, ' \
+                                  'run <code>easy_sync sync --accept-changes</code> (see Tripwire).')
+        elsif trips.any?
+          list << Issue.new(level: :critical,
+                            html: "<strong>#{trips.size} folder#{'s' if trips.size != 1} held back by the tripwire</strong>: " \
+                                  'far more of their files would change than normal, so they were not copied. ' \
+                                  'Check them on the NAS (see Tripwire).')
+        end
         unplaced = inventory.select { |e| e.state == 'unplaced' }
         unless unplaced.empty?
           list << Issue.new(level: :critical,
@@ -205,7 +235,7 @@ module EasySync
         unless bad.empty?
           list << Issue.new(level: :warning,
                             html: "<strong>#{count(bad.size)} folder#{'s' if bad.size != 1} not in a good state</strong> " \
-                                  '(failed, drive full, missing on the NAS or not mounted): see Needs attention under Folders.')
+                                  '(failed, drive full, held back, missing on the NAS or not mounted): see Needs attention under Folders.')
         end
         latest = runs.first
         if latest && latest.failed.to_i.positive?
@@ -231,7 +261,7 @@ module EasySync
         list.sort_by { |i| i.level == :critical ? 0 : 1 }
       end
 
-      def verdict(issues, inventory, folders, source_status)
+      def verdict(issues, inventory, folders, source_status, trips = [])
         level = if issues.any? { |i| i.level == :critical } then :critical
                 elsif issues.any? then :warning
                 else :ok
@@ -242,7 +272,8 @@ module EasySync
         # offline for the last sync still is; one never copied is not.
         backed = [folders.count(&:last_synced_at), total].min
         waiting = unsynced_in(folders, source_status)
-        headline = if total.zero? then 'Nothing backed up yet'
+        headline = if run_stopped?(trips) then "Sync stopped: #{count(trips.sum(&:changed))} files would change on the NAS side"
+                   elsif total.zero? then 'Nothing backed up yet'
                    elsif unplaced.positive? then "#{count(unplaced)} of #{count(total)} folders are not backed up"
                    elsif backed == total then "All #{count(total)} folders backed up"
                    elsif waiting.positive? then "#{count(backed)} of #{count(total)} folders backed up, #{count(waiting)} waiting for their first copy"
@@ -462,7 +493,8 @@ module EasySync
 
       STATUS_LABELS = {
         'missing' => 'missing on NAS', 'skipped_source_unmounted' => 'share not mounted',
-        'skipped_unmounted' => 'drive not mounted', 'drive_full' => 'drive full'
+        'skipped_unmounted' => 'drive not mounted', 'drive_full' => 'drive full',
+        'tripped' => 'held back by tripwire', 'skipped_check_failed' => 'check failed'
       }.freeze
 
       def status_label(status) = STATUS_LABELS.fetch(status, status)

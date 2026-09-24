@@ -68,6 +68,14 @@ module EasySync
       def share = folder_path.split('/').first
     end
 
+    # One folder held back (or let through with --accept-changes) by the
+    # tripwire in one sync run. +samples+ is a few of its changed paths.
+    TripRecord = Struct.new(:id, :run_started_at, :folder_path, :scope, :replaced, :missing, :files_on_drive,
+                            :samples, :accepted_at, keyword_init: true) do
+      def changed = replaced.to_i + missing.to_i
+      def accepted? = !accepted_at.nil?
+    end
+
     HistoryEntry = Struct.new(:id, :folder_path, :drive_serial, :event, :recorded_at, :note,
                               keyword_init: true)
 

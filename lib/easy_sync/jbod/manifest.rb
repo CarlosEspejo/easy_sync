@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'json'
 require 'sqlite3'
 require 'fileutils'
 require 'time'
@@ -493,6 +494,38 @@ module EasySync
         db.execute('SELECT * FROM source_inventory ORDER BY folder_path').map { |row| SourceEntry.new(**symbolize(row)) }
       end
 
+      # -- tripwire -------------------------------------------------------
+
+      # +trips+ are Tripwire::Trip. An accepted trip is stamped with +at+.
+      def record_trips(run_started_at, trips, at: now)
+        db.transaction(:immediate) do
+          trips.each do |t|
+            params = [run_started_at, t.folder_path, t.scope, t.replaced, t.missing, t.files_on_drive,
+                      JSON.generate(t.samples), t.accepted ? at : nil]
+            db.execute(<<~SQL, params)
+              INSERT INTO tripwire_trips (run_started_at, folder_path, scope, replaced, missing, files_on_drive,
+                                          samples, accepted_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            SQL
+          end
+        end
+      end
+
+      # Every trip of the most recent run that recorded any, or [].
+      def latest_trips
+        db.execute(<<~SQL).map { |row| row_to_trip(row) }
+          SELECT * FROM tripwire_trips
+           WHERE run_started_at = (SELECT MAX(run_started_at) FROM tripwire_trips)
+           ORDER BY replaced + missing DESC, folder_path
+        SQL
+      end
+
+      # Accepted trips, newest first: bulk changes someone let through.
+      def accepted_trips(limit: 20)
+        db.execute('SELECT * FROM tripwire_trips WHERE accepted_at IS NOT NULL ORDER BY id DESC LIMIT ?', [limit])
+          .map { |row| row_to_trip(row) }
+      end
+
       # -- pending deletions ----------------------------------------------
 
       # Replaces the candidate set for +folder_path+ with +missing+, an array of
@@ -841,6 +874,10 @@ module EasySync
       def row_to_folder(row) = Folder.new(**symbolize(row))
       def row_to_checksum(row) = FileChecksum.new(**symbolize(row))
 
+      def row_to_trip(row)
+        TripRecord.new(**symbolize(row), samples: JSON.parse(row['samples'] || '[]'))
+      end
+
       def symbolize(row)
         row.to_h.transform_keys(&:to_sym)
       end
@@ -868,6 +905,7 @@ module EasySync
         end
         create_file_checksums_table!
         create_drive_benchmarks_table!
+        create_tripwire_trips_table!
         db.execute("PRAGMA user_version = #{SCHEMA_VERSION}") if schema_version < SCHEMA_VERSION
       end
 
@@ -903,6 +941,23 @@ module EasySync
             used_bytes   INTEGER
           );
           CREATE INDEX IF NOT EXISTS idx_drive_benchmarks_drive ON drive_benchmarks(drive_serial, run_at);
+        SQL
+      end
+
+      def create_tripwire_trips_table!
+        db.execute_batch(<<~SQL)
+          CREATE TABLE IF NOT EXISTS tripwire_trips (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_started_at TEXT    NOT NULL,
+            folder_path    TEXT    NOT NULL,
+            scope          TEXT    NOT NULL,
+            replaced       INTEGER NOT NULL,
+            missing        INTEGER NOT NULL,
+            files_on_drive INTEGER NOT NULL,
+            samples        TEXT    NOT NULL DEFAULT '[]',
+            accepted_at    TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_tripwire_trips_run ON tripwire_trips(run_started_at);
         SQL
       end
 

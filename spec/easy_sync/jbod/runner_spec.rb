@@ -25,9 +25,21 @@ RSpec.describe EasySync::Jbod::Runner do
                                   shell: fake_shell, out: out, clock: clock, sizer: sizer, **opts)
   end
 
-  def ok_result(total: 1_000, transferred: 10, extraneous: [])
-    EasySync::Jbod::Mirror::Result.new(exit_status: 0, total_size_bytes: total, bytes_transferred: transferred,
-                                       extraneous: extraneous, output: '')
+  def ok_result(total: 1_000, transferred: 10)
+    EasySync::Jbod::Mirror::Result.new(exit_status: 0, total_size_bytes: total, bytes_transferred: transferred, output: '')
+  end
+
+  # What the pre-copy check found in a folder: +missing+ is [[path, kind], ...].
+  def check_result(replaced: [], missing: [], new_files: 0, source_files: 100)
+    EasySync::Jbod::Mirror::Check.new(replaced: replaced, missing: missing, junk: [], new_files: new_files,
+                                      source_files: source_files)
+  end
+
+  # A folder copied by an earlier run, so this run checks it before copying.
+  def synced_before(folder_path, serial = 'SN-backup-04-8tb')
+    manifest.assign_folder(folder_path, serial) unless manifest.folder(folder_path)
+    manifest.record_sync(folder_path: folder_path, drive_serial: serial, started_at: '2026-09-01T00:00:00Z',
+                         finished_at: '2026-09-01T00:01:00Z', exit_status: 0, run_started_at: '2026-09-01T00:00:00Z')
   end
 
   def failed_result(status = 23)
@@ -56,6 +68,7 @@ RSpec.describe EasySync::Jbod::Runner do
       EasySync::Jbod::Health.new(status: 'unknown', detail: 'not exposed', source: 'none')
     )
     allow(volume_info).to receive(:smartctl_model).and_return(nil)
+    allow(mirror).to receive(:check).and_return(check_result)
   end
 
   describe '#sources' do
@@ -360,7 +373,7 @@ RSpec.describe EasySync::Jbod::Runner do
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 500)])
       full_result = EasySync::Jbod::Mirror::Result.new(exit_status: 11, total_size_bytes: nil, bytes_transferred: nil,
-                                                        extraneous: [], disk_full: true, output: 'No space left on device')
+                                                        disk_full: true, output: 'No space left on device')
       allow(mirror).to receive(:sync).and_return(full_result)
 
       report = runner.run
@@ -691,28 +704,52 @@ RSpec.describe EasySync::Jbod::Runner do
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
     end
 
-    it 'records what rsync would have deleted instead of deleting it' do
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]), ok_result)
+    it 'records what rsync would have deleted instead of deleting it, from the check before the copy' do
+      synced_before('photos/2024')
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(ok_result)
       report = runner.run
       expect(manifest.pending_deletions.map { |p| [p.folder_path, p.relative_path, p.missing_runs] }).to eq([['photos/2024', 'old.jpg', 1]])
       expect(report.pending).to eq(1)
       expect(report.purged).to be_empty
       expect(out.string).to include('photos/2024: 1 newly missing on NAS')
+      expect(mirror).to have_received(:check).with(album, "#{drive_root}/photos/2024", root_only: false)
     end
 
-    it 'warns and records nothing when the deletion probe failed' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: nil), ok_result)
+    it 'does not check a folder placed this run: it has nothing on its drive yet' do
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      runner.run
+      expect(mirror).not_to have_received(:check)
+      expect(manifest.folder('tv/Show A').last_sync_status).to eq('ok')
+    end
+
+    it 'skips a folder whose check failed, records nothing for it, and carries on with the rest' do
+      synced_before('photos/2024')
+      synced_before('tv/Show A')
+      allow(mirror).to receive(:check) { |source, *| source == album ? nil : check_result }
+      allow(mirror).to receive(:sync).and_return(ok_result)
       report = runner.run
+      expect(mirror).to have_received(:sync).once
+      expect(report.synced).to eq(['tv/Show A'])
+      expect(report.check_failed).to eq(['photos/2024'])
+      expect(manifest.folder('photos/2024').last_sync_status).to eq('skipped_check_failed')
+      expect(report.warnings).to include(a_string_matching(%r{photos/2024: the pre-copy check failed}))
+    end
+
+    it 'starts no deletion clock for a folder whose copy failed' do
+      synced_before('photos/2024')
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(failed_result)
+      runner.run
       expect(manifest.pending_deletions).to be_empty
-      expect(report.warnings).to include(a_string_matching(/photos: the deletion probe failed/))
     end
 
     it 'purges a file once it has expired and the drive is mounted' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      synced_before('photos', 'SN-backup-04-8tb')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
       write_file(File.join(drive_root, 'photos', 'old.jpg'))
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]), ok_result)
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
       expect(report.purged).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
@@ -722,10 +759,10 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'does not purge a file that reappeared on the NAS' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      synced_before('photos')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
       write_file(File.join(drive_root, 'photos', 'old.jpg'))
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: []), ok_result)
+      allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
       expect(report.purged).to be_empty
@@ -760,10 +797,11 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'honours --no-purge and purge: false' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      synced_before('photos')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
       write_file(File.join(drive_root, 'photos', 'old.jpg'))
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file']]))
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(ok_result)
 
       build_runner(settings, purge: false).run
       expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
@@ -776,7 +814,8 @@ RSpec.describe EasySync::Jbod::Runner do
       make_shows('Show A')
       manifest.assign_folder('photos', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['gone.jpg', 'file']]))
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['gone.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(ok_result)
       before = manifest.db.execute('SELECT * FROM folders').to_s + manifest.db.execute('SELECT * FROM drives').to_s
 
       report = build_runner(settings, dry_run: true).run
@@ -796,11 +835,12 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'in dry-run mode touches neither the drives nor the pending table' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      synced_before('photos')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
       manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-05T00:00:00Z')
       write_file(File.join(drive_root, 'photos', 'old.jpg'))
-      allow(mirror).to receive(:sync).and_return(ok_result(extraneous: [['old.jpg', 'file'], ['new.jpg', 'file']]))
+      allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file'], ['new.jpg', 'file']]))
+      allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = build_runner(settings, dry_run: true).run
       expect(report.would_purge).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
@@ -809,14 +849,157 @@ RSpec.describe EasySync::Jbod::Runner do
     end
   end
 
+  describe 'tripwire' do
+    let(:drive_root) { "#{mount_root}/backup-04-8tb" }
+    let(:enforced) { settings.merge(tripwire_enforce: true) }
+    let(:purger) { instance_double(EasySync::Jbod::Purger) }
+    let(:show) { "#{tv}/Show A" }
+    let(:checks) { {} }
+
+    before do
+      make_shows('Show A')
+      synced_before('photos/2024')
+      synced_before('tv/Show A')
+      allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+      allow(mirror).to receive(:check) { |source, *| checks.fetch(source, check_result) }
+      allow(mirror).to receive(:sync).and_return(ok_result)
+      allow(purger).to receive(:run).and_return(EasySync::Jbod::Purger::Result.new(purged: [], would_purge: [], skipped: []))
+      # An expired deletion in tv/Show A, still missing, so the purge has work to do.
+      manifest.reconcile_pending('tv/Show A', [['old.mkv', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_pending('tv/Show A', [['old.mkv', 'file']], at: '2026-09-02T00:00:00Z')
+      checks[show] = check_result(missing: [['old.mkv', 'file']])
+    end
+
+    def rows(table) = manifest.db.execute("SELECT * FROM #{table}")
+
+    def whole_manifest
+      manifest.db.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+              .to_h { |r| [r['name'], rows(r['name'])] }
+    end
+
+    it 'is report-only by default: it says what it would have stopped and copies everything' do
+      checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
+      report = build_runner(settings, purger: purger).run
+      expect(report.synced).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(report.trips.map(&:folder_path)).to eq(['photos/2024'])
+      expect(report.tripped).to be_empty
+      expect(rows('tripwire_trips')).to be_empty
+      expect(out.string).to include('tripwire would have tripped (report only)', 'photos/2024: 80 replaced',
+                                    'report-only (tripwire_enforce: false)')
+    end
+
+    it 'holds back a folder with 80 of its 100 files replaced, and syncs and purges the rest' do
+      checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
+      report = build_runner(enforced, purger: purger).run
+      expect(mirror).to have_received(:sync).once
+      expect(report.synced).to eq(['tv/Show A'])
+      expect(report.tripped).to eq(['photos/2024'])
+      expect(report.run_tripped).to be(false)
+      expect(purger).to have_received(:run)
+      expect(manifest.folder('photos/2024').last_sync_status).to eq('tripped')
+      trip = manifest.latest_trips.first
+      expect(trip).to have_attributes(folder_path: 'photos/2024', scope: 'folder', replaced: 80, missing: 0,
+                                      files_on_drive: 100, accepted_at: nil)
+      expect(trip.samples.size).to eq(10)
+      expect(out.string).to include('      IMG_0.jpg', '`easy_sync sync --accept-changes photos/2024`')
+      expect(File.read(dashboard_path)).to include('held back by the tripwire', 'IMG_9.jpg')
+    end
+
+    it 'stops the whole run when changes spread thin add up: nothing copied, nothing purged' do
+      checks[album] = check_result(replaced: Array.new(300) { |i| "a#{i}.jpg" }, source_files: 10_000)
+      checks[show] = check_result(replaced: Array.new(200) { |i| "b#{i}.mkv" }, missing: [['old.mkv', 'file']], source_files: 10_000)
+      report = build_runner(enforced, purger: purger).run
+      expect(mirror).not_to have_received(:sync)
+      expect(purger).not_to have_received(:run)
+      expect(report.run_tripped).to be(true)
+      expect(report.tripped).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(manifest.folders.map(&:last_sync_status).uniq).to eq(['tripped'])
+      expect(manifest.pending_deletions.first.missing_runs).to eq(2)   # no clock moved
+      expect(manifest.latest_trips.map { |t| [t.folder_path, t.scope] }).to eq([['photos/2024', 'run'], ['tv/Show A', 'run']])
+      expect(report.warnings).to include(a_string_matching(/SYNC STOPPED: 500 existing files/))
+      expect(volume_info).to have_received(:copy_state).at_least(:once)
+      expect(File.read(dashboard_path)).to include('Sync stopped: 500 files would change on the NAS side')
+    end
+
+    it 'syncs a bulk change once accepted, records the acceptance, and the next quiet run is clean' do
+      checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
+      report = build_runner(enforced, purger: purger, accept_changes: true).run
+      expect(report.synced).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(report.tripped).to be_empty
+      expect(manifest.accepted_trips.map { |t| [t.folder_path, t.accepted_at] }).to eq([['photos/2024', '2026-09-13T12:00:00Z']])
+      expect(File.read(dashboard_path)).to include('Accepted bulk changes')
+      expect(File.read(dashboard_path)).not_to include('held back by the tripwire')
+
+      checks.delete(album)
+      expect(build_runner(enforced, purger: purger).run.trips).to be_empty
+    end
+
+    it 'does not count files an earlier run already found missing: an accepted delete stays accepted until purged' do
+      gone = Array.new(80) { |i| ["IMG_#{i}.jpg", 'file'] }
+      checks[album] = check_result(missing: gone)
+      build_runner(enforced, purger: purger, accept_changes: ['photos/2024']).run
+      expect(manifest.pending_deletions(folder_path: 'photos/2024').size).to eq(80)
+
+      report = build_runner(enforced, purger: purger).run
+      expect(report.trips).to be_empty
+      expect(report.synced).to include('photos/2024')
+      expect(manifest.pending_deletions(folder_path: 'photos/2024').first.missing_runs).to eq(2)
+    end
+
+    it 'still reports pending deletions when the whole run is stopped' do
+      checks[album] = check_result(replaced: Array.new(600) { |i| "a#{i}.jpg" }, source_files: 10_000)
+      report = build_runner(enforced, purger: purger).run
+      expect(report.run_tripped).to be(true)
+      expect(report.pending).to eq(1)
+    end
+
+    it 'accepts only the named folders' do
+      checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
+      checks[show] = check_result(replaced: Array.new(90) { |i| "e#{i}.mkv" })
+      report = build_runner(enforced, purger: purger, accept_changes: ['photos/2024', 'tv/Typo']).run
+      expect(report.synced).to eq(['photos/2024'])
+      expect(report.tripped).to eq(['tv/Show A'])
+      expect(report.warnings).to include('--accept-changes: tv/Typo is not in this sync')
+    end
+
+    it 'in dry-run prints what would trip and leaves the manifest byte-for-byte unchanged' do
+      checks[album] = check_result(replaced: Array.new(300) { |i| "a#{i}.jpg" }, source_files: 10_000)
+      checks[show] = check_result(replaced: Array.new(250) { |i| "b#{i}.mkv" }, source_files: 10_000)
+      before = whole_manifest
+      report = build_runner(enforced, purger: purger, dry_run: true).run
+      expect(whole_manifest).to eq(before)
+      expect(report.run_tripped).to be(true)
+      expect(mirror).not_to have_received(:sync)
+      expect(out.string).to include('tripwire would trip', 'SYNC WOULD STOP: 550 existing files')
+      expect(File).not_to exist(dashboard_path)
+    end
+
+    it 'records nothing if interrupted while checking' do
+      allow(mirror).to receive(:check).and_raise(Interrupt)
+      before = rows('tripwire_trips') + rows('pending_deletions') + rows('sync_runs')
+      expect { build_runner(enforced, purger: purger).run }.to raise_error(Interrupt)
+      expect(rows('tripwire_trips') + rows('pending_deletions') + rows('sync_runs')).to eq(before)
+      expect(mirror).not_to have_received(:sync)
+    end
+
+    it 'checks a root-files unit with root_only, so its subfolders never count as missing' do
+      write_file(File.join(tv, 'Stray.mkv'))
+      synced_before('tv')
+      manifest.db.execute("UPDATE folders SET scope = 'root' WHERE folder_path = 'tv'")
+      build_runner(enforced, purger: purger).run
+      expect(mirror).to have_received(:check).with(tv, "#{drive_root}/tv", root_only: true)
+    end
+  end
+
   it 'hands the configured exclusions to the rsync it builds' do
     fake_shell.on('rsync', output: rsync_stats)
     fake_shell.on('du', output: "1\tx\n")
     allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
+    synced_before('photos/2024')
     described_class.new(settings, manifest: manifest, volume_info: volume_info, shell: fake_shell, out: out, clock: clock).run
-    copy, probe = fake_shell.calls_to('rsync')
+    probe, copy = fake_shell.calls_to('rsync')
     expect(copy).to include('--exclude=#recycle', '--exclude=@eaDir')
-    expect(probe).to include('--delete-excluded', '--exclude=#recycle')
+    expect(probe).to include('-an', '--delete-excluded', '--exclude=#recycle')
   end
 
   describe 'default sizer' do

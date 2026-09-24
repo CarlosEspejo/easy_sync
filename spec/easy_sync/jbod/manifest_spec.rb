@@ -869,4 +869,21 @@ RSpec.describe EasySync::Jbod::Manifest, 'benchmarks' do
     described_class.new(db)
     expect { record('S1', 1) }.not_to raise_error
   end
+  describe 'tripwire trips' do
+    def trip(path, accepted: false, replaced: 5)
+      EasySync::Jbod::Tripwire::Trip.new(folder_path: path, replaced: replaced, missing: 1, files_on_drive: 20,
+                                         samples: ['a.jpg', 'b é.jpg'], scope: 'folder', accepted: accepted)
+    end
+
+    it 'keeps the latest run\'s trips, biggest first, and the accepted ones apart' do
+      m = memory_manifest
+      expect(m.latest_trips).to eq([])
+      m.record_trips('2026-09-20T00:00:00Z', [trip('old')])
+      m.record_trips('2026-09-21T00:00:00Z', [trip('small', replaced: 1), trip('big', replaced: 9), trip('ok', accepted: true)])
+      expect(m.latest_trips.map { |t| [t.folder_path, t.changed] }).to eq([['big', 10], ['ok', 6], ['small', 2]])
+      expect(m.latest_trips.first.samples).to eq(['a.jpg', 'b é.jpg'])
+      expect(m.accepted_trips.map(&:folder_path)).to eq(['ok'])
+      expect(m.accepted_trips.first).to be_accepted
+    end
+  end
 end

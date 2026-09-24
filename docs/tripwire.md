@@ -1,4 +1,9 @@
-# Tripwire: stop a sync that would overwrite the backup wholesale (designed, not built)
+# Tripwire: stop a sync that would overwrite the backup wholesale (built, report-only)
+
+Built 2026-09-24 (`Jbod::Tripwire`, `Mirror#check`, Runner phase 1b). It
+ships **report-only** (`tripwire_enforce: false`, Rollout step 1). See
+"As built" at the end for where the code differs from this design, and for
+what was checked on real hardware.
 
 ## The gap
 
@@ -178,3 +183,50 @@ look before accepting.
 - Real hardware: measure phase 1b's duration and the run's aggregate MB/s
   against docs/performance.md. Then simulate ransomware on a scratch
   source (rename + rewrite a few hundred files) against `jbod-test-1`.
+
+## As built
+
+Differences from the design above, all found while building it:
+
+- **Files already pending don't count again.** A file missing from the NAS
+  stays on the drive for `grace_days`, and every run's probe reports it
+  again. As designed, an accepted bulk delete or rename would trip again on
+  every run until the purge, about a week later. Found live on `jbod-test-1`.
+  `Check#known` holds the folder's `pending_deletions` paths, and only
+  newly missing files count.
+- **Excluded junk doesn't count.** `--delete-excluded` reports
+  already-copied junk (`.DS_Store`, `#recycle`) as missing. Adding a pattern
+  to `exclude_folders` would otherwise trip on the next run. Paths with any
+  component matching `exclude_folders` are left out of the count. They are
+  still fed to the purge as before.
+- **"Synced before"** means the folder's `last_synced_at` is set. It is only
+  set by a successful sync_run, the same condition as in the design.
+- `tripwire_trips` has a `scope` column: `folder` when the folder tripped on
+  its own, `run` when it only counted towards a run-wide trip.
+- `--accept-changes FOLDER` also leaves that folder out of the run total. A
+  name that isn't in the sync gets a warning.
+- Dashboard: an unaccepted trip from the latest run shows as a critical
+  issue plus a Tripwire section (counts and sample paths). It stays until a
+  later run syncs. A stopped run also replaces the headline ("Sync stopped:
+  N files would change on the NAS side"). Accepted trips are listed under
+  "Accepted bulk changes". Folder statuses: `tripped`, `skipped_check_failed`.
+- A stopped run still prints and records the pending-deletion count. Only
+  the purge is skipped.
+
+Checked on `jbod-test-1` (2026-09-24, scratch config, enforce on,
+200-file album + ten single-file movie folders):
+
+| Step | Result |
+|---|---|
+| 120 album files rewritten as `*.locked`, originals removed; `sync --dry-run` | prints the trip with 10 samples, exit 0, manifest `.dump` identical |
+| same, `sync` | album held back (`tripped`), other 10 synced, exit 1, no `.locked` file on the drive, no deletion clock started |
+| `sync --accept-changes tripsrc/Album` | copied, 120 pending deletions, trip recorded with `accepted_at` |
+| `tripwire_run_files: 8`, one file rewritten in each movie folder | whole run stopped: nothing copied or purged, all 11 `tripped`, dashboard headline "Sync stopped: 10 files would change" (the 120 already-pending files not counted), exit 1 |
+| `sync --accept-changes`, then a plain `sync` | copied; the following run reports 0 changed files |
+
+**Still to do before enforcing (Rollout):** measure phase 1b's duration on
+the real fleet (~2,700 probes, estimated ~7 min) and confirm the sync
+aggregate stays at or above 50 MB/s (docs/performance.md). Then read the
+largest legitimate counts from a couple of weeks of logs (`grep -A3
+'tripwire would have tripped' ~/.easy_sync/logs/*` and each run's `Checked in`
+line) before setting `tripwire_enforce: true`.
