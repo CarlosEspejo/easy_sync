@@ -18,19 +18,58 @@ RSpec.describe EasySync::Jbod::Dashboard do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
     expect(html).to include('<title>Easy Sync Backup Status</title>')
     drives.each_key { |name| expect(html).to include(name) }
-    expect(html).to include('Photos', 'assigned', '6.0 TB', 'ok')
-    expect(html).to include('7 drives, 1 mounted', '1 folders tracked')
+    expect(html).to include('Photos', 'placed on backup-04-8tb', '6.0 TB', 'ok')
+    expect(html).to include('7 drives, 1 connected', 'All 1 folders backed up')
   end
 
   it 'shows total capacity and free space across all drives, live where mounted, last-known otherwise' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
     # capacity: registered 3+6+6+8+8+8+8 = 47 TB, regardless of mount state
     # free: backup-04's live 1 TB + backup-01's last-known 2 TB (from the outer before) = 3 TB
-    expect(html).to match(%r{<p class="capacity"><strong>47\.0 TB</strong> total capacity ·\s*<strong>3\.0 TB</strong> free right now</p>})
+    expect(html).to match(/47\.0 TB total · 3\.0 TB free ·/)
   end
 
-  describe 'recent sync runs' do
+  describe 'status at the top' do
+    def verdict(html) = html[html.index('<section class="verdict')...html.index('</section>')]
+
+    it 'says everything is backed up, with the last sync, when nothing needs attention' do
+      manifest.replace_source_inventory([{ folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: '' }])
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :baseline, digest: 'x', at: '2026-09-12T00:00:00Z')
+      html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+      v = verdict(html)
+      expect(v).to include('verdict ok', 'All 1 folders backed up', 'Last sync today', 'took 30m 0s', '1 folder copied (10 B)',
+                           'Nothing needs your attention')
+    end
+
+    it 'turns red and leads with the number not backed up when a drive has no room' do
+      manifest.replace_source_inventory([{ folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: '' },
+                                         { folder_path: 'movies/X', size_bytes: 2 * TB, state: 'unplaced', detail: '' }])
+      v = verdict(dashboard.render)
+      expect(v).to include('verdict critical', '1 of 2 folders are not backed up', '1 folder')
+    end
+
+    it 'warns before Backblaze drops a drive that has not been connected, and says when it has' do
+      manifest.update_drive_usage('SN-backup-05-8tb', used_bytes: 1, free_bytes: 1, seen_at: '2026-08-20T12:00:00Z')   # 24 days
+      manifest.update_drive_usage('SN-backup-06-8tb', used_bytes: 1, free_bytes: 1, seen_at: '2026-08-01T12:00:00Z')   # 43 days
+      html = dashboard.render
+      expect(verdict(html)).to include('backup-05-8tb not connected for 24 days', 'Connect it within 6 days',
+                                       'backup-06-8tb not connected for 43 days', "dropped out of Backblaze's current backup")
+      expect(html).to match(/seen warning">last seen 24 days ago/)
+      expect(html).to match(/seen critical">last seen 43 days ago/)
+    end
+
+    it 'flags a sync that has not run for a week' do
+      old_clock = double('clock', now: Time.utc(2026, 9, 25, 12, 0, 0))
+      expect(verdict(described_class.new(manifest, clock: old_clock).render)).to include('No sync for 12 days')
+    end
+  end
+
+  describe 'latest sync and activity' do
     let(:run) { '2026-09-13T11:40:00Z' }
+
+    def latest(html) = html[html.index('<h2>Latest sync</h2>')...html.index('<h2>Folders</h2>')]
+    def activity(html) = html[html.index('<h2>Activity</h2>')..]
 
     def sync(folder, bytes:, exit_status: 0)
       manifest.assign_folder(folder, 'SN-backup-04-8tb') unless manifest.folder(folder)
@@ -39,53 +78,104 @@ RSpec.describe EasySync::Jbod::Dashboard do
                            total_size_bytes: 1_000, run_started_at: run)
     end
 
-    it 'shows one line per run, and only the folders of the latest run that copied something or failed' do
+    it 'lists only the folders the latest sync copied or failed on, and each run in the activity feed' do
       sync('tv/Unchanged', bytes: 0)
       sync('tv/New Episode', bytes: 2 * GB)
       sync('tv/Broken', bytes: nil, exit_status: 23)
       html = dashboard.render
-      section = html[html.index('Recent sync runs')..]
 
-      expect(section).to match(%r{<td>5m 0s</td>\s*<td class="num">3</td>\s*<td class="num">1</td>\s*<td class="num">2\.0 GB</td>})
-      expect(section).to include('1 failed', 'What the latest run changed', 'tv/New Episode', 'copied', 'tv/Broken', 'failed (exit 23)',
-                                 '1 other folder was already up to date')
-      expect(section).not_to include('tv/Unchanged')
+      expect(latest(html)).to include('tv/New Episode', 'copied', 'tv/Broken', 'failed (exit 23)', '1 other folder was already up to date')
+      expect(latest(html)).not_to include('tv/Unchanged')
+      expect(activity(html)).to include('Sync: 3 folders checked, 1 copied (2.0 GB), 1 failed in 5m 0s',
+                                        'Sync: 1 folder checked, 1 copied (10 B) in 30m 0s')
+      expect(html).to include('The last sync had 1 failure')
     end
 
     it 'says so when the latest run changed nothing' do
       sync('tv/Unchanged', bytes: 0)
-      expect(dashboard.render).to include('Nothing changed: 1 folder checked, already up to date.')
+      expect(latest(dashboard.render)).to include('Nothing changed: 1 folder checked, already up to date.')
     end
 
     it 'marks the newest run as in progress while its sync still holds the lock' do
       sync('tv/Unchanged', bytes: 0)
       running = EasySync::Jbod::RunLock::Status.new(pid: 1, kind: 'sync', started_at: Time.utc(2026, 9, 13, 11, 39, 59))
-      expect(dashboard.render(running: running)).to match(%r{<td>in progress</td>\s*<td class="num">1</td>})
+      html = dashboard.render(running: running)
+      expect(activity(html)).to include('Sync in progress: 1 folder checked so far')
+      expect(html).to include('still running')
+    end
+
+    it 'shows a bulk move as one expandable entry, with drive names in place of serials' do
+      %w[A B C].each { |f| manifest.assign_folder("movies/#{f}", 'SN-backup-06-8tb', at: '2026-09-13T06:00:00Z') }
+      %w[A B C].each do |f|
+        manifest.reassign_folder("movies/#{f}", 'SN-backup-07-8tb', note: 'moved off SN-backup-06-8tb: drive overcommitted',
+                                                                   at: '2026-09-13T06:46:10Z')
+      end
+      feed = activity(dashboard.render)
+
+      expect(feed).to include('3 folders moved to backup-07-8tb', 'moved off backup-06-8tb: drive overcommitted',
+                              '<li>movies/A</li>', '3 folders placed on backup-06-8tb', 'Today')
+      expect(feed).not_to include('SN-backup-06-8tb')
+    end
+
+    it 'groups a batch spread over several drives, whatever free space each note mentions' do
+      manifest.assign_folder('tv/A', 'SN-backup-01-3tb', note: 'new folder, most free space (1.4 TB)', at: '2026-09-13T00:48:10Z')
+      manifest.assign_folder('tv/B', 'SN-backup-02-6tb', note: 'new folder, most free space (1.3 TB)', at: '2026-09-13T00:48:40Z')
+      expect(activity(dashboard.render)).to include('2 folders placed on 2 drives', 'new folder, most free space<', 'tv/A → backup-01-3tb')
+    end
+
+    it 'shows a removal once, as its deletion from the drive' do
+      manifest.assign_folder('tv/Gone', 'SN-backup-01-3tb')
+      manifest.remove_folder('tv/Gone', note: 'deleted from backup-01-3tb: missing on NAS since 2026-09-01T04:56:05Z')
+      manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
+                          "VALUES ('tv/Gone', '', 'folder', 'SN-backup-01-3tb', '2026-09-01T04:56:05Z', '2026-09-13T11:00:00Z')")
+      feed = activity(dashboard.render)
+      expect(feed.scan('deleted from backup-01-3tb').size).to eq(1)
+      expect(feed).to match(/tv\/Gone \(whole folder\) deleted from backup-01-3tb[\s\S]*?missing on the NAS since 2026-09-0\d/)
+    end
+
+    it 'says an old copy removed after a move was not missing from the NAS' do
+      manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
+                          "VALUES ('synology', 'SN-backup-06-8tb', 'folder', 'SN-backup-06-8tb', '2026-09-12T02:55:59Z', '2026-09-13T11:00:00Z')")
+      expect(activity(dashboard.render)).to include('synology (whole folder) deleted from backup-06-8tb', 'old copy, after the move on')
+    end
+
+    it 'names the folder itself when an entry stands for just one' do
+      expect(activity(dashboard.render)).to include('Photos placed on backup-04-8tb')
+    end
+
+    it 'groups deletions made together on one drive, and counts folders and files' do
+      [['tv/Old', '', 'folder'], ['tv/A', '.DS_Store', 'file'], ['tv/B', '.DS_Store', 'file']].each do |folder, rel, kind|
+        manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
+                            'VALUES (?, ?, ?, ?, ?, ?)', [folder, rel, kind, 'SN-backup-01-3tb', '2026-09-01T00:00:00Z', '2026-09-13T11:03:20Z'])
+      end
+      feed = activity(dashboard.render)
+      expect(feed).to include('1 folder and 2 files deleted from backup-01-3tb', 'tv/Old (whole folder)', 'tv/A/.DS_Store')
+      expect(feed.scan('deleted from backup-01-3tb').size).to eq(1)
     end
   end
 
   it 'shows no ETA banner when no sync is running' do
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)])
-    expect(html).not_to include('class="eta"', 'Sync in progress')
+    expect(html).not_to include('Sync in progress')
   end
 
   it 'shows the ETA banner, phrased the same way as `status`, while a sync is running' do
     running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'sync', started_at: Time.utc(2026, 9, 13, 11, 45, 0))
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)], running: running)
-    expect(html).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
+    expect(html).to include('<p class="line">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
   end
 
   it 'shows a simple running banner, not the sync ETA, while a scrub holds the lock' do
     running = EasySync::Jbod::RunLock::Status.new(pid: 123, kind: 'scrub', started_at: Time.utc(2026, 9, 13, 11, 45, 0))
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB, used: 7 * TB)], running: running)
-    expect(html).to include('<p class="eta">Scrub in progress (started 15m 0s ago).</p>')
+    expect(html).to include('<p class="line">Scrub in progress (started 15m 0s ago).</p>')
     expect(html).not_to include('Sync in progress')
   end
 
   it 'omits the capacity line when no drives are registered' do
     empty_manifest = memory_manifest(clock: clock)
     html = described_class.new(empty_manifest, clock: clock).render
-    expect(html).not_to include('class="capacity"')
+    expect(html).not_to include('TB total')
   end
 
   it 'colours tiles by SMART health and never by fullness' do
@@ -102,13 +192,13 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(/class="tile warning"[\s\S]*?backup-05-8tb[\s\S]*?SMART: starting to fail/)
     expect(html).to match(/class="tile critical"[\s\S]*?backup-06-8tb[\s\S]*?SMART: FAILING/)
     expect(html).to match(/class="tile unknown"[\s\S]*?backup-07-8tb[\s\S]*?SMART n\/a/)
-    expect(html).to include('<strong>backup-05-8tb</strong> is starting to fail', 'reallocated 12 · pending 3')
+    expect(html).to include('<strong>backup-05-8tb is starting to fail</strong>', 'reallocated 12 · pending 3')
     expect(html).to include('<small>PASSED · reallocated 12 · pending 3</small>')   # counters shown only when they matter
     expect(html).to include('easy_sync replace-drive backup-05-8tb --to NEW_NAME --copy')
     expect(html).not_to include('jbod reassign')
-    expect(html).to include('<strong>backup-06-8tb</strong> is FAILING')
+    expect(html).to include('<strong>backup-06-8tb is FAILING</strong>', 'verdict critical')
     expect(html).not_to include('is 100% full')
-    expect(html).to include('drive colours show SMART health, not fullness')
+    expect(html).to include('Tile colour shows SMART health, not fullness')
   end
 
   it 'gives a drive with stable, non-growing reallocated sectors a lower-urgency tile, not the top alert banner' do
@@ -117,14 +207,14 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(/class="tile stable"[\s\S]*?backup-05-8tb[\s\S]*?SMART: historical wear, stable/)
     expect(html).to include('<small>PASSED · reallocated 24 · 34°C</small>')
     expect(html).not_to include('is starting to fail')
-    expect(html).not_to include('class="alert')
+    expect(html).not_to match(/class="alert[^"]*">[^<]*<strong>backup-05-8tb/)
   end
 
   it 'shows last-known numbers for drives that are not mounted, without alarm' do
     html = dashboard.render(mounted: [])
-    expect(html).to include('not mounted')
-    expect(html).to match(%r{backup-01-3tb[\s\S]*?33% <span class="unit">full</span>[\s\S]*?2\.0 TB free · 1\.0 TB of 3\.0 TB used})
-    expect(html).not_to include('class="alert')
+    expect(html).to include('not connected')
+    expect(html).to match(%r{backup-01-3tb[\s\S]*?33% <span class="unit">full</span>[\s\S]*?2\.0 TB free of 3\.0 TB})
+    expect(html).not_to include('not connected for')   # never seen at all: nothing to count from
   end
 
   it 'keeps a healthy mounted tile quiet: no mounted badge, no mount path, no zero counters' do
@@ -147,26 +237,13 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('1 folder · 2.0 TB · no drive has room')
   end
 
-  it 'shows the drive manufacturer and model next to the serial when known, and nothing extra when not' do
+  it 'keeps serial, model and powered-on time in the tile\'s details rather than on its face' do
     manifest.register_drive(serial_number: 'SN-with-model', friendly_name: 'backup-08-8tb', capacity_bytes: 8 * TB,
                             model: 'TOSHIBA HDWE160')
+    manifest.update_drive_health('SN-with-model', status: 'ok', detail: 'PASSED', power_on_hours: 10_432)
     html = dashboard.render(mounted: [])
-    expect(html).to match(%r{<div class="serial">SN-with-model · Toshiba HDWE160</div>})
-    expect(html).to match(%r{<div class="serial">SN-backup-01-3tb</div>})
-  end
-
-  it 'truncates a long branded model with an ellipsis, carrying the full string in a title attribute' do
-    manifest.register_drive(serial_number: 'SN-long-model', friendly_name: 'backup-08-8tb', capacity_bytes: 8 * TB,
-                            model: 'WDC WD80EFZZ-68BTXN0')
-    html = dashboard.render(mounted: [])
-    expect(html).to match(%r{<div class="serial" title="SN-long-model · Western Digital WD80EFZZ-68BTXN0">SN-long-model · Western Digital WD8…</div>})
-  end
-
-  it 'shows powered-on time next to the health line when smartctl reported it, and nothing when it never has' do
-    manifest.update_drive_health('SN-backup-04-8tb', status: 'ok', detail: 'PASSED · 36°C', power_on_hours: 10_432)
-    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
-    expect(html).to match(%r{backup-04-8tb[\s\S]*?powered on 1\.2 yrs \(10432 hrs\)})
-    expect(html).not_to match(/backup-05-8tb[\s\S]{0,200}powered on/)
+    expect(html).to include('<div class="specs">SN-with-model · Toshiba HDWE160<br>powered on 1.2 yrs (10432 hrs)</div>')
+    expect(html).to include('<div class="specs">SN-backup-01-3tb</div>')
   end
 
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do
@@ -177,7 +254,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
 
     expect(html).to match(/<details class="share attention" open>[\s\S]*?Needs attention[\s\S]*?movies\/Film 7[\s\S]*?drive full/)
     expect(html).to include('1 folder not in a good state')        # the 59 never-synced films are pending work, not problems
-    expect(html).to include('60 folders · 614.4 GB · 59 not yet synced', '(60 not yet synced)')
+    expect(html).to include('60 folders · 614.4 GB · 59 not yet synced', '1 of 62 folders backed up, 60 waiting for their first copy')
     expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">movies<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
     expect(html).to include('1 needs attention')
     # every share starts collapsed; only Needs attention starts open
@@ -186,7 +263,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">tv/)
     # drive tile shows per-share totals rather than sixty list items
     expect(html).to match(/<ul class="shares">[\s\S]*?movies · 60 folders<\/span><span>614\.4 GB[\s\S]*?tv · 1 folder<\/span><span>102\.4 GB/)
-    expect(html).to include('61 folders on this drive')
+    expect(html).to include('Drive details and 61 folders')
   end
 
   it 'shows how much of the NAS is not backed up, from the inventory' do
@@ -203,8 +280,8 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('Nothing from this share fits on the mounted drives yet.')
     # "placed" (assigned a drive) is deliberately distinct from "backed up"
     # (actually copied) - a folder can be placed and still mid-copy or queued.
-    expect(html).to include('5 folders on the NAS, 2 placed, 3 NOT backed up')
-    expect(html).to match(%r{<strong>3 folders\s+\(2\.0 TB\) on the NAS are not backed up</strong>})
+    expect(html).to include('3 of 5 folders are not backed up')
+    expect(html).to include('<strong>3 folders (2.0 TB) on the NAS are not backed up</strong>')
     expect(html).to include('1 of 3 folders on the NAS placed · 10.0 GB of 60.0 GB')
     expect(html).to match(/<span class="share-name">Not backed up<\/span>[\s\S]*?movies\/B[\s\S]*?30\.0 GB[\s\S]*?no drive has room/)
   end
@@ -231,7 +308,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
     manifest.reconcile_checksums('SN-backup-04-8tb', 'Photos', { 'a.jpg' => [1, 1] })
     manifest.checksum_hashed('SN-backup-04-8tb', 'Photos', 'a.jpg', outcome: :baseline, digest: 'x', at: '2026-09-12T00:00:00Z')
     html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
-    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 days ago/)
+    expect(html).to match(/backup-04-8tb[\s\S]*?scrubbed 1 day ago/)
     expect(html).not_to match(/backup-04-8tb[\s\S]{0,200}overdue/)
   end
 
@@ -272,7 +349,8 @@ RSpec.describe EasySync::Jbod::Dashboard do
 
   it 'says there are no findings when nothing has been flagged' do
     html = dashboard.render
-    expect(html).to include('No findings. Run <code>easy_sync scrub</code> to check a drive.')
+    expect(html).to include('<strong>Scrub findings</strong> none.')
+    expect(html).not_to include('<h2>Scrub findings</h2>')
   end
 
   it 'writes the file, creating parent directories' do

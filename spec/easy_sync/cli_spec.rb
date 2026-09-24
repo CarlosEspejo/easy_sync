@@ -537,7 +537,7 @@ RSpec.describe EasySync::CLI do
       File.utime(Time.now, Time.now, lock_path)
 
       expect(cli('dashboard').run).to eq(0)
-      expect(File.read(dashboard_path)).to include('<p class="eta">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
+      expect(File.read(dashboard_path)).to include('<p class="line">Sync in progress: Estimating time remaining: still measuring/placing folders, or waiting on a large first copy to finish...</p>')
     end
 
     it 'says Scrub in progress, not Sync, while a scrub holds the shared lock' do

@@ -416,38 +416,44 @@ records that as a checkpoint: future checks compare against today's count, not
 whatever it was before, and an active `warning` on reallocated sectors alone
 drops to the stable blue state immediately.
 
-When `smartctl` reports it, each tile also shows how long the drive has
-actually been powered on (SMART's Power_On_Hours), not calendar age — a
-5-year-old drive that sat on a shelf can show far fewer hours than one bought
-last year and run around the clock.
+Each tile's "Drive details" opens its serial, model and, when `smartctl`
+reports it, how long the drive has actually been powered on (SMART's
+Power_On_Hours), not calendar age — a 5-year-old drive that sat on a shelf
+can show far fewer hours than one bought last year and run around the clock
+— plus every folder on it. A drive that isn't connected shows when it was
+last seen, amber from 21 days and red from 30: Backblaze Personal drops a
+drive from its current backup after 30 days disconnected.
 
 Each tile also says "scrubbed N days ago" or "never scrubbed", with an
 overdue badge once it passes `scrub_stale_days` - this never changes the
 tile's colour, which stays SMART-only. A "Scrub findings" section, next to
 Pending deletions, lists every file `scrub` has flagged: which drive, its
 path, and whether it's awaiting refetch, refetched and awaiting re-check, or
-unresolved.
+unresolved. With nothing flagged it is a single line.
 
 Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
 shows a rough estimate of time remaining, from what that run has actually
 copied so far — the same estimate either command shows, worded the same way.
 
-The header says how many folders the NAS holds, how many are backed up and,
-in red, how many are **not**, because no mounted drive has room. That is the
-one number that matters, so it also raises an alert at the top and a "Not
-backed up" list under Folders, with each folder's size. Every run decides all
-placements before it copies anything, so this picture is complete even if the
-copy phase is interrupted.
+The page opens with one answer: a green, amber or red box headed "All 2,692
+folders backed up" (or how many are **not**, because no mounted drive has
+room: that is the number that matters), the last sync (when, how long, what
+it copied), and a line for everything that needs you: folders not backed up,
+a failing drive, folders in a bad state, a sync with failures or none for a
+week, scrub findings, overdue scrubs, and a drive about to drop out of (or
+already out of) Backblaze's current backup. "Nothing needs your attention"
+otherwise. Every run decides all placements before it copies anything, so
+the not-backed-up count is complete even if the copy phase is interrupted.
 
-Folders are grouped by share so thousands of them stay readable: each drive tile
-shows one line per share with a count and total size, and the folders table has
-a collapsible section per share with a "Needs attention" list on top for
-anything failed, full, missing or unmounted. Every share starts collapsed;
-only "Needs attention" starts open. Pending and completed deletions and
-placement history follow. Last comes one line per recent sync run (when it
-started, how long it took, how many folders it checked and copied, bytes
-transferred, failures), then just the folders the latest run actually copied
-or failed on; the rest only confirmed nothing had changed.
+Then: the drives; "Latest sync", only the folders it actually copied or
+failed on (the rest just confirmed nothing had changed); the folders,
+grouped by share so thousands stay readable (each drive tile shows one line
+per share, and the folders list has a collapsible section per share with
+"Needs attention" and "Not backed up" on top; only those start open); scrub
+findings and pending deletions, one line each when there are none; and
+"Activity", one feed grouped by day: each sync run, folders placed or moved,
+and what was deleted from which drive, with a batch (a first placement, a
+60-folder move, a clean of `.DS_Store` files) shown as one expandable line.
 
 Commands
 --------
