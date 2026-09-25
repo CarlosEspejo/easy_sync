@@ -161,8 +161,6 @@ module EasySync
 
     # -- sources, as the CLI edits them --------------------------------
 
-    # A :split: key left over from 2.0 configs is ignored here and dropped
-    # on the next save.
     def source_entries
       Array(data[:sources]).map { |e| { path: (e.is_a?(Hash) ? e[:path] : e).to_s } }
     end

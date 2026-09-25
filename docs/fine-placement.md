@@ -1,10 +1,15 @@
 # Fine placement: no `split` setting (built and verified on real hardware)
 
 Every share is placed one top-level folder at a time, plus one unit for its
-loose top-level files. The `split:` setting is gone. `easy_sync split SHARE`
-converts a share an earlier build placed whole, without copying anything, and
-`reassign ... --copy` moves folders between drives by hand. If anything here
-disagrees with the code, the code wins; fix this doc.
+loose top-level files. The `split:` setting is gone, and `reassign ... --copy`
+moves folders between drives by hand. If anything here disagrees with the
+code, the code wins; fix this doc.
+
+Shares that an earlier build placed whole were converted in place by an
+`easy_sync split SHARE` command. It converted the last two on the real fleet
+(`synology` and `pro`, 2026-09-23) and was removed on 2026-09-25, together
+with `Runner`'s support for whole-share rows. The two `split` events it wrote
+are still in `placement_history`.
 
 ## Problem
 
@@ -34,7 +39,7 @@ That caused three problems:
   moving data is a manual tool (`mergerfs.balance`, unBALANCE). Here moving
   is even more expensive: Backblaze backs up *from the drives*, so a moved
   folder is uploaded again, and the drives are often offline. Placed folders
-  change drive or shape only through `reassign` or `split`.
+  change drive only through `reassign`.
 - **Always one unit per top-level folder, plus a root-files unit.** No
   setting. A share can be any size, and every drive stays readable in Finder.
 - **Keep a share together while it fits.** `Placement.choose(prefer:)` picks,
@@ -42,15 +47,9 @@ That caused three problems:
   space that the unit fits on. Otherwise it picks the most free space
   overall. This keeps the "one collection per drive" browsing the old whole
   setting gave, and splits a share only when it has to.
-- **Shares an earlier build placed whole keep working unchanged.** A `tree`
-  row keyed by the share name makes `Runner` emit that one unit, exactly as
-  before. Nothing converts automatically; `easy_sync split` does it on
-  request.
-- **`split` copies nothing.** `<drive>/<share>/<sub>` is already where the new
-  unit expects its files. The old row is narrowed in place to the root unit
-  (same key, same drive), so no deletion is ever scheduled for it.
-- **The Purger guard stays even though `split` avoids the bug.** A config
-  edited by hand, or a future bug, must not be able to reproduce it.
+- **The Purger guard stays even though a normal sync can no longer reach the
+  bug.** A hand-edited manifest, or a future bug, must not be able to
+  reproduce it.
 
 ## Schema
 
@@ -63,8 +62,7 @@ That caused three problems:
 
 ## Components
 
-**`Runner#units_of`** (`runner.rb`). If the share has a whole-share `tree`
-row, emit that one unit. Otherwise emit one unit per top-level subfolder, plus
+**`Runner#units_of`** (`runner.rb`). Emit one unit per top-level subfolder, plus
 `SourceFolder(root_only: true)` when the share has loose files or already
 has a root row. A root row is emitted even once its files are gone, so their
 removal is noticed. `Jbod::ShareScan` is the one rule for what counts as a
@@ -91,23 +89,6 @@ only the top level: scrub hashes only top-level files, clean removes only
 top-level junk, restore adds `--exclude=/*/`. `restore SHARE` includes the
 root unit along with every folder under the share.
 
-**`easy_sync split SHARE [--dry-run]`** (`Jbod::Splitter`, one
-`Manifest#split_whole_folder` transaction, under `RunLock` kind `split`):
-- Refuses unless the share was placed whole, the share and the drive holding
-  it are mounted, and there is no pending `reassigned` copy of it elsewhere.
-  Otherwise the old copy's cleanup would later delete only its loose files.
-- One `tree` folder for every top-level directory on the NAS **or** on the
-  drive, sized with `du`. A directory only on the drive then becomes a normal
-  missing folder, and the grace period removes it, so nothing is orphaned.
-- The old row becomes `scope = 'root'`, with its size set to the loose files'
-  bytes. History gets `split` and `assigned` events.
-- `pending_deletions` are re-keyed, keeping `first_missing_at`:
-  `Sub/x` → (`share/Sub`, `x`); a top-level dir `Sub` → (`share/Sub`, `''`,
-  `folder`); top-level files stay put. Rows for a directory that is not a new
-  unit (already gone from both) are dropped.
-- `file_checksums` on that drive are re-keyed the same way, keeping digests.
-  Re-hashing would cost hours for data whose bytes did not move.
-
 **`reassign FOLDER|SHARE DRIVE [--copy]`.** A share name moves every folder
 of the share (root unit included) except those already on the target. The
 capacity check covers the total. `--copy` (under `RunLock`, both drives
@@ -127,15 +108,15 @@ are backed up now.
 
 `purger_spec` (overlap guard both ways, `-archive` names, other drives, root
 units), `mirror_spec` (root-only argv), `placement_spec` (`prefer:`),
-`runner_spec` (units, root unit, a whole-share row kept as is, affinity
-within a run and across runs, a sync after `split`), `splitter_spec`
-(creates the rows, no deletions, re-keys pendings and checksums, dry-run
-leaves a full dump unchanged, idempotent, every refusal),
-`scrubber/cleaner/restorer_spec` (root units), `cli_spec` (`split`,
-`reassign --copy`, share form, failure, drive not mounted),
-`config_spec` (leftover `:split:`).
+`runner_spec` (units, root unit, affinity within a run and across runs, a
+folder gone from the NAS flagged alone), `scrubber/cleaner/restorer_spec`
+(root units), `cli_spec` (`reassign --copy`, share form, failure, drive not
+mounted).
 
 ## Verify on real hardware before merging
+
+Kept as the record of what was checked; steps 1-2 used `split`, which is
+gone now.
 
 On `jbod-test-1`/`jbod-test-2` with a scratch `--config` (CLAUDE.md, "Verify
 live"), and a scratch share with `Movies/`, `TV/` and two loose root files:

@@ -154,24 +154,6 @@ could not be placed anywhere. Pass `--largest-drive 8tb` before any drive is
 registered, and name one or more shares (by folder name or full path, e.g.
 `easy_sync plan pro`) to measure just those. It only reads.
 
-### Shares placed whole by an earlier build
-
-Earlier builds could place a whole share as one unit (`:split: false`). A share placed
-that way keeps syncing as one unit, unchanged, and `easy_sync sources` points
-it out. To have it placed folder by folder from now on:
-
-    easy_sync split synology --dry-run   # what it would do
-    easy_sync split synology
-
-This only updates the manifest; no data is copied. The share's folders are
-already sitting at `/Volumes/<drive>/synology/<folder>`, exactly where the new
-per-folder units expect them, so they stay on the drive they're on and the
-next sync just confirms them. Pending deletions and `scrub` baselines carry
-over. A folder that is on the drive but no longer on the NAS becomes an
-ordinary missing folder and goes through the usual grace period. It needs the
-share and the drive mounted, and a leftover `:split:` line in the config is
-ignored.
-
 A sync run
 ----------
 
@@ -517,7 +499,6 @@ Commands
 | `benchmark [NAME ...] \| --all [--size SIZE] [--history]` | time a drive's sequential write and read, compared with its own last 25 runs; flags one that has slowed down |
 | `history [FOLDER]` | where a folder has lived |
 | `reassign FOLDER\|SHARE DRIVE [--copy] [--note TEXT] [--force]` | move a folder, or every folder of a share, to another drive; `--copy` copies it drive-to-drive now instead of the next sync pulling it from the NAS; refuses a drive without room unless `--force` |
-| `split SHARE [--dry-run]` | place a share that 2.0 placed whole folder by folder, on the drive it is already on; copies nothing |
 | `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
 | `dashboard` | regenerate the HTML report only |
 
@@ -544,7 +525,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `drives` | serial (PK), name, capacity, added date, volume UUID, model, last seen usage, SMART status/detail/power-on hours, retired date |
 | `smart_checks` | one row per SMART read: drive serial, timestamp, reallocated-sector count, whether it's a manually verified checkpoint |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status, scope (`tree`, or `root` for a share's loose top-level files) |
-| `placement_history` | every `assigned`, `reassigned`, `split` and `removed` event |
+| `placement_history` | every `assigned`, `reassigned` and `removed` event (older rows can say `split`, from a since-removed command) |
 | `sync_runs` | one row per folder synced: exit status, `--stats` byte counts, and the start time of the `sync` run it belonged to |
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |

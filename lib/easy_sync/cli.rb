@@ -30,7 +30,6 @@ module EasySync
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER|SHARE DRIVE_NAME [--copy] [--note TEXT] [--force]',
          'move a folder (or every folder of a share) to another drive; --copy copies it drive-to-drive now instead of the next sync pulling it from the NAS'],
-        ['split SHARE [--dry-run]', 'place the folders of a share that was placed whole one by one, on the drive it is already on; copies nothing'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['forget-drive NAME [...] [--dry-run]', 'delete a retired drive and all its history from the manifest (for test drives); touches no data'],
@@ -85,7 +84,6 @@ module EasySync
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
-      when 'split' then split(@argv)
       when 'rename-drive' then rename_drive(@argv)
       when 'forget-drive' then forget_drive(@argv)
       when 'verify-drive' then verify_drive(@argv)
@@ -498,10 +496,7 @@ module EasySync
       end
       entries.each do |e|
         state = Dir.exist?(e[:path]) && !Dir.empty?(e[:path]) ? 'mounted' : 'NOT MOUNTED'
-        name = File.basename(e[:path])
-        whole = manifest.folder(name)
-        note = whole && !whole.root? ? "  placed whole; `easy_sync split #{name}` places its folders one by one" : ''
-        @out.puts "  #{e[:path].ljust(32)} #{state}#{note}"
+        @out.puts "  #{e[:path].ljust(32)} #{state}"
       end
     end
 
@@ -620,20 +615,6 @@ module EasySync
       excludes = (settings[:exclude_folders] + [Jbod::DRIVE_DIR]).map { |e| "--exclude=#{e}" }
       result = @shell.run(['rsync', '-a', '--partial', '--stats', '--info=progress2', *excludes, "#{src.mount_point}/", "#{dst.mount_point}/"])
       raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
-    end
-
-    # Converts a share placed whole into folders placed one by one, on the
-    # drive that already holds it (see Jbod::Splitter). A dry run only reads.
-    def split(args)
-      opts = { dry_run: false }
-      OptionParser.new do |o|
-        o.on('--dry-run', 'Show what would change without writing anything') { opts[:dry_run] = true }
-      end.parse!(args)
-      share = args.first or raise Error, "split needs a share name, e.g. synology\n\n#{USAGE}"
-
-      splitter = Jbod::Splitter.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out)
-      lock = opts[:dry_run] ? ->(**, &blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
-      lock.call(kind: 'split') { splitter.run(share, dry_run: opts[:dry_run]) }
     end
 
     # The reverse of `sync`: copies folders from their drives back onto the
@@ -952,8 +933,7 @@ module EasySync
     end
 
     # A folder_path names that one folder. A share name (which is also the
-    # key of the share's root-files unit) names every folder of the share,
-    # unless the share is still placed whole.
+    # key of the share's root-files unit) names every folder of the share.
     def reassign_targets(name)
       exact = manifest.folder(name)
       return [exact] if exact && !exact.root?

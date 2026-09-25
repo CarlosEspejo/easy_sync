@@ -19,9 +19,9 @@ module EasySync
       end
 
       # A placement unit as seen on the NAS. +key+ is its manifest folder_path:
-      # "tv/Show Name" for a subfolder, or the share name ("synology") for
-      # either a share an earlier build placed whole or, with +root_only+, the
-      # share's loose top-level files (see docs/fine-placement.md).
+      # "tv/Show Name" for a subfolder, or the share name ("synology") with
+      # +root_only+ for the share's loose top-level files (see
+      # docs/fine-placement.md).
       SourceFolder = Struct.new(:key, :path, :root_only, keyword_init: true) do
         def share = key.split('/').first
       end
@@ -199,18 +199,15 @@ module EasySync
 
       private
 
-      # A share placed whole (a 'tree' row keyed by the share name) stays one
-      # unit until `easy_sync split` converts it: placed folders never change
-      # shape on their own. Every other share is one unit per top-level
-      # subfolder, plus a root unit for its loose top-level files.
+      # One unit per top-level subfolder, plus a root unit for the share's
+      # loose top-level files. An already-placed root unit is kept even once
+      # its files are gone, so their removal is noticed.
       def units_of(source)
-        whole = manifest.folder(source.name)
-        return [SourceFolder.new(key: source.name, path: source.path)] if whole && !whole.root?
-
         units = subfolders(source.path).map do |name|
           SourceFolder.new(key: File.join(source.name, name), path: File.join(source.path, name))
         end
-        units << SourceFolder.new(key: source.name, path: source.path, root_only: true) if whole || loose_files(source.path).any?
+        placed_root = manifest.folder(source.name)
+        units << SourceFolder.new(key: source.name, path: source.path, root_only: true) if placed_root || loose_files(source.path).any?
         units
       end
 

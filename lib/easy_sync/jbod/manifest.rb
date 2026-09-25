@@ -319,45 +319,6 @@ module EasySync
         folder(folder_path)
       end
 
-      # `easy_sync split`: turns a share placed whole (a 'tree' row keyed by
-      # the share name) into one 'tree' folder per top-level subfolder, all on
-      # the same drive, and narrows the old row to the share's root-files
-      # unit. The bytes are already where the new folders expect them
-      # (<drive>/<share>/<sub>), so nothing moves and no deletion is
-      # scheduled. +units+ is [[subfolder_name, size_bytes], ...].
-      # Pending deletions and scrub baselines are re-keyed onto the new
-      # folders, keeping their grace clocks and digests; pending rows for a
-      # subfolder that is not among +units+ (gone from the drive already) are
-      # dropped. One transaction: all of it happens, or none.
-      def split_whole_folder(share, units:, root_size:, note:, at: now)
-        whole = folder(share) or raise UnknownFolder, "#{share} is not in the manifest"
-        raise Error, "#{share} is not placed whole" if whole.root?
-
-        serial = whole.drive_serial
-        names = units.map(&:first)
-        db.transaction(:immediate) do
-          units.each do |name, size|
-            key = "#{share}/#{name}"
-            raise DuplicateFolder, "#{key} is already assigned" if folder(key)
-
-            db.execute(<<~SQL, [key, serial, size, at])
-              INSERT INTO folders (folder_path, drive_serial, size_bytes, assigned_at, scope) VALUES (?, ?, ?, ?, 'tree')
-            SQL
-            record_history(key, serial, 'assigned', note, at)
-          end
-          db.execute("UPDATE folders SET scope = 'root', size_bytes = ? WHERE folder_path = ?", [root_size, share])
-          record_history(share, serial, 'split', note, at)
-          rekey_pending_for_split(share, names)
-          db.execute(<<~SQL, [share, serial, share])
-            UPDATE file_checksums
-               SET folder_path = ? || '/' || substr(relative_path, 1, instr(relative_path, '/') - 1),
-                   relative_path = substr(relative_path, instr(relative_path, '/') + 1)
-             WHERE drive_serial = ? AND folder_path = ? AND instr(relative_path, '/') > 0
-          SQL
-        end
-        folders.select { |f| f.share == share }
-      end
-
       def remove_folder(folder_path, note: nil, at: now)
         current = folder(folder_path) or raise UnknownFolder, "#{folder_path} is not in the manifest"
         db.transaction(:immediate) do
@@ -848,26 +809,6 @@ module EasySync
           INSERT INTO placement_history (folder_path, drive_serial, event, recorded_at, note)
           VALUES (?, ?, ?, ?, ?)
         SQL
-      end
-
-      # "Sub/x.mkv" moves to folder "<share>/Sub" as "x.mkv"; a top-level dir
-      # "Sub" becomes the whole-folder candidate for "<share>/Sub"; a
-      # top-level file stays with the root unit.
-      def rekey_pending_for_split(share, names)
-        pending_deletions(folder_path: share).each do |p|
-          next if p.reassigned?
-
-          first, rest = p.relative_path.split('/', 2)
-          next if rest.nil? && p.kind == 'file'
-
-          unless names.include?(first)
-            db.execute('DELETE FROM pending_deletions WHERE id = ?', [p.id])
-            next
-          end
-          rel, kind = rest.nil? ? ['', 'folder'] : [rest, p.kind]
-          db.execute('UPDATE pending_deletions SET folder_path = ?, relative_path = ?, kind = ? WHERE id = ?',
-                     ["#{share}/#{first}", rel, kind, p.id])
-        end
       end
 
       def row_to_drive(row) = Drive.new(**symbolize(row))

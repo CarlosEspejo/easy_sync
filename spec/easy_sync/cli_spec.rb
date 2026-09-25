@@ -1285,38 +1285,6 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'split' do
-    let(:nas) { File.join(temp_dir, 'nas') }
-    let(:vol) { make_dirs(mount_root, 'backup-01-3tb').first }
-
-    before do
-      m = manifest
-      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
-      m.assign_folder('nas', 'S1')
-      m.close
-      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S1', friendly_name: 'backup-01-3tb' }.to_json)
-      write_file(File.join(nas, 'Movies', 'a.mkv'))
-      write_file(File.join(vol, 'nas', 'Movies', 'a.mkv'))
-      fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
-      fake_shell.on('du', output: ->(argv) { "4\t#{argv.last}\n" })
-    end
-
-    it 'converts a share placed whole, with a dry run that changes nothing first' do
-      expect(cli('split', 'nas', '--dry-run').run).to eq(0)
-      expect(out.string).to include('Would split nas on backup-01-3tb into 1 folder')
-      expect(manifest.folder('nas').scope).to eq('tree')
-
-      expect(cli('split', 'nas').run).to eq(0)
-      expect(manifest.folders.map { |f| [f.folder_path, f.scope] }).to eq([%w[nas root], ['nas/Movies', 'tree']])
-      expect(fake_shell.calls_to('rsync')).to be_empty
-    end
-
-    it 'needs a share name' do
-      expect(cli('split').run).to eq(1)
-      expect(err.string).to include('split needs a share name')
-    end
-  end
-
   describe 'add-source / remove-source / sources' do
     let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
 
@@ -1329,18 +1297,6 @@ RSpec.describe EasySync::CLI do
       out.truncate(0); out.rewind
       cli('sources').run
       expect(out.string).to include(tv, 'mounted')
-      expect(out.string).not_to include('placed whole')
-    end
-
-    it 'points out a share still placed whole, and how to split it' do
-      cli('add-source', tv).run
-      m = manifest
-      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
-      m.assign_folder('tv', 'S1')
-      m.close
-      out.truncate(0); out.rewind
-      cli('sources').run
-      expect(out.string).to include('placed whole; `easy_sync split tv` places its folders one by one')
     end
 
     it 'refuses an unmounted or duplicate share, and removes one without touching drives' do

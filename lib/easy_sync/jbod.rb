@@ -21,7 +21,6 @@ require_relative 'jbod/scrubber'
 require_relative 'jbod/scrub_pool'
 require_relative 'jbod/benchmarker'
 require_relative 'jbod/runner'
-require_relative 'jbod/splitter'
 
 module EasySync
   # Folder-level mirroring from a NAS share onto independently mounted drives.

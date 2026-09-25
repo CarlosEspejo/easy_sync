@@ -81,14 +81,13 @@ README.md is the user-facing truth; this file is for working on the code.
   read-only on the drive.
 - A placed folder never moves automatically. No rebalancing (Backblaze backs
   up from the drives, so a moved folder is uploaded again). A folder changes
-  drive or shape only through `reassign` (`--copy` copies drive-to-drive) or
-  `split`.
+  drive only through `reassign` (`--copy` copies drive-to-drive).
 - Placement units: one per top-level folder of a share, plus one `root` unit
   (keyed by the share name) for its loose top-level files. There is no
   `split:` setting. A new unit goes to a drive already holding part of its
-  share if it fits there. A share an earlier build placed whole (a `tree` row
-  keyed by the share name) stays one unit until `easy_sync split` converts
-  it in place. See docs/fine-placement.md.
+  share if it fits there. Nothing splits a single top-level folder further: one
+  bigger than every drive stays unplaced ("not backed up"). See
+  docs/fine-placement.md.
 - Drives are matched by the serial in `<drive>/.easy_sync/drive.json`, never by
   mount path. Unknown or retired volumes are never written to.
 - A missing or empty share is skipped, never mirrored.
@@ -166,12 +165,13 @@ assumptions, they cannot check them.
 
 ## Open items
 
-- Fine placement (no `split:` setting; `easy_sync split`; `reassign --copy`;
-  Purger overlap guard) is built and passed the real-hardware checklist on
-  2026-09-23 (docs/fine-placement.md). Used on the real fleet the same
-  evening: `split synology` and `split pro` converted the last two whole-share
-  rows (no data moved), and the following sync finished with all 2,712 units
-  `ok`. No `tree` row keyed by a bare share name is left in the manifest.
+- Fine placement (no `split:` setting; `reassign --copy`; Purger overlap
+  guard) is built and passed the real-hardware checklist on 2026-09-23
+  (docs/fine-placement.md). The one-off `easy_sync split` command converted
+  the fleet's last two whole-share rows (`synology`, `pro`) that evening, and
+  the following sync finished with all 2,712 units `ok`. With no whole-share
+  row left in the real manifest (checked 2026-09-25), `split` and `Runner`'s
+  whole-share support were removed.
 
 - Ransomware tripwire (stop a sync that would replace or remove far more
   existing files than normal) is built and checked on `jbod-test-1`
@@ -192,8 +192,7 @@ assumptions, they cannot check them.
   `easy_sync scrub --for 8h` fits an overnight window.
   Moving a folder to another drive loses its checksums: the new drive has
   none yet, and the old drive's rows stay until that drive is scrubbed
-  again (`prune_checksums`). `split` keeps checksums by moving them under
-  the new folder names. After `synology` moved from backup-06-8tb to
+  again (`prune_checksums`). After `synology` moved from backup-06-8tb to
   backup-07-6tb (2026-09-23), both drives were scrubbed on 2026-09-24:
   backup-07-6tb holds `synology`'s 122,908 rows, all `ok`, and backup-06-8tb's
   stale copies are pruned.

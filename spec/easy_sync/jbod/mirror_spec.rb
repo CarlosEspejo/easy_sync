@@ -108,7 +108,7 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(described_class.new(shell: fake_shell).check(source, '/dest')).to be_nil
   end
 
-  it 'creates the destination parent so split-share folders land under the share directory' do
+  it 'creates the destination parent so each folder lands under its share directory' do
     fake_shell.on('rsync', output: rsync_stats)
     fake_shell.on(->(argv) { argv[1] == '-an' }, output: '')
     dest = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'tv', 'Show A')
