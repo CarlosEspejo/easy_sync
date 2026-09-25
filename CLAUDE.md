@@ -150,6 +150,10 @@ assumptions, they cannot check them.
   protection). If you ever re-add required reviews, remember
   `enforce_admins: false` lets the owner bypass them — a solo-maintainer PR
   can't self-approve otherwise.
+- The README's dashboard screenshots (`docs/images/dashboard-{light,dark}.png`)
+  come from `bundle exec ruby script/dashboard_screenshot.rb`, which renders a
+  made-up manifest (never the real library: the repo is public). Re-run it and
+  commit the PNGs whenever the dashboard's look changes.
 - A slow `commit && push` can be auto-backgrounded and look finished when it
   isn't: confirm with `git log origin/<branch>..HEAD` (empty = pushed) before
   reporting it done.
