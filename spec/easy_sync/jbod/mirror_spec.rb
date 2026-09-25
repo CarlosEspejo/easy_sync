@@ -3,13 +3,14 @@
 RSpec.describe EasySync::Jbod::Mirror do
   let(:source) { make_dirs(temp_dir, 'nas/Photos').first }
 
-  it 'builds a copy command with no deletion flags, and a separate read-only deletion probe' do
+  it 'builds a copy command with no deletion flags, and a separate read-only check probe' do
     mirror = described_class.new(shell: fake_shell)
     expect(mirror.command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
       .to eq(['rsync', '-a', '--partial', '--stats', '--info=progress2', '--itemize-changes',
               '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
     expect(mirror.probe_command('/nas/Photos', '/Volumes/backup-04-8tb/Photos'))
-      .to eq(['rsync', '-an', '--itemize-changes', '--delete', '--delete-excluded', '/nas/Photos/', '/Volumes/backup-04-8tb/Photos/'])
+      .to eq(['rsync', '-an', '--itemize-changes', '--stats', '--delete', '--delete-excluded', '/nas/Photos/',
+              '/Volumes/backup-04-8tb/Photos/'])
   end
 
   it 'passes exclusions to both passes, and asks the probe to report already-copied excluded junk' do
@@ -31,10 +32,12 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(mirror.command('/a', '/b')).not_to include('--exclude=/*/')
   end
 
-  it 'passes root_only through to both passes of a sync' do
+  it 'passes root_only through to the check and the copy' do
     source = File.join(temp_dir, 'share').tap { |d| FileUtils.mkdir_p(d) }
     fake_shell.on('rsync', output: rsync_stats)
-    described_class.new(shell: fake_shell).sync(source, File.join(temp_dir, 'drive', 'share'), root_only: true)
+    mirror = described_class.new(shell: fake_shell)
+    mirror.check(source, File.join(temp_dir, 'drive', 'share'), root_only: true)
+    mirror.sync(source, File.join(temp_dir, 'drive', 'share'), root_only: true)
     expect(fake_shell.calls_to('rsync').map { |c| c.include?('--exclude=/*/') }).to eq([true, true])
   end
 
@@ -43,38 +46,66 @@ RSpec.describe EasySync::Jbod::Mirror do
     expect(mirror.command('/a/', '/b/')[-4..]).to eq(['--exclude', '.DS_Store', '/a/', '/b/'])
   end
 
-  it 'runs the copy pass, then the probe, and parses the stats' do
+  it 'runs only the copy pass and parses the stats' do
     destination = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'Photos')
     fake_shell.on('rsync', output: rsync_stats(total: 123_456_789, transferred: 4_096))
-    fake_shell.on(->(argv) { argv[1] == '-an' }, output: '')
     result = described_class.new(shell: fake_shell).sync(source, destination)
-    expect(result).to have_attributes(exit_status: 0, total_size_bytes: 123_456_789, bytes_transferred: 4_096, extraneous: [])
+    expect(result).to have_attributes(exit_status: 0, total_size_bytes: 123_456_789, bytes_transferred: 4_096)
     expect(result).to be_success
-    expect(fake_shell.calls_to('rsync').map { |c| c[1] }).to eq(['-a', '-an'])
+    expect(fake_shell.calls_to('rsync').map { |c| c[1] }).to eq(['-a'])
     expect(fake_shell.calls.last.last(2)).to eq(["#{source}/", "#{destination}/"])
   end
 
+  # Real rsync 3.5.0 output, from a scratch tree: `a` rewritten, `new` added,
+  # `sub/b` renamed to `sub/b.locked` (ransomware-style), and .DS_Store junk
+  # on the drive that exclude_folders now excludes.
+  let(:check_output) do
+    <<~OUT
+      *deleting   .DS_Store
+      .d..t...... ./
+      >f.st...... a
+      >f+++++++++ new
+      *deleting   sub/b
+      *deleting   sub/.DS_Store
+      >f+++++++++ sub/b.locked
+      .f...p..... perms-only
+      cL+++++++++ link -> a
+
+      Number of files: 1,236 (reg: 1,003, dir: 233)
+      Number of created files: 2 (reg: 2)
+      Number of deleted files: 3 (reg: 3)
+      Total file size: 19 bytes
+    OUT
+  end
+
+  it 'checks what the copy would overwrite and what is gone from the source, before copying' do
+    fake_shell.on('rsync', output: check_output)
+    check = described_class.new(shell: fake_shell, excludes: ['.DS_Store']).check(source, '/dest')
+    expect(check.replaced).to eq(['a'])
+    expect(check.missing).to eq([['.DS_Store', 'file'], ['sub/b', 'file'], ['sub/.DS_Store', 'file']])
+    expect(check.junk).to eq(['.DS_Store', 'sub/.DS_Store'])
+    expect(check.missing_files).to eq(['sub/b'])
+    expect(check.changed).to eq(2)
+    expect(check.files_on_drive).to eq(1_003 - 2 + 3)
+    expect(check.samples).to eq(['a', 'sub/b'])
+    expect(fake_shell.calls_to('rsync').first).to include('-an', '--stats', '--delete')
+  end
+
   it 'collects what the probe would delete (real rsync 3.5 dry-run output)' do
-    fake_shell.on('rsync', output: rsync_stats)
-    fake_shell.on(->(argv) { argv[1] == '-an' }, output: <<~OUT)
+    fake_shell.on('rsync', output: <<~OUT)
       *deleting   Old Movie (1999)/
       *deleting   Old Movie (1999)/movie.mkv
       *deleting   ep2.mkv
     OUT
-    result = described_class.new(shell: fake_shell).sync(source, '/dest')
-    expect(result).to be_success
-    expect(result.extraneous).to eq([['Old Movie (1999)', 'dir'], ['Old Movie (1999)/movie.mkv', 'file'], ['ep2.mkv', 'file']])
+    check = described_class.new(shell: fake_shell).check(source, '/dest')
+    expect(check.missing).to eq([['Old Movie (1999)', 'dir'], ['Old Movie (1999)/movie.mkv', 'file'], ['ep2.mkv', 'file']])
+    expect(check.missing_files).to eq(['Old Movie (1999)/movie.mkv', 'ep2.mkv'])
+    expect(check.source_files).to eq(0)
   end
 
-  it 'skips the probe after a failed copy, and reports nil if the probe itself fails' do
-    fake_shell.on('rsync', output: 'boom', status: 23)
-    result = described_class.new(shell: fake_shell).sync(source, '/dest')
-    expect(result.extraneous).to be_nil
-    expect(fake_shell.calls_to('rsync').size).to eq(1)
-
-    fake_shell.on('rsync', output: rsync_stats)
-    fake_shell.on(->(argv) { argv[1] == '-an' }, output: 'rsync: link_stat failed', status: 23)
-    expect(described_class.new(shell: fake_shell).sync(source, '/dest').extraneous).to be_nil
+  it 'returns nil when the check probe fails' do
+    fake_shell.on('rsync', output: 'rsync: link_stat failed', status: 23)
+    expect(described_class.new(shell: fake_shell).check(source, '/dest')).to be_nil
   end
 
   it 'creates the destination parent so split-share folders land under the share directory' do

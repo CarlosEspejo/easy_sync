@@ -26,12 +26,17 @@ module EasySync
         def share = key.split('/').first
       end
 
+      # +trips+ is every Tripwire::Trip found this run, enforced or not;
+      # +tripped+ the folders it actually held back, and +run_tripped+ whether
+      # it stopped the whole run.
       Report = Struct.new(:placed, :synced, :failed, :drive_full, :skipped, :unplaced, :missing_on_source, :warnings,
-                          :purged, :would_purge, :pending, :unhealthy, :empty, :refetched, keyword_init: true) do
+                          :purged, :would_purge, :pending, :unhealthy, :empty, :refetched, :check_failed, :trips,
+                          :tripped, :run_tripped, keyword_init: true) do
         def initialize(**)
           super
-          (members - [:pending]).each { |m| self[m] ||= [] }
+          (members - %i[pending run_tripped]).each { |m| self[m] ||= [] }
           self.pending ||= 0
+          self.run_tripped ||= false
         end
       end
 
@@ -50,8 +55,11 @@ module EasySync
       end
 
       # +settings+ is Config#jbod. +sizer+ returns the byte size of a source folder.
+      # +accept_changes+ lets this run's tripwire trips through: true for all
+      # of them, or an array of folder keys (see docs/tripwire.md).
       def initialize(settings, manifest:, volume_info: nil, mirror: nil, dashboard: nil, purger: nil,
-                     shell: Shell.new, out: $stdout, clock: Time, sizer: nil, dry_run: false, purge: nil)
+                     shell: Shell.new, out: $stdout, clock: Time, sizer: nil, dry_run: false, purge: nil,
+                     accept_changes: nil)
         @settings = settings
         @manifest = manifest
         @shell = shell
@@ -67,6 +75,8 @@ module EasySync
         @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
                                                  clock: clock, out: out)
         @sizer = sizer || method(:du_bytes)
+        @tripwire = Tripwire.from_settings(settings)
+        @accept_changes = accept_changes
       end
 
       def sources
@@ -99,6 +109,7 @@ module EasySync
         new_folders = folders.count { |f| manifest.folder(f.key).nil? }
         @measured = 0
         @placed_this_run = Hash.new { |h, k| h[k] = [] }
+        @synced_before = []
         if new_folders.positive?
           @out.puts "#{new_folders} new folder#{'s' if new_folders != 1} to measure and place " \
                     '(du over the network can take a while per folder)'
@@ -126,6 +137,7 @@ module EasySync
               report.skipped << folder.key
               next
             end
+            @synced_before << folder.key if record.last_synced_at
             plan << [folder, target]
           end
         end
@@ -139,9 +151,17 @@ module EasySync
         # the copy phase, so an interrupted run still notices them.
         source_status = reconcile_manifest(folders, available, report)
 
-        # Phase 2: copy. Deletions come last.
-        plan.each { |folder, target| sync_folder(folder, target, report) }
-        purge(mounted, report)
+        # Phase 1b: before anything is copied, check every folder already on
+        # the drives for how many of its files the copy would overwrite or
+        # has lost on the NAS, and stop what looks like ransomware.
+        plan, checks = check_folders(plan, report)
+        plan = apply_tripwire(plan, checks, report)
+
+        # Phase 2: copy. Deletions come last, and never after a stopped run:
+        # ransomware that deletes could otherwise ride out the grace period.
+        plan.each { |folder, target| sync_folder(folder, target, report, checks[folder.key]) }
+        report.pending = manifest.pending_deletions.size
+        purge(mounted, report) unless report.run_tripped
 
         if @dry_run
           @out.puts "\nDRY RUN: nothing was copied, recorded, or deleted, and the dashboard was left as it was."
@@ -320,7 +340,92 @@ module EasySync
         [nil, size, 'unplaced', e.is_a?(Placement::NoMountedDrives) ? 'no drive mounted' : 'no drive has room']
       end
 
-      def sync_folder(folder, target, report)
+      # Runs the read-only check probe for every planned folder copied before
+      # (a folder placed this run has nothing on its drive to lose). Returns
+      # the plan minus folders whose check failed (nothing vouches for them,
+      # and over SMB the copy would almost always fail too), and
+      # { folder key => Mirror::Check }.
+      def check_folders(plan, report)
+        to_check = plan.select { |folder, _| @synced_before.include?(folder.key) }
+        return [plan, {}] if to_check.empty?
+
+        @out.puts "\nChecking #{count(to_check.size)} folder#{'s' if to_check.size != 1} already on the drives " \
+                  'for files the copy would overwrite or that are gone from the NAS...'
+        started = @clock.now
+        checks = {}
+        to_check.each do |folder, target|
+          check = @mirror.check(folder.path, File.join(target.mount_point, folder.key), root_only: folder.root_only ? true : false)
+          if check.nil?
+            warn(report, "#{folder.key}: the pre-copy check failed, so it is not copied this run")
+            manifest.mark_folder_status(folder.key, 'skipped_check_failed') unless @dry_run
+            report.check_failed << folder.key
+            next
+          end
+          check.known = manifest.pending_deletions(folder_path: folder.key).map(&:relative_path)
+          checks[folder.key] = check
+          next unless check.changed.positive?
+
+          @out.puts "  #{folder.key}: #{check.replaced.size} replaced, #{check.missing_files.size} gone from the NAS " \
+                    "(of #{count(check.files_on_drive)} on the drive)"
+        end
+        total = checks.sum { |_, c| c.changed }
+        @out.puts "Checked in #{(@clock.now - started).round}s: #{count(total)} existing file#{'s' if total != 1} " \
+                  "would change (tripwire: run #{count(@tripwire.run_files)}, folder #{@tripwire.folder_files} " \
+                  "and #{(@tripwire.folder_ratio * 100).round}%#{', off' unless @tripwire.enabled?}" \
+                  "#{', report only' unless enforce_tripwire?})"
+        [plan.reject { |folder, _| report.check_failed.include?(folder.key) }, checks]
+      end
+
+      def enforce_tripwire? = settings.fetch(:tripwire_enforce, false)
+
+      # Returns the plan left to copy: all of it, the folders that did not
+      # trip, or nothing when the whole run tripped. A report-only tripwire
+      # says what it would have done and returns the plan unchanged.
+      def apply_tripwire(plan, checks, report)
+        unknown = @accept_changes.is_a?(Array) ? @accept_changes - plan.map { |f, _| f.key } : []
+        warn(report, "--accept-changes: #{unknown.join(', ')} #{unknown.size == 1 ? 'is' : 'are'} not in this sync") unless unknown.empty?
+        decision = @tripwire.decide(checks, accept: @accept_changes)
+        report.trips = decision.trips
+        return plan if decision.trips.empty?
+
+        enforce = enforce_tripwire?
+        describe_trips(decision, enforce)
+        unless enforce
+          @out.puts 'The tripwire is report-only (tripwire_enforce: false), so this run copies everything anyway.'
+          return plan
+        end
+
+        manifest.record_trips(@run_started_at, decision.trips) unless @dry_run
+        if decision.run_tripped
+          report.run_tripped = true
+          report.tripped = plan.map { |folder, _| folder.key }
+          warn(report, "SYNC #{@dry_run ? 'WOULD STOP' : 'STOPPED'}: #{count(decision.run_changed)} existing files on the drives " \
+                       "would be overwritten or are gone from the NAS (the limit is #{count(@tripwire.run_files)}). " \
+                       "Nothing #{@dry_run ? 'would be' : 'was'} copied or purged. Check the NAS for ransomware first; " \
+                       'if you made this change yourself, run `easy_sync sync --accept-changes`.')
+        else
+          report.tripped = decision.blocked
+          report.tripped.each do |key|
+            warn(report, "#{key} #{@dry_run ? 'would be' : 'was'} held back by the tripwire and not copied; if you made " \
+                         "this change yourself, run `easy_sync sync --accept-changes #{key}`")
+          end
+        end
+        report.tripped.each { |key| manifest.mark_folder_status(key, 'tripped') } unless @dry_run
+        plan.reject { |folder, _| report.tripped.include?(folder.key) }
+      end
+
+      def describe_trips(decision, enforce)
+        verb = !enforce ? 'would have tripped (report only)' : @dry_run ? 'would trip' : 'tripped'
+        @out.puts "\n------------------ tripwire #{verb} ------------------"
+        decision.trips.each do |t|
+          why = t.scope == 'folder' ? 'this folder alone' : 'counts towards the run total'
+          @out.puts "  #{t.folder_path}: #{t.replaced} replaced, #{t.missing} gone from the NAS, of #{count(t.files_on_drive)} " \
+                    "on the drive (#{why})#{' - accepted' if t.accepted}"
+          t.samples.each { |path| @out.puts "      #{path}" }
+        end
+      end
+
+      def sync_folder(folder, target, report, check = nil)
         destination = File.join(target.mount_point, folder.key)
         @out.puts "\n------------------ #{folder.key} -> #{target.friendly_name} ------------------"
         started = @clock.now.utc.iso8601
@@ -333,12 +438,12 @@ module EasySync
         end
         if result.success?
           report.synced << folder.key
-          if result.extraneous.nil?
-            warn(report, "#{folder.key}: the deletion probe failed, so nothing was recorded as missing this run")
-          elsif @dry_run
-            @out.puts "  #{folder.key}: #{result.extraneous.size} file#{'s' if result.extraneous.size != 1} gone from the NAS would be recorded" unless result.extraneous.empty?
-          else
-            note_missing(folder, result.extraneous)
+          # Only a clean copy starts deletion clocks, from its pre-copy
+          # check. A folder copied for the first time had nothing to check.
+          if check && @dry_run
+            @out.puts "  #{folder.key}: #{check.missing.size} file#{'s' if check.missing.size != 1} gone from the NAS would be recorded" unless check.missing.empty?
+          elsif check
+            note_missing(folder, check.missing)
           end
           refetch_flagged(folder, target, destination, report)
         elsif result.disk_full?
@@ -417,7 +522,6 @@ module EasySync
       end
 
       def purge(mounted, report)
-        report.pending = manifest.pending_deletions.size
         return unless @purge
 
         expired = manifest.expired_deletions(now: @clock.now, grace_days: settings[:grace_days],
@@ -482,6 +586,8 @@ module EasySync
         Integer(result.output.split.first) * 1024
       end
 
+      def count(n) = n.to_i.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+
       def drive_name(serial)
         manifest.drive(serial)&.friendly_name || serial
       end
@@ -496,7 +602,11 @@ module EasySync
                   "drive full #{report.drive_full.size}, skipped #{report.skipped.size}, " \
                   "unplaced #{report.unplaced.size}, empty #{report.empty.size}, purged #{report.purged.size}, " \
                   "#{report.pending.to_i} pending deletion#{'s' if report.pending.to_i != 1}, warnings #{report.warnings.size}"
-        refetched_files = report.refetched.sum { |_, count| count }
+        unless report.tripped.empty? && report.check_failed.empty?
+          @out.puts "Held back by the tripwire #{report.tripped.size}#{' (the whole run)' if report.run_tripped}, " \
+                    "check failed #{report.check_failed.size}"
+        end
+        refetched_files = report.refetched.sum { |_, n| n }
         return unless refetched_files.positive?
 
         @out.puts "Refetched #{refetched_files} file#{'s' if refetched_files != 1} flagged by scrub, " \

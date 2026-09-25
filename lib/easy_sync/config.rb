@@ -24,6 +24,13 @@ module EasySync
       grace_runs: 2,        # ...and confirmed missing on at least this many separate runs
       scrub_stale_days: 30, # a drive is overdue for `scrub` once it's been this long since it was last fully checked
       scrub_jobs: 4,        # `scrub --all`/named targets scrub this many drives at once by default
+      # The tripwire (docs/tripwire.md): stop a sync that would overwrite or
+      # lose far more existing files on the drives than the library ever
+      # changes normally. Report-only until tripwire_enforce is true.
+      tripwire_enforce: false,
+      tripwire_run_files: 500,    # whole run: stop everything at this many changed files (0 turns it off)
+      tripwire_folder_files: 50,  # one folder: at least this many changed files...
+      tripwire_folder_ratio: 0.25, # ...and at least this share of its files on the drive
       # Names skipped when choosing folders to place AND passed to every rsync as
       # --exclude, so they are never copied at any depth (Synology recycle bins and
       # thumbnail dirs, Synology Drive's .sync, macOS metadata, SMB leftovers).
@@ -48,6 +55,10 @@ module EasySync
       grace_runs: '...confirmed on this many separate runs',
       scrub_stale_days: 'a drive is overdue for `scrub` after this many days unchecked',
       scrub_jobs: '`scrub --all`/named targets scrub this many drives at once by default',
+      tripwire_enforce: 'false: the tripwire only reports what would have stopped a sync',
+      tripwire_run_files: 'stop a sync that would change this many existing files (0: off)',
+      tripwire_folder_files: 'hold back a folder with at least this many changed files...',
+      tripwire_folder_ratio: '...that are at least this share of its files',
       exclude_folders: 'never placed, and excluded from every rsync at any depth',
       rsync_args: 'extra arguments appended to every rsync'
     }.freeze
@@ -69,6 +80,10 @@ module EasySync
       :grace_runs: 2                          # ...confirmed on this many separate runs
       :scrub_stale_days: 30                   # a drive is overdue for `scrub` after this many days unchecked
       :scrub_jobs: 4                          # `scrub --all`/named targets scrub this many drives at once by default
+      :tripwire_enforce: false                # false: the tripwire only reports what would have stopped a sync
+      :tripwire_run_files: 500                # stop a sync that would change this many existing files (0: off)
+      :tripwire_folder_files: 50              # hold back a folder with at least this many changed files...
+      :tripwire_folder_ratio: 0.25            # ...that are at least this share of its files
       :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                          ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
       :rsync_args: []                         # extra arguments appended to every rsync

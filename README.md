@@ -60,6 +60,10 @@ by hand:
 :grace_runs: 2                          # ...confirmed on this many separate runs
 :scrub_stale_days: 30                   # a drive is overdue for `scrub` after this many days unchecked
 :scrub_jobs: 4                          # `scrub --all`/named targets scrub this many drives at once by default
+:tripwire_enforce: false                # false: the tripwire only reports what would have stopped a sync
+:tripwire_run_files: 500                # stop a sync that would change this many existing files (0: off)
+:tripwire_folder_files: 50              # hold back a folder with at least this many changed files...
+:tripwire_folder_ratio: 0.25            # ...that are at least this share of its files
 :exclude_folders: ["#recycle", "@eaDir", ".DS_Store", ".sync", ".TemporaryItems", ".Trashes",
                    ".smbdelete*", ".com.apple.timemachine.supported*", ".Spotlight-V100", ".fseventsd"]
                                         # never placed, and excluded from every rsync at any depth
@@ -172,6 +176,7 @@ A sync run
 ----------
 
     easy_sync sync                  # --dry-run previews; --no-purge skips deletions this time
+    easy_sync sync --accept-changes [FOLDER ...]   # let through a bulk change the tripwire stopped
 
 1. A share whose mount point is missing or empty is skipped with a warning (a
    stale mount point left by macOS looks exactly like that). If none is
@@ -181,8 +186,11 @@ A sync run
    drive is merely locked.
 3. Each new folder is measured with `du`, placed, recorded, then mirrored. The
    run announces how many it has to measure and names each one as it goes.
-4. Files that rsync reports as gone from the NAS are recorded (see below), and
-   any that have been gone long enough are removed from the drives.
+4. Before anything is copied, every folder that was copied before is checked
+   (read-only) for files the copy would overwrite and files gone from the NAS.
+   That feeds the tripwire (below) and the deletion grace period.
+5. Files gone from the NAS are recorded once their folder copies cleanly (see
+   below), and any that have been gone long enough are removed from the drives.
 5. Drive usage and SMART health are recorded, the manifest and config are copied
    to every mounted drive, and the dashboard is regenerated.
 
@@ -270,12 +278,45 @@ Restoring a single file or folder you know the location of is still just
 browsing `/Volumes/<drive>/<folder>` in the Finder — `restore` is for when
 you want the tool to find and reassemble more than that.
 
+The tripwire
+------------
+
+A mirror copies damage too: if ransomware rewrites or renames files on the NAS,
+the next sync would overwrite the good copies on the drives, and Backblaze
+would then upload the damage from them. The tripwire stops a sync before
+it copies anything when far more existing files would change than a media
+library changes normally:
+
+- **One folder** is held back (not copied) when at least
+  `tripwire_folder_files` of its files would be replaced or are gone from the
+  NAS, **and** those are at least `tripwire_folder_ratio` of its files.
+- **The whole run** stops (nothing copied, nothing purged) when the changes
+  add up to `tripwire_run_files` across all folders, which catches damage
+  spread across thousands of single-file movie folders.
+
+New files never count. A rename (`photo.jpg` -> `photo.jpg.locked`) counts
+once, as the file gone from the NAS. A file an earlier run already found
+missing doesn't count again while it waits out the grace period. The log and
+the dashboard list each held-back folder with its counts and up to ten sample
+paths. `sync` exits non-zero. Nothing is copied until you accept the change, so
+the next run trips again:
+
+    easy_sync sync --dry-run                         # look first
+    easy_sync sync --accept-changes                  # it was you: let every trip through, this run only
+    easy_sync sync --accept-changes music/Jazz       # ...or only these folders
+
+Acceptance is never saved. The dashboard keeps a list of accepted bulk
+changes. The tripwire is **report-only** until `tripwire_enforce: true`: it
+logs what it would have stopped and copies anyway. That lets the thresholds
+be tuned from real runs before it enforces anything. Design:
+[docs/tripwire.md](docs/tripwire.md).
+
 Deletions have a grace period
 -----------------------------
 
-rsync never deletes anything. Each folder gets a copy pass with no deletion
-flags, then a read-only probe that only *reports* files on the drive that no
-longer exist on the NAS. Each reported path becomes a candidate with the time it
+rsync never deletes anything. Each folder gets a read-only probe before its
+copy pass that only *reports* files on the drive that no longer exist on the
+NAS; the copy pass itself has no deletion flags. Each reported path becomes a candidate with the time it
 was first seen missing and a count of the runs that confirmed it. A candidate is
 removed only once it has been missing for `grace_days` **and** confirmed on
 `grace_runs` separate runs, so one bad run (a half-mounted share, a
@@ -463,7 +504,7 @@ Commands
 | `add-source PATH` | add a NAS share; each of its folders is placed on its own |
 | `remove-source PATH` | stop backing up a share (drives untouched) |
 | `sources` | list the configured shares and whether each is mounted |
-| `sync [--dry-run] [--no-purge] [--no-keep-awake]` | mirror the shares onto the drives |
+| `sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]` | mirror the shares onto the drives; `--accept-changes` lets through a bulk change the tripwire stopped (this run only) |
 | `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
 | `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
 | `forget-drive NAME [...] [--dry-run]` | delete a retired drive and all its history (placements, sync runs, checksums, benchmarks, SMART checks) from the manifest; for test drives. Touches no drive |

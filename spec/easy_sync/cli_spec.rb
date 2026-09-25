@@ -1399,6 +1399,44 @@ RSpec.describe EasySync::CLI do
       expect(keep_awake).not_to have_received(:start)
     end
 
+    describe '--accept-changes' do
+      let(:runner) { instance_double(EasySync::Jbod::Runner) }
+      let(:report) { EasySync::Jbod::Runner::Report.new }
+
+      before do
+        merge_sync_config(sources: [])
+        fake_shell.on('rsync', output: "rsync  version 3.5.0  protocol version 32\n")
+        allow(EasySync::Jbod::Runner).to receive(:new).and_return(runner)
+        allow(runner).to receive(:run).and_return(report)
+      end
+
+      it 'passes nothing by default, true on its own, and folder names when given' do
+        cli('sync').run
+        cli('sync', '--accept-changes').run
+        cli('sync', '--accept-changes', 'music/Jazz/', 'tv/Show').run
+        expect(EasySync::Jbod::Runner).to have_received(:new).with(anything, hash_including(accept_changes: nil)).ordered
+        expect(EasySync::Jbod::Runner).to have_received(:new).with(anything, hash_including(accept_changes: true)).ordered
+        expect(EasySync::Jbod::Runner).to have_received(:new)
+          .with(anything, hash_including(accept_changes: ['music/Jazz', 'tv/Show'])).ordered
+      end
+
+      it 'refuses folder names without --accept-changes' do
+        expect(cli('sync', 'music/Jazz').run).to eq(1)
+        expect(err.string).to include('unexpected argument music/Jazz')
+      end
+
+      it 'exits non-zero when the tripwire held something back, but not on a dry run' do
+        report.tripped = ['music/Jazz']
+        expect(cli('sync').run).to eq(1)
+        expect(err.string).to include('the tripwire held back music/Jazz')
+        expect(cli('sync', '--dry-run').run).to eq(0)
+
+        report.run_tripped = true
+        expect(cli('sync').run).to eq(1)
+        expect(err.string).to include('the tripwire stopped this sync')
+      end
+    end
+
     it 'releases the lock after a run so a later sync can proceed' do
       lock_path = File.join(temp_dir, 'jbod.lock')
       merge_sync_config(lock_path: lock_path, sources: [])

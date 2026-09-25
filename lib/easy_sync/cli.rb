@@ -14,7 +14,8 @@ module EasySync
         ['plan [SHARE ...] [--largest-drive SIZE]', 'measure each share (or just the ones named) and check every folder fits a drive']
       ]],
       ['Back up', [
-        ['sync [--dry-run] [--no-purge] [--no-keep-awake]', 'mirror the shares onto the drives'],
+        ['sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]',
+         'mirror the shares onto the drives; --accept-changes lets through a bulk change the tripwire stopped (this run only)'],
         ['status [--all] [--smart]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder; ' \
                                      '--smart reads SMART from the mounted drives now instead of showing the last sync\'s reading'],
         ['dashboard', 'regenerate the HTML report']
@@ -171,21 +172,28 @@ module EasySync
     end
 
     def sync(args)
-      opts = { dry_run: false, purge: nil, keep_awake: settings.fetch(:keep_awake, true) }
+      opts = { dry_run: false, purge: nil, keep_awake: settings.fetch(:keep_awake, true), accept: false }
       OptionParser.new do |o|
         o.on('--dry-run', 'Show what rsync and the purge would do without changing anything') { opts[:dry_run] = true }
         o.on('--no-purge', 'Sync but do not delete expired files from the drives') { opts[:purge] = false }
         o.on('--no-keep-awake', 'Let the Mac sleep during this run (default: caffeinate keeps it awake)') { opts[:keep_awake] = false }
+        o.on('--accept-changes', 'Let this run copy a bulk change the tripwire stopped (every folder, or the ones named)') { opts[:accept] = true }
       end.parse!(args)
+      raise Error, "unexpected argument#{'s' if args.size != 1} #{args.join(' ')} (folders go after --accept-changes)" if !opts[:accept] && args.any?
+
+      # Never saved: a later, unrelated bulk change still stops.
+      accept = opts[:accept] && (args.empty? || args.map { |a| a.chomp('/') })
       version = Jbod::Mirror.check_version!(@shell)
+      report = nil
       Jbod::RunLock.new(settings[:lock_path]).acquire(kind: 'sync') do
         log = Jbod::RunLog.open(settings[:log_dir], keep: settings[:keep_logs], out: @out, clock: @clock)
         begin
           log.puts "easy_sync #{VERSION} · #{@clock.now.strftime('%Y-%m-%d %H:%M:%S %Z')} · rsync #{version}" \
                    "#{' · DRY RUN' if opts[:dry_run]} · log #{log.path}"
           log.puts 'Keeping the Mac awake for this run (caffeinate).' if opts[:keep_awake] && @keep_awake.start
-          Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell.with_out(log),
-                                     out: log, dry_run: opts[:dry_run], purge: opts[:purge], clock: @clock).run
+          report = Jbod::Runner.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell.with_out(log),
+                                              out: log, dry_run: opts[:dry_run], purge: opts[:purge], clock: @clock,
+                                              accept_changes: accept || nil).run
           log.puts 'Sync finished (ran to completion, not interrupted).'
         rescue Interrupt
           # Without this, the only way to tell an interrupted run from a
@@ -198,6 +206,10 @@ module EasySync
           log.close
         end
       end
+      return if opts[:dry_run] || report.tripped.empty?
+
+      raise Error, report.run_tripped ? 'the tripwire stopped this sync; nothing was copied (see the log above)' \
+                                      : "the tripwire held back #{report.tripped.join(', ')} (see the log above)"
     end
 
     # Removes anything matching exclude_folders from the placed folders on

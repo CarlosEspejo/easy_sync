@@ -174,9 +174,15 @@ assumptions, they cannot check them.
   `ok`. No `tree` row keyed by a bare share name is left in the manifest.
 
 - Ransomware tripwire (stop a sync that would replace or remove far more
-  existing files than normal): docs/tripwire.md (designed, not built). It
-  replaced the changed-file versioning design; recovery after the fact is
-  Synology snapshots + Backblaze history, not the drives.
+  existing files than normal) is built and checked on `jbod-test-1`
+  (2026-09-24), but ships report-only (`tripwire_enforce: false`). Before
+  enforcing, it still needs phase 1b's duration and the sync aggregate
+  measured on the real fleet, and a couple of weeks of real counts. See
+  docs/tripwire.md, "As built". The pre-copy check probe replaced the
+  post-copy one, so `sync` now runs every already-synced folder's
+  `rsync -an` before copying anything. A folder whose check fails is not
+  copied. Recovery after the fact is still Synology snapshots + Backblaze
+  history, not the drives.
 - Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
   checklist on 2026-09-21 (results in docs/integrity-scan.md). The first
   full pass of the real fleet ran 2026-09-22 (02:55-14:26 UTC, ~11.5 h;

@@ -87,7 +87,10 @@
   .status::before { content: "●"; margin-right: 4px; color: var(--muted); }
   .status.ok::before { color: var(--good); }
   .status.failed::before, .status.drive_full::before { color: var(--critical); }
-  .status.skipped_unmounted::before, .status.skipped_source_unmounted::before, .status.missing::before { color: var(--warning); }
+  .status.tripped::before { color: var(--critical); }
+  .status.skipped_unmounted::before, .status.skipped_source_unmounted::before, .status.missing::before,
+  .status.skipped_check_failed::before { color: var(--warning); }
+  .samples { margin: 4px 0 0; padding-left: 16px; color: var(--muted); font-size: 13px; word-break: break-all; }
   .empty { color: var(--muted); padding: 14px; }
   details.share { border-bottom: 1px solid var(--hairline); }
   details.share:last-child { border-bottom: 0; }
@@ -167,6 +170,26 @@
     </div>
 <%- end -%>
   </section>
+
+<%- unless trips.empty? -%>
+  <h2>Tripwire</h2>
+  <p class="meta"><%= run_stopped?(trips) ? 'The whole sync was stopped' : 'These folders were not copied' %> <%= when_(trips.first.run_started_at) %>: far more existing files would have been overwritten or are gone from the NAS than a library changes normally. Names like <code>*.locked</code> or garbled ones point to ransomware; a re-tag or re-rip you made yourself goes through with <code>easy_sync sync --accept-changes [FOLDER ...]</code>. Nothing here is copied until then.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Folder</th><th class="num">Replaced</th><th class="num">Gone from NAS</th><th class="num">Files on drive</th></tr></thead>
+    <tbody>
+  <%- trips.each do |t| -%>
+      <tr>
+        <td><%= h t.folder_path %><%- unless t.samples.empty? -%><ul class="samples"><%- t.samples.each do |path| -%><li><%= h path %></li><%- end -%></ul><%- end -%></td>
+        <td class="num"><%= count(t.replaced) %></td>
+        <td class="num"><%= count(t.missing) %></td>
+        <td class="num"><%= count(t.files_on_drive) %></td>
+      </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+  </div>
+<%- end -%>
 
   <h2>Drives</h2>
 <%- if drives.any? -%>
@@ -311,6 +334,21 @@
         <td><span class="status <%= f.status == 'ok' ? 'ok' : 'failed' %>"><%= h f.status %></span></td>
         <td><%= h scrub_finding_phrase(f) %></td>
       </tr>
+  <%- end -%>
+    </tbody>
+  </table>
+  </div>
+<%- end -%>
+
+<%- unless accepted_trips.empty? -%>
+  <h2>Accepted bulk changes</h2>
+  <p class="meta">Changes the tripwire stopped that were let through with <code>--accept-changes</code>, newest first.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Folder</th><th class="num">Replaced</th><th class="num">Gone from NAS</th><th>Accepted</th></tr></thead>
+    <tbody>
+  <%- accepted_trips.each do |t| -%>
+      <tr><td><%= h t.folder_path %></td><td class="num"><%= count(t.replaced) %></td><td class="num"><%= count(t.missing) %></td><td class="when"><%= when_(t.accepted_at) %></td></tr>
   <%- end -%>
     </tbody>
   </table>
