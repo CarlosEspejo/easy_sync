@@ -419,6 +419,14 @@ A 30 TB library over gigabit Ethernet takes three to four days the first time.
 Dashboard
 ---------
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.png">
+  <img alt="The dashboard: a red summary box saying 2 of 112 folders are not backed up, and eight drive tiles showing how full each drive is, its SMART health and when it was last scrubbed" src="docs/images/dashboard-light.png">
+</picture>
+
+*Made-up example data: one drive with stable old wear (blue), one overdue for
+a scrub, one not connected, and two folders too big for any drive's free space.*
+
 Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
 is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
 but reallocated, pending or uncorrectable sectors (or an NVMe critical flag) are
