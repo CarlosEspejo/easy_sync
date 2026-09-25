@@ -489,26 +489,56 @@ A 30 TB library over gigabit Ethernet takes three to four days the first time.
 Commands
 --------
 
-| command | does |
-|---|---|
-| `add-source PATH` | add a NAS share; each of its folders is placed on its own |
-| `remove-source PATH` | stop backing up a share (drives untouched) |
-| `sources` | list the configured shares and whether each is mounted |
-| `sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]` | mirror the shares onto the drives; `--accept-changes` lets through a bulk change the tripwire stopped (this run only) |
-| `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
-| `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
-| `forget-drive NAME [...] [--dry-run]` | delete a retired drive and all its history (placements, sync runs, checksums, benchmarks, SMART checks) from the manifest; for test drives. Touches no drive |
-| `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
-| `plan [SHARE ...] [--largest-drive 8tb]` | measure each share (or just those named) and check every folder fits a drive |
-| `status [--all] [--smart]` | whether a sync is running (and for how long), drives, health and folders, in the terminal. Health is the last sync's SMART reading (an `n/a` says when it was taken); `--smart` reads the mounted drives now, without saving it |
-| `pending` | deletion candidates and their expiry dates |
-| `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
-| `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
-| `benchmark [NAME ...] \| --all [--size SIZE] [--history]` | time a drive's sequential write and read, compared with its own last 25 runs; flags one that has slowed down |
-| `history [FOLDER]` | where a folder has lived |
-| `reassign FOLDER\|SHARE DRIVE [--copy] [--note TEXT] [--force]` | move a folder, or every folder of a share, to another drive; `--copy` copies it drive-to-drive now instead of the next sync pulling it from the NAS; refuses a drive without room unless `--force` |
-| `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
-| `dashboard` | regenerate the HTML report only |
+```
+Set up, once:
+  add-source PATH             add a NAS share; each of its folders is placed on its own
+  register-drive MOUNT [--name N] [--serial S]
+                              add a mounted drive
+  plan [SHARE ...] [--largest-drive 8tb]
+                              measure each share (or just those named) and check every folder fits a
+                              drive
+
+Back up:
+  sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]
+                              mirror the shares onto the drives; --accept-changes lets through a
+                              bulk change the tripwire stopped (this run only)
+  status [--all] [--smart]    whether a sync is running (and for how long), drives, health and
+                              folders, in the terminal. Health is the last sync's SMART reading (an
+                              n/a says when it was taken); --smart reads the mounted drives now,
+                              without saving it
+  dashboard                   regenerate the HTML report only
+
+Maintain:
+  pending                     deletion candidates and their expiry dates
+  clean [--dry-run]           remove excluded junk from the drives now, without waiting
+  scrub [NAME ...] | --all [--jobs N] [--for DURATION] [--dry-run]
+                              read tracked files back off a drive and check them against their
+                              baseline; catches bit rot rsync can't see
+  benchmark [NAME ...] | --all [--size SIZE] [--history]
+                              time a drive's sequential write and read, compared with its own last
+                              25 runs; flags one that has slowed down
+  history [FOLDER]            where a folder has lived
+  reassign FOLDER|SHARE DRIVE [--copy] [--note TEXT] [--force]
+                              move a folder, or every folder of a share, to another drive; --copy
+                              copies it drive-to-drive now instead of the next sync pulling it from
+                              the NAS; refuses a drive without room unless --force
+  rename-drive OLD NEW        relabel a drive, or swap two drives' names; the manifest only, never
+                              the volume
+  replace-drive OLD [--to NEW] [--copy]
+                              retire a drive, handing its folders to NEW (or to the next sync)
+  forget-drive NAME [...] [--dry-run]
+                              delete a retired drive and all its history (placements, sync runs,
+                              checksums, benchmarks, SMART checks) from the manifest; for test
+                              drives. Touches no drive
+  verify-drive NAME [--note TEXT]
+                              record that a full-surface scan (SpinRite etc.) found no new defects;
+                              resets the reallocated-sector baseline
+  restore FOLDER|SHARE [...] | --all [--dry-run]
+                              copy folders back onto the NAS from wherever they live (reverse of
+                              sync; never deletes)
+  remove-source PATH          stop backing up a share (drives untouched)
+  sources                     list the configured shares and whether each is mounted
+```
 
 `--config PATH` goes before the command.
 
