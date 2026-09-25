@@ -63,8 +63,8 @@ lives. Nothing from 0.0.x carries over; see "Breaking changes".
 - `--dry-run` writes nothing, anywhere.
 - One long run at a time: sync, scrub, restore, clean, benchmark and
   `reassign --copy` share a lock.
-- Ctrl-C stops the running rsync cleanly; interrupted copies resume
-  (`--partial`).
+- Ctrl-C stops the running rsync cleanly, and an interrupted copy picks up
+  where it left off on the next run instead of starting the file over.
 - The Mac is kept awake during long runs (`caffeinate`).
 
 ### Breaking changes
