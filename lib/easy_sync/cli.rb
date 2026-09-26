@@ -736,14 +736,18 @@ module EasySync
       mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
       unless drives.empty?
+        backblaze = Jbod::Backblaze.read
+        uploads = backblaze&.drive_states(drives, mounted: mounted, mount_root: settings[:mount_root],
+                                                  last_copied_at: manifest.last_copied_at)
         rows = drives.map do |d|
           m = mounted[d.serial_number]
           [d.friendly_name, d.branded_model ? "#{d.serial_number} · #{d.branded_model}" : d.serial_number,
            m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
            m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
-           m && live_smart ? live_smart_summary(m) : smart_summary(d), drive_note(d, m)]
+           m && live_smart ? live_smart_summary(m) : smart_summary(d),
+           *(uploads ? [uploads[d.serial_number].label] : []), drive_note(d, m)]
         end
-        print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
+        print_table(%w[DRIVE SERIAL FREE USED SMART] + (uploads ? ['BACKBLAZE'] : []) + [''], rows, right: [2, 3])
         if live_smart
           @out.puts
           @out.puts '  SMART read just now from the mounted drives (not saved); unmounted drives show their last reading.'
@@ -752,6 +756,7 @@ module EasySync
         total_free = drives.sum { |d| (mounted[d.serial_number]&.free_bytes || d.last_free_bytes).to_i }
         @out.puts
         @out.puts "Total: #{bytes(total_capacity)} capacity, #{bytes(total_free)} free right now"
+        print_backblaze_summary(backblaze, uploads) if uploads
       end
       retired = manifest.drives(include_retired: true).select(&:retired?).sort_by(&:retired_at).reverse
       return if retired.empty?
@@ -762,6 +767,16 @@ module EasySync
       line += " · #{hidden} more (see `status --all`)" if hidden.positive?
       @out.puts if drives.any?
       @out.puts line
+    end
+
+    # One line answering "can I power the drives off?": Backblaze uploads
+    # from the drives, so anything not up to date only reaches it the next
+    # time that drive is connected.
+    def print_backblaze_summary(backblaze, uploads)
+      pending = uploads.values.count { |s| !s.done? }
+      verdict = pending.zero? ? "every drive's data is uploaded" : "#{pending} of #{uploads.size} drives not up to date yet"
+      completed = backblaze.last_completed_at ? "; last backup pass finished #{local_time(backblaze.last_completed_at.iso8601, '%Y-%m-%d %H:%M')}" : ''
+      @out.puts "Backblaze: #{verdict}#{completed}"
     end
 
     def print_table(header, rows, right: [])
@@ -1106,7 +1121,8 @@ module EasySync
     def write_dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
       run = Jbod::RunLock.new(settings[:lock_path]).status
-      Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
+      Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days],
+                                    mount_root: settings[:mount_root])
                      .write(settings[:dashboard_path], mounted: mounted, running: run)
     end
 

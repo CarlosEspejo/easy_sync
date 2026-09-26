@@ -29,6 +29,20 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to match(/47\.0 TB total · 3\.0 TB free ·/)
   end
 
+  it 'says on each tile and in the header whether Backblaze has uploaded the drive' do
+    expect(dashboard.render).not_to include('Backblaze up to date', 'Backblaze:')
+
+    scanned = Time.utc(2026, 9, 13, 11, 45)  # after Photos was copied at 11:30
+    fake_backblaze({ '/Volumes/backup-04-8tb' => { files: 0, bytes: 0, scanned_at: scanned },
+                     '/Volumes/backup-01-3tb' => { files: 5, bytes: 1000, scanned_at: scanned } })
+    html = dashboard.render(mounted: [mounted(drives['backup-04-8tb'], free: 1 * TB)])
+    expect(html).to include('Backblaze: up to date', 'Backblaze: uploading, 5 files', 'Backblaze: not in Backblaze')
+    expect(html).to include('Backblaze: 6 drives not up to date')   # 5 of the 7 are unknown to it
+
+    File.utime(scanned - 3600, scanned - 3600, *Dir[File.join(EasySync::Jbod::Backblaze::DATA_DIR, 'bzfilelists', '*')])
+    expect(dashboard.render).to include('Backblaze: not scanned since the last sync')   # backup-04's zero predates the copy
+  end
+
   describe 'status at the top' do
     def verdict(html) = html[html.index('<section class="verdict')...html.index('</section>')]
 

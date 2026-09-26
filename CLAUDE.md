@@ -63,6 +63,15 @@ README.md is the user-facing truth; this file is for working on the code.
   disk leaves `diskutil list` (jbod-test-1/2, 2026-09-26). Getting it back
   takes a replug. The "dissented by PID" failure `easy_sync eject` parses
   has not been seen on real hardware yet.
+- Backblaze Personal's state (read by `Jbod::Backblaze`, never written) is
+  world-readable under `/Library/Backblaze.bzpkg/bzdata`: `bzvolumes.xml`
+  maps a volume GUID to its mount point as hex with a trailing slash;
+  `bzreports/bzstat_remainingbackup.xml` has files/bytes left per GUID;
+  `bzfilelists/<GUID>______filelist.dat`'s mtime is that volume's last
+  scan (2026-09-26: 09:47-10:01 local for the fleet, all 0 left). A zero
+  counted before easy_sync's last copy onto the drive is stale, hence
+  the `waiting` state. spec_helper stubs `Backblaze::DATA_DIR` into the
+  temp dir: no spec may read the real install.
 - Pulling a drive's cable mid-read: the marker file vanishes and reads fail;
   scrub stops as "unmounted" without flagging the in-flight file. A
   FileVault test drive came back mounted and unlocked on replug.

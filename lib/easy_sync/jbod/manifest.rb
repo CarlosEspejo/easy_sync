@@ -403,6 +403,15 @@ module EasySync
         SQL
       end
 
+      # drive serial => when a sync last copied data onto it (ISO 8601): what
+      # Backblaze must have scanned since for its "nothing left" to count.
+      def last_copied_at
+        db.execute(<<~SQL).to_h { |row| [row['drive_serial'], row['at']] }
+          SELECT drive_serial, MAX(finished_at) AS at FROM sync_runs
+           WHERE COALESCE(bytes_transferred, 0) > 0 GROUP BY drive_serial
+        SQL
+      end
+
       # The folders in one run that copied something or failed: the rest only
       # confirmed nothing had changed.
       def notable_sync_runs(run_started_at, limit: 100)

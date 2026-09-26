@@ -58,6 +58,9 @@ lives. Nothing from 0.0.x carries over; see "Breaking changes".
   activity feed.
 - **`status`**: drives, health and folders in the terminal, including a
   running sync's progress and time remaining.
+- **Backblaze upload status** per drive in `status` and on the dashboard, read
+  from Backblaze Personal's local state: shows whether each drive is safe to
+  power off.
 - A log per sync and scrub under `~/.easy_sync/logs/`.
 
 ### Safety

@@ -71,7 +71,8 @@ module EasySync
         @mirror = mirror || Mirror.new(shell: shell, excludes: settings.fetch(:exclude_folders, []),
                                        extra_args: settings.fetch(:rsync_args, []) + (dry_run ? ['--dry-run'] : []))
         @dashboard = dashboard || Dashboard.new(manifest, grace_days: settings[:grace_days],
-                                                          scrub_stale_days: settings.fetch(:scrub_stale_days, 30), clock: clock)
+                                                          scrub_stale_days: settings.fetch(:scrub_stale_days, 30), clock: clock,
+                                                          mount_root: settings[:mount_root])
         @purger = purger || Purger.new(manifest, grace_days: settings[:grace_days], grace_runs: settings[:grace_runs],
                                                  clock: clock, out: out)
         @sizer = sizer || method(:du_bytes)

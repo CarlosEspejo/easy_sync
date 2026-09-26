@@ -268,6 +268,18 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include("n/a (as of #{Time.parse('2026-09-24T03:25:29Z').localtime.strftime('%Y-%m-%d %H:%M')})")
     end
 
+    it "shows whether Backblaze has uploaded each drive, and nothing about it when it isn't installed" do
+      expect(cli('status').run).to eq(0)
+      expect(out.string).not_to include('BACKBLAZE', 'Backblaze')
+
+      fake_backblaze({ File.join(mount_root, 'backup-01-3tb') => { files: 0, bytes: 0, scanned_at: Time.now },
+                       File.join(mount_root, 'backup-02-6tb') => { files: 12, bytes: 4 * 1000**3, scanned_at: Time.now } })
+      out.truncate(0); out.rewind
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('BACKBLAZE', 'up to date', 'uploading, 12 files (3.7 GB) left',
+                                    'Backblaze: 1 of 2 drives not up to date yet; last backup pass finished')
+    end
+
     describe '--smart' do
       let!(:vol) do
         make_dirs(mount_root, 'backup-02-6tb').first.tap do |v|

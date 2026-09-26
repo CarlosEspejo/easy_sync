@@ -210,7 +210,8 @@ Dashboard
 </picture>
 
 *Made-up example data: one drive with stable old wear (blue), one overdue for
-a scrub, one not connected, and two folders too big for any drive's free space.*
+a scrub, one still uploading to Backblaze, one not connected, and two folders
+too big for any drive's free space.*
 
 Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
 is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
@@ -246,6 +247,16 @@ tile's colour, which stays SMART-only. A "Scrub findings" section, next to
 Pending deletions, lists every file `scrub` has flagged: which drive, its
 path, and whether it's awaiting refetch, refetched and awaiting re-check, or
 unresolved. With nothing flagged it is a single line.
+
+When Backblaze Personal is installed on this Mac, each tile (and a
+BACKBLAZE column in `status`) says whether that drive's data has reached
+Backblaze: "up to date", "uploading, N files (size) left", or "not scanned
+since the last sync" when Backblaze's zero was counted before the last
+copy onto the drive. The header and `status` sum it up in one line. This
+is the thing to check before powering the drives off, since Backblaze
+uploads from the drives. It reads Backblaze's own state files under
+`/Library/Backblaze.bzpkg/bzdata` (read-only), the same numbers its
+menu-bar icon shows; without Backblaze nothing about it appears.
 
 Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
 shows a rough estimate of time remaining, from what that run has actually

@@ -22,8 +22,11 @@ module EasySync
 
       attr_reader :manifest, :grace_days
 
-      def initialize(manifest, grace_days: 7, scrub_stale_days: 30, clock: Time)
+      def initialize(manifest, grace_days: 7, scrub_stale_days: 30, clock: Time, mount_root: '/Volumes',
+                     backblaze_dir: Backblaze::DATA_DIR)
         @manifest = manifest
+        @mount_root = mount_root
+        @backblaze_dir = backblaze_dir
         @grace_days = grace_days
         @scrub_stale_days = scrub_stale_days
         @clock = clock
@@ -45,6 +48,9 @@ module EasySync
         folders = manifest.folders
         names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] }
         scrub_findings = manifest.scrub_findings
+        backblaze = Backblaze.read(@backblaze_dir)
+        uploads = backblaze&.drive_states(manifest.drives, mounted: by_serial, mount_root: @mount_root,
+                                                           last_copied_at: manifest.last_copied_at)
         trips = current_trips(runs)
         issues = issues(drives: drives, folders: folders, inventory: inventory, source_status: source_status,
                         runs: runs, scrub_findings: scrub_findings, trips: trips)
@@ -67,6 +73,7 @@ module EasySync
           pending: manifest.pending_deletions,
           inventory: inventory,
           scrub_findings: scrub_findings,
+          uploads: uploads,
           running: running,
           eta: running&.kind == 'sync' ? SyncEta.for(manifest, running.started_at) : nil
         }
@@ -543,6 +550,13 @@ module EasySync
 
       def pending_kind(p, names)
         p.reassigned? ? "moved off #{names.fetch(p.drive_serial, p.drive_serial)}" : p.kind
+      end
+
+      # The header's Backblaze clause: whether the drives can be powered off
+      # without leaving anything waiting to upload.
+      def backblaze_summary(uploads)
+        pending = uploads.values.count { |u| !u.done? }
+        pending.zero? ? 'Backblaze up to date' : "Backblaze: #{pending} drive#{'s' if pending != 1} not up to date"
       end
 
       # "scrubbing now", "scrubbed N days ago", or "never scrubbed", shown on

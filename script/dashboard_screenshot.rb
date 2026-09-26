@@ -86,6 +86,27 @@ def sized(folders)
   end
 end
 
+# A made-up Backblaze install (never the real one): every drive scanned after
+# the demo sync and uploaded, except backup-07-6tb, still uploading.
+def fake_backblaze(dir)
+  bz = File.join(dir, 'backblaze')
+  FileUtils.mkdir_p([File.join(bz, 'bzreports'), File.join(bz, 'bzfilelists')])
+  guids = DRIVES.each_with_index.to_h { |d, i| [d[0], format('vdemo%03d', i)] }
+  volumes = guids.map { |name, g| %(<bzvolume bzVolumeGuid="#{g}" mountPointPathHex="#{"/Volumes/#{name}/".unpack1('H*')}" />) }
+  remaining = guids.map do |name, g|
+    files, bytes = name == 'backup-07-6tb' ? [1204, 38 * GB] : [0, 0]
+    %(<bzvolume bzVolumeGuid="#{g}" pervol_remaining_files_numfiles="#{files}" pervol_remaining_files_numbytes="#{bytes}" />)
+  end
+  File.write(File.join(bz, 'bzvolumes.xml'), "<contents>\n#{volumes.join("\n")}\n</contents>\n")
+  File.write(File.join(bz, 'bzreports', 'bzstat_remainingbackup.xml'), "<contents>\n#{remaining.join("\n")}\n</contents>\n")
+  guids.each_value do |g|
+    list = File.join(bz, 'bzfilelists', "#{g}______filelist.dat")
+    File.write(list, '')
+    File.utime(NOW - 1800, NOW - 1800, list)
+  end
+  bz
+end
+
 def render(dir)
   m, serials = build_manifest(File.join(dir, 'manifest.sqlite3'))
   folders = sized(demo_folders)
@@ -125,7 +146,7 @@ def render(dir)
   end
 
   html = File.join(dir, 'dashboard.html')
-  EasySync::Jbod::Dashboard.new(m, clock: FixedClock.new(NOW))
+  EasySync::Jbod::Dashboard.new(m, clock: FixedClock.new(NOW), backblaze_dir: fake_backblaze(dir))
                            .write(html, mounted: mounted, source_status: folders.to_h { |(path)| [path, :present] })
   html
 end
@@ -140,7 +161,7 @@ Dir.mktmpdir('easy_sync_screenshot') do |dir|
   { 'light' => 1, 'dark' => 0 }.each do |theme, scheme|
     png = File.join(IMAGES, "dashboard-#{theme}.png")
     system(CHROME, '--headless', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=2',
-           '--window-size=1100,960', "--blink-settings=preferredColorScheme=#{scheme}", "--screenshot=#{png}",
+           '--window-size=1100,1010', "--blink-settings=preferredColorScheme=#{scheme}", "--screenshot=#{png}",
            "file://#{html}", out: File::NULL, err: File::NULL) or abort "Chrome failed for #{theme}"
     system('sips', '-Z', '1600', png, out: File::NULL) or abort "sips failed for #{png}"
     puts "wrote #{png}"
