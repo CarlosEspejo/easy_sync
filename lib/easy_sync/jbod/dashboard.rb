@@ -440,7 +440,7 @@ module EasySync
       end
 
       # Notes written by earlier code name drives by serial ("moved from
-      # WKD1SH4M"); show the drive's name instead, and timestamps the way the
+      # SN-EXAMPLE1"); show the drive's name instead, and timestamps the way the
       # rest of the page does. A removal's note repeats "deleted from <drive>:",
       # which the line itself already says.
       def readable_note(note, names)

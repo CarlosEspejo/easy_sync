@@ -14,10 +14,10 @@ RSpec.describe EasySync::Jbod::Purger do
 
   before do
     drives
-    manifest.assign_folder('movies/Heat (1995)', 'SN-backup-04-8tb')
-    write_file(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
-    write_file(File.join(drive_root, 'movies', 'Heat (1995)', 'extras', 'trailer.mkv'))
-    write_file(File.join(drive_root, 'movies', 'Heat (1995)', 'old.srt'))
+    manifest.assign_folder('movies/Metropolis (1927)', 'SN-backup-04-8tb')
+    write_file(File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv'))
+    write_file(File.join(drive_root, 'movies', 'Metropolis (1927)', 'extras', 'trailer.mkv'))
+    write_file(File.join(drive_root, 'movies', 'Metropolis (1927)', 'old.srt'))
   end
 
   # Marks +paths+ as missing twice, the first time long enough ago to have expired.
@@ -27,56 +27,56 @@ RSpec.describe EasySync::Jbod::Purger do
   end
 
   it 'deletes expired files and empties directories deepest-first, recording each' do
-    expire('movies/Heat (1995)', [['old.srt', 'file'], ['extras', 'dir'], ['extras/trailer.mkv', 'file']])
+    expire('movies/Metropolis (1927)', [['old.srt', 'file'], ['extras', 'dir'], ['extras/trailer.mkv', 'file']])
     result = purger.run(mounted_list)
 
     expect(result.purged.map { |p, _| p.relative_path }).to contain_exactly('old.srt', 'extras/trailer.mkv', 'extras')
-    expect(File).not_to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'old.srt'))
-    expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'extras'))
-    expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
+    expect(File).not_to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'old.srt'))
+    expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'extras'))
+    expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv'))
     expect(manifest.pending_deletions).to be_empty
     expect(manifest.deletions.map(&:relative_path)).to contain_exactly('old.srt', 'extras/trailer.mkv', 'extras')
   end
 
   it 'leaves candidates that have not expired alone' do
-    manifest.reconcile_pending('movies/Heat (1995)', [['old.srt', 'file']])
+    manifest.reconcile_pending('movies/Metropolis (1927)', [['old.srt', 'file']])
     result = purger.run(mounted_list)
     expect(result.purged).to be_empty
-    expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'old.srt'))
+    expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'old.srt'))
   end
 
   it 'removes a whole expired folder, its manifest row, and writes history' do
-    expire('movies/Heat (1995)', [['', 'folder']])
+    expire('movies/Metropolis (1927)', [['', 'folder']])
     result = purger.run(mounted_list)
 
     expect(result.purged.map { |p, _| p.kind }).to eq(['folder'])
-    expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Heat (1995)'))
-    expect(manifest.folder('movies/Heat (1995)')).to be_nil
-    expect(manifest.history('movies/Heat (1995)').first).to have_attributes(event: 'removed')
-    expect(manifest.history('movies/Heat (1995)').first.note).to include('backup-04-8tb', 'missing on NAS since 2026-09-01')
+    expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Metropolis (1927)'))
+    expect(manifest.folder('movies/Metropolis (1927)')).to be_nil
+    expect(manifest.history('movies/Metropolis (1927)').first).to have_attributes(event: 'removed')
+    expect(manifest.history('movies/Metropolis (1927)').first.note).to include('backup-04-8tb', 'missing on NAS since 2026-09-01')
     expect(manifest.deletions.first.kind).to eq('folder')
   end
 
   it 'does nothing in dry-run mode but says what it would do' do
-    expire('movies/Heat (1995)', [['old.srt', 'file']])
+    expire('movies/Metropolis (1927)', [['old.srt', 'file']])
     result = purger.run(mounted_list, dry_run: true)
     expect(result.would_purge.map { |p, drive| [p.relative_path, drive] }).to eq([['old.srt', 'backup-04-8tb']])
     expect(result.purged).to be_empty
-    expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'old.srt'))
+    expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'old.srt'))
     expect(manifest.pending_deletions.size).to eq(1)
-    expect(out.string).to include('would delete movies/Heat (1995)/old.srt from backup-04-8tb')
+    expect(out.string).to include('would delete movies/Metropolis (1927)/old.srt from backup-04-8tb')
   end
 
   it 'skips candidates whose drive is not mounted' do
-    expire('movies/Heat (1995)', [['old.srt', 'file']])
+    expire('movies/Metropolis (1927)', [['old.srt', 'file']])
     result = purger.run([])
     expect(result.skipped.map { |p, why| [p.relative_path, why] }).to eq([['old.srt', 'drive not mounted']])
-    expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'old.srt'))
+    expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'old.srt'))
     expect(manifest.pending_deletions.size).to eq(1)
   end
 
   it 'refuses a path that escapes the folder' do
-    expire('movies/Heat (1995)', [['../../escape', 'file']])
+    expire('movies/Metropolis (1927)', [['../../escape', 'file']])
     write_file(File.join(mount_root, 'escape'))
     result = purger.run(mounted_list)
     expect(result.skipped.map { |_, why| why }).to eq(['path escapes its folder'])
@@ -84,10 +84,10 @@ RSpec.describe EasySync::Jbod::Purger do
   end
 
   it 'leaves a directory that still has content and retries next time' do
-    expire('movies/Heat (1995)', [['extras', 'dir']])   # trailer.mkv inside is not a candidate
+    expire('movies/Metropolis (1927)', [['extras', 'dir']])   # trailer.mkv inside is not a candidate
     result = purger.run(mounted_list)
     expect(result.purged).to be_empty
-    expect(Dir).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'extras'))
+    expect(Dir).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'extras'))
     expect(manifest.pending_deletions.size).to eq(1)
     expect(out.string).to include('not empty yet')
   end
@@ -158,7 +158,7 @@ RSpec.describe EasySync::Jbod::Purger do
 
       expect(Dir).not_to exist(share)
       expect(Dir).to exist(drive_root)
-      expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
+      expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv'))
     end
 
     it 'removes only the top-level files of a root-files unit, never the subfolders below it' do
@@ -180,42 +180,42 @@ RSpec.describe EasySync::Jbod::Purger do
     let(:both_mounted) { mounted_list + [mounted(drives['backup-05-8tb'], free: 1 * TB, mount_point: new_root)] }
 
     before do
-      manifest.reassign_folder('movies/Heat (1995)', 'SN-backup-05-8tb', at: long_ago)   # schedule_cleanup: true by default
+      manifest.reassign_folder('movies/Metropolis (1927)', 'SN-backup-05-8tb', at: long_ago)   # schedule_cleanup: true by default
     end
 
     it 'does not touch the old copy until the folder is verified synced to its new drive, even once grace_days has passed' do
       result = purger.run(both_mounted)
       expect(result.purged).to be_empty
       expect(result.skipped).to be_empty   # filtered out by readiness, never even attempted
-      expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
-      expect(manifest.folder('movies/Heat (1995)').drive_serial).to eq('SN-backup-05-8tb')
+      expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv'))
+      expect(manifest.folder('movies/Metropolis (1927)').drive_serial).to eq('SN-backup-05-8tb')
     end
 
     it 'does not touch the old copy just because it synced ok, before grace_days has passed' do
-      manifest.mark_folder_status('movies/Heat (1995)', 'ok')
+      manifest.mark_folder_status('movies/Metropolis (1927)', 'ok')
       purger = described_class.new(manifest, grace_days: 7, grace_runs: 2, clock: double('clock', now: Time.parse(long_ago) + 3600),
                                              out: out)
       result = purger.run(both_mounted)
       expect(result.purged).to be_empty
-      expect(File).to exist(File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv'))
+      expect(File).to exist(File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv'))
     end
 
     it 'deletes only the old drive copy once verified synced elsewhere and grace_days has passed, keeping the folder record' do
-      manifest.mark_folder_status('movies/Heat (1995)', 'ok')
+      manifest.mark_folder_status('movies/Metropolis (1927)', 'ok')
       result = purger.run(both_mounted)
 
-      expect(result.purged.map { |p, drive| [p.folder_path, drive] }).to eq([['movies/Heat (1995)', 'backup-04-8tb']])
-      expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Heat (1995)'))
-      expect(manifest.folder('movies/Heat (1995)')).to have_attributes(drive_serial: 'SN-backup-05-8tb', last_sync_status: 'ok')
+      expect(result.purged.map { |p, drive| [p.folder_path, drive] }).to eq([['movies/Metropolis (1927)', 'backup-04-8tb']])
+      expect(Dir).not_to exist(File.join(drive_root, 'movies', 'Metropolis (1927)'))
+      expect(manifest.folder('movies/Metropolis (1927)')).to have_attributes(drive_serial: 'SN-backup-05-8tb', last_sync_status: 'ok')
       expect(manifest.pending_deletions).to be_empty
-      expect(manifest.deletions.first).to have_attributes(folder_path: 'movies/Heat (1995)', drive_serial: 'SN-backup-04-8tb')
+      expect(manifest.deletions.first).to have_attributes(folder_path: 'movies/Metropolis (1927)', drive_serial: 'SN-backup-04-8tb')
     end
 
     it 'resolves the old drive from the pending candidate, not from the folder\'s current (new) assignment' do
-      manifest.mark_folder_status('movies/Heat (1995)', 'ok')
+      manifest.mark_folder_status('movies/Metropolis (1927)', 'ok')
       result = purger.run(mounted_list)   # only the OLD drive is mounted; the new one is not
 
-      expect(result.purged.map { |p, drive| [p.folder_path, drive] }).to eq([['movies/Heat (1995)', 'backup-04-8tb']])
+      expect(result.purged.map { |p, drive| [p.folder_path, drive] }).to eq([['movies/Metropolis (1927)', 'backup-04-8tb']])
     end
   end
 end

@@ -132,7 +132,7 @@ RSpec.describe EasySync::Jbod::Mirror do
 
   it 'flags a full destination drive distinctly from other rsync failures' do
     fake_shell.on('rsync', status: 11, output: <<~OUT)
-      rsync: [receiver] write failed on "/Volumes/backup-04-8tb/movies/Heat (1995)/movie.mkv": No space left on device (28)
+      rsync: [receiver] write failed on "/Volumes/backup-04-8tb/movies/Metropolis (1927)/movie.mkv": No space left on device (28)
       rsync error: error in file IO (code 11) at receiver.c(392) [receiver=3.5.0]
     OUT
     result = described_class.new(shell: fake_shell).sync(source, '/dest')
@@ -154,7 +154,7 @@ RSpec.describe EasySync::Jbod::Mirror do
         captured = File.read(list_arg.delete_prefix('--files-from='))
         rsync_stats
       })
-      result = described_class.new(shell: fake_shell).refetch('/nas/movies/Heat (1995)', '/Volumes/backup-04-8tb/movies/Heat (1995)',
+      result = described_class.new(shell: fake_shell).refetch('/nas/movies/Metropolis (1927)', '/Volumes/backup-04-8tb/movies/Metropolis (1927)',
                                                                ['movie.mkv', 'subs/en.srt'])
       expect(result).to be_success
       expect(captured).to eq("movie.mkv\x00subs/en.srt")
@@ -163,7 +163,7 @@ RSpec.describe EasySync::Jbod::Mirror do
       expect(call[0, 4]).to eq(['rsync', '-a', '-I', '--stats'])
       expect(call).to include('--from0')
       expect(call).not_to include('--partial')
-      expect(call.last(2)).to eq(['/nas/movies/Heat (1995)/', '/Volumes/backup-04-8tb/movies/Heat (1995)/'])
+      expect(call.last(2)).to eq(['/nas/movies/Metropolis (1927)/', '/Volumes/backup-04-8tb/movies/Metropolis (1927)/'])
     end
 
     it 'cleans up its temp file after the call' do

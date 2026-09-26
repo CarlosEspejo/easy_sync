@@ -108,7 +108,7 @@ gate it on `user_version` (see CLAUDE.md: the real manifest is stamped 5).
 ```sql
 CREATE TABLE IF NOT EXISTS file_checksums (
   drive_serial  TEXT    NOT NULL REFERENCES drives(serial_number),
-  folder_path   TEXT    NOT NULL,              -- folders.folder_path, e.g. "movies/Heat (1995)"
+  folder_path   TEXT    NOT NULL,              -- folders.folder_path, e.g. "movies/Metropolis (1927)"
   relative_path TEXT    NOT NULL,              -- path inside the folder
   size_bytes    INTEGER NOT NULL,
   mtime         INTEGER NOT NULL,              -- File.lstat.mtime.to_i

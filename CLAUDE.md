@@ -167,6 +167,13 @@ assumptions, they cannot check them.
   protection). If you ever re-add required reviews, remember
   `enforce_admins: false` lets the owner bypass them — a solo-maintainer PR
   can't self-approve otherwise.
+- The repo is public: never commit real drive serials, volume UUIDs, folder
+  names from the library, or passphrases, not even in a comment, a spec or a
+  doc. Use made-up ones (`SN-backup-04-8tb`, `movies/Metropolis (1927)`).
+  Drive names (`backup-0N-Xtb`), share names, models and fleet-wide counts
+  are fine. A 2026-09-26 audit against the real manifest found the current
+  files clean; older commits still hold five serials and the test drives'
+  passphrase (fixed in the working tree on 2026-09-21).
 - The README's dashboard screenshots (`docs/images/dashboard-{light,dark}.png`)
   come from `bundle exec ruby script/dashboard_screenshot.rb`, which renders a
   made-up manifest (never the real library: the repo is public). Re-run it and
