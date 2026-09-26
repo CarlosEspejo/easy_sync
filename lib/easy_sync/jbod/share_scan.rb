@@ -2,9 +2,9 @@
 
 module EasySync
   module Jbod
-    # What a share's top level holds, by the one rule both `sync` and `split`
-    # use to decide its units: each visible, non-excluded subfolder is one
-    # unit; visible, non-excluded loose files together are one more.
+    # What a share's top level holds, by the one rule `sync` uses to decide
+    # its units: each visible, non-excluded subfolder is one unit; visible,
+    # non-excluded loose files together are one more.
     module ShareScan
       module_function
 

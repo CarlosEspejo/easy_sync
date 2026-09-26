@@ -154,24 +154,6 @@ could not be placed anywhere. Pass `--largest-drive 8tb` before any drive is
 registered, and name one or more shares (by folder name or full path, e.g.
 `easy_sync plan pro`) to measure just those. It only reads.
 
-### Shares placed whole by an earlier build
-
-Earlier builds could place a whole share as one unit (`:split: false`). A share placed
-that way keeps syncing as one unit, unchanged, and `easy_sync sources` points
-it out. To have it placed folder by folder from now on:
-
-    easy_sync split synology --dry-run   # what it would do
-    easy_sync split synology
-
-This only updates the manifest; no data is copied. The share's folders are
-already sitting at `/Volumes/<drive>/synology/<folder>`, exactly where the new
-per-folder units expect them, so they stay on the drive they're on and the
-next sync just confirms them. Pending deletions and `scrub` baselines carry
-over. A folder that is on the drive but no longer on the NAS becomes an
-ordinary missing folder and goes through the usual grace period. It needs the
-share and the drive mounted, and a leftover `:split:` line in the config is
-ignored.
-
 A sync run
 ----------
 
@@ -191,7 +173,7 @@ A sync run
    That feeds the tripwire (below) and the deletion grace period.
 5. Files gone from the NAS are recorded once their folder copies cleanly (see
    below), and any that have been gone long enough are removed from the drives.
-5. Drive usage and SMART health are recorded, the manifest and config are copied
+6. Drive usage and SMART health are recorded, the manifest and config are copied
    to every mounted drive, and the dashboard is regenerated.
 
 A folder that has outgrown its drive gets a distinct "drive full" status rather
@@ -205,6 +187,106 @@ the NAS is: removed once the folder is verified synced to its new drive and
 it's been that way for `grace_days` (see "Deletions have a grace period"
 below) - it is not deleted immediately, so a bad reassign can still be undone
 before the old copy disappears.
+
+### Powering off between syncs
+
+    easy_sync eject                 # --dry-run lists the drives; name drives to eject just those
+
+Ejects every connected backup drive the way Finder's Eject does, so the
+enclosure can be switched off until the next sync. It refuses while a sync or
+scrub is running, and never forces a drive that something (Spotlight,
+Backblaze) still has open: it names the process, says not to power off yet,
+and exits 1. Each drive is marked as last seen at that moment, and the
+dashboard is regenerated to show them disconnected. With Backblaze installed,
+it ends with the date to connect them again by: Backblaze drops a drive from
+its current backup after 30 days disconnected.
+
+If Backblaze hasn't finished uploading a drive (see Dashboard below), it lists
+those drives and asks `Eject anyway? [y/N]`; anything but `y` ejects nothing.
+`--yes` skips the question, and with no terminal to ask on (a script) it
+refuses unless `--yes` is given.
+
+Dashboard
+---------
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.png">
+  <img alt="The dashboard: a red summary box saying 2 of 112 folders are not backed up, and eight drive tiles showing how full each drive is, its SMART health and when it was last scrubbed" src="docs/images/dashboard-light.png">
+</picture>
+
+*Made-up example data: one drive with stable old wear (blue), one overdue for
+a scrub, one still uploading to Backblaze, one not connected, and two folders
+too big for any drive's free space.*
+
+Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
+is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
+but reallocated, pending or uncorrectable sectors (or an NVMe critical flag) are
+non-zero *and growing*, so the drive is starting to fail. Blue: reallocated
+sectors are non-zero but haven't grown since they were first seen (or since the
+last `verify-drive` checkpoint) - old, stable wear rather than an active
+failure in progress; pending/uncorrectable sectors, media errors, or a critical
+flag always stay amber regardless of trend. Red: the self-test failed. Grey: the
+enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
+the page and a warning on the terminal; blue does not. Health is read on every
+sync and at registration, via `smartctl` on the physical disk, falling back to
+`diskutil`; every read's reallocated-sector count is kept in `smart_checks` so
+growth can be told apart from a number that just sits there.
+
+If an independent full-surface scan (SpinRite, `badblocks`, etc.) confirms a
+flagged drive has zero new defects, `easy_sync verify-drive NAME [--note TEXT]`
+records that as a checkpoint: future checks compare against today's count, not
+whatever it was before, and an active `warning` on reallocated sectors alone
+drops to the stable blue state immediately.
+
+Each tile's "Drive details" opens its serial, model and, when `smartctl`
+reports it, how long the drive has actually been powered on (SMART's
+Power_On_Hours), not calendar age — a 5-year-old drive that sat on a shelf
+can show far fewer hours than one bought last year and run around the clock
+— plus every folder on it. A drive that isn't connected shows when it was
+last seen. With Backblaze Personal installed, that turns amber from 21 days
+and red from 30, with a warning at the top: Backblaze drops a drive from its
+current backup after 30 days disconnected.
+
+Each tile also says "scrubbed N days ago" or "never scrubbed", with an
+overdue badge once it passes `scrub_stale_days` - this never changes the
+tile's colour, which stays SMART-only. A "Scrub findings" section, next to
+Pending deletions, lists every file `scrub` has flagged: which drive, its
+path, and whether it's awaiting refetch, refetched and awaiting re-check, or
+unresolved. With nothing flagged it is a single line.
+
+When Backblaze Personal is installed on this Mac, each tile (and a
+BACKBLAZE column in `status`) says whether that drive's data has reached
+Backblaze: "up to date", "uploading, N files (size) left", or "not scanned
+since the last sync" when Backblaze's zero was counted before the last
+copy onto the drive. The header and `status` sum it up in one line. This
+is the thing to check before powering the drives off, since Backblaze
+uploads from the drives. It reads Backblaze's own state files under
+`/Library/Backblaze.bzpkg/bzdata` (read-only), the same numbers its
+menu-bar icon shows; without Backblaze nothing about it appears.
+
+Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
+shows a rough estimate of time remaining, from what that run has actually
+copied so far — the same estimate either command shows, worded the same way.
+
+The page opens with one answer: a green, amber or red box headed "All 2,692
+folders backed up" (or how many are **not**, because no mounted drive has
+room: that is the number that matters), the last sync (when, how long, what
+it copied), and a line for everything that needs you: folders not backed up,
+a failing drive, folders in a bad state, a sync with failures or none for a
+week, scrub findings, overdue scrubs, and a drive about to drop out of (or
+already out of) Backblaze's current backup. "Nothing needs your attention"
+otherwise. Every run decides all placements before it copies anything, so
+the not-backed-up count is complete even if the copy phase is interrupted.
+
+Then: the drives; "Latest sync", only the folders it actually copied or
+failed on (the rest just confirmed nothing had changed); the folders,
+grouped by share so thousands stay readable (each drive tile shows one line
+per share, and the folders list has a collapsible section per share with
+"Needs attention" and "Not backed up" on top; only those start open); scrub
+findings and pending deletions, one line each when there are none; and
+"Activity", one feed grouped by day: each sync run, folders placed or moved,
+and what was deleted from which drive, with a batch (a first placement, a
+60-folder move, a clean of `.DS_Store` files) shown as one expandable line.
 
 Replacing or upgrading a drive
 ------------------------------
@@ -434,92 +516,63 @@ A 30 TB library over gigabit Ethernet takes three to four days the first time.
   refused with the running PID; a lock left by a dead process is reclaimed
   automatically.
 
-Dashboard
----------
-
-Drive tiles are coloured by **SMART health, never by fullness**: a drive at 97%
-is doing its job. Green: self-test passed, no bad-sector counters. Amber: passed,
-but reallocated, pending or uncorrectable sectors (or an NVMe critical flag) are
-non-zero *and growing*, so the drive is starting to fail. Blue: reallocated
-sectors are non-zero but haven't grown since they were first seen (or since the
-last `verify-drive` checkpoint) - old, stable wear rather than an active
-failure in progress; pending/uncorrectable sectors, media errors, or a critical
-flag always stay amber regardless of trend. Red: the self-test failed. Grey: the
-enclosure doesn't expose SMART. Amber and red also raise an alert at the top of
-the page and a warning on the terminal; blue does not. Health is read on every
-sync and at registration, via `smartctl` on the physical disk, falling back to
-`diskutil`; every read's reallocated-sector count is kept in `smart_checks` so
-growth can be told apart from a number that just sits there.
-
-If an independent full-surface scan (SpinRite, `badblocks`, etc.) confirms a
-flagged drive has zero new defects, `easy_sync verify-drive NAME [--note TEXT]`
-records that as a checkpoint: future checks compare against today's count, not
-whatever it was before, and an active `warning` on reallocated sectors alone
-drops to the stable blue state immediately.
-
-Each tile's "Drive details" opens its serial, model and, when `smartctl`
-reports it, how long the drive has actually been powered on (SMART's
-Power_On_Hours), not calendar age — a 5-year-old drive that sat on a shelf
-can show far fewer hours than one bought last year and run around the clock
-— plus every folder on it. A drive that isn't connected shows when it was
-last seen, amber from 21 days and red from 30: Backblaze Personal drops a
-drive from its current backup after 30 days disconnected.
-
-Each tile also says "scrubbed N days ago" or "never scrubbed", with an
-overdue badge once it passes `scrub_stale_days` - this never changes the
-tile's colour, which stays SMART-only. A "Scrub findings" section, next to
-Pending deletions, lists every file `scrub` has flagged: which drive, its
-path, and whether it's awaiting refetch, refetched and awaiting re-check, or
-unresolved. With nothing flagged it is a single line.
-
-Running `easy_sync dashboard` (or `status`) while a `sync` is in progress
-shows a rough estimate of time remaining, from what that run has actually
-copied so far — the same estimate either command shows, worded the same way.
-
-The page opens with one answer: a green, amber or red box headed "All 2,692
-folders backed up" (or how many are **not**, because no mounted drive has
-room: that is the number that matters), the last sync (when, how long, what
-it copied), and a line for everything that needs you: folders not backed up,
-a failing drive, folders in a bad state, a sync with failures or none for a
-week, scrub findings, overdue scrubs, and a drive about to drop out of (or
-already out of) Backblaze's current backup. "Nothing needs your attention"
-otherwise. Every run decides all placements before it copies anything, so
-the not-backed-up count is complete even if the copy phase is interrupted.
-
-Then: the drives; "Latest sync", only the folders it actually copied or
-failed on (the rest just confirmed nothing had changed); the folders,
-grouped by share so thousands stay readable (each drive tile shows one line
-per share, and the folders list has a collapsible section per share with
-"Needs attention" and "Not backed up" on top; only those start open); scrub
-findings and pending deletions, one line each when there are none; and
-"Activity", one feed grouped by day: each sync run, folders placed or moved,
-and what was deleted from which drive, with a batch (a first placement, a
-60-folder move, a clean of `.DS_Store` files) shown as one expandable line.
-
 Commands
 --------
 
-| command | does |
-|---|---|
-| `add-source PATH` | add a NAS share; each of its folders is placed on its own |
-| `remove-source PATH` | stop backing up a share (drives untouched) |
-| `sources` | list the configured shares and whether each is mounted |
-| `sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]` | mirror the shares onto the drives; `--accept-changes` lets through a bulk change the tripwire stopped (this run only) |
-| `register-drive MOUNT [--name N] [--serial S]` | add a mounted drive |
-| `replace-drive OLD [--to NEW] [--copy]` | retire a drive, handing its folders to NEW (or to the next sync) |
-| `forget-drive NAME [...] [--dry-run]` | delete a retired drive and all its history (placements, sync runs, checksums, benchmarks, SMART checks) from the manifest; for test drives. Touches no drive |
-| `restore FOLDER\|SHARE [...] \| --all [--dry-run]` | copy folders back onto the NAS from wherever they live (reverse of `sync`; never deletes) |
-| `plan [SHARE ...] [--largest-drive 8tb]` | measure each share (or just those named) and check every folder fits a drive |
-| `status [--all] [--smart]` | whether a sync is running (and for how long), drives, health and folders, in the terminal. Health is the last sync's SMART reading (an `n/a` says when it was taken); `--smart` reads the mounted drives now, without saving it |
-| `pending` | deletion candidates and their expiry dates |
-| `clean [--dry-run]` | remove excluded junk from the drives now, without waiting |
-| `scrub [NAME ...] \| --all [--jobs N] [--for DURATION] [--dry-run]` | read tracked files back off a drive and check them against their baseline; catches bit rot rsync can't see |
-| `benchmark [NAME ...] \| --all [--size SIZE] [--history]` | time a drive's sequential write and read, compared with its own last 25 runs; flags one that has slowed down |
-| `history [FOLDER]` | where a folder has lived |
-| `reassign FOLDER\|SHARE DRIVE [--copy] [--note TEXT] [--force]` | move a folder, or every folder of a share, to another drive; `--copy` copies it drive-to-drive now instead of the next sync pulling it from the NAS; refuses a drive without room unless `--force` |
-| `split SHARE [--dry-run]` | place a share that 2.0 placed whole folder by folder, on the drive it is already on; copies nothing |
-| `rename-drive OLD NEW` | relabel a drive, or swap two drives' names; the manifest only, never the volume |
-| `dashboard` | regenerate the HTML report only |
+```
+Set up, once:
+  add-source PATH             add a NAS share; each of its folders is placed on its own
+  register-drive MOUNT [--name N] [--serial S]
+                              add a mounted drive
+  plan [SHARE ...] [--largest-drive 8tb]
+                              measure each share (or just those named) and check every folder fits a
+                              drive
+
+Back up:
+  sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]
+                              mirror the shares onto the drives; --accept-changes lets through a
+                              bulk change the tripwire stopped (this run only)
+  eject [NAME ...] [--dry-run] [--yes]
+                              eject every connected backup drive (or just those named) so the
+                              enclosure can be powered off; refuses while a run is in progress,
+                              asks first if Backblaze hasn't finished one (--yes: don't ask)
+  status [--all] [--smart]    whether a sync is running (and for how long), drives, health and
+                              folders, in the terminal. Health is the last sync's SMART reading (an
+                              n/a says when it was taken); --smart reads the mounted drives now,
+                              without saving it
+  dashboard                   regenerate the HTML report only
+
+Maintain:
+  pending                     deletion candidates and their expiry dates
+  clean [--dry-run]           remove excluded junk from the drives now, without waiting
+  scrub [NAME ...] | --all [--jobs N] [--for DURATION] [--dry-run]
+                              read tracked files back off a drive and check them against their
+                              baseline; catches bit rot rsync can't see
+  benchmark [NAME ...] | --all [--size SIZE] [--history]
+                              time a drive's sequential write and read, compared with its own last
+                              25 runs; flags one that has slowed down
+  history [FOLDER]            where a folder has lived
+  reassign FOLDER|SHARE DRIVE [--copy] [--note TEXT] [--force]
+                              move a folder, or every folder of a share, to another drive; --copy
+                              copies it drive-to-drive now instead of the next sync pulling it from
+                              the NAS; refuses a drive without room unless --force
+  rename-drive OLD NEW        relabel a drive, or swap two drives' names; the manifest only, never
+                              the volume
+  replace-drive OLD [--to NEW] [--copy]
+                              retire a drive, handing its folders to NEW (or to the next sync)
+  forget-drive NAME [...] [--dry-run]
+                              delete a retired drive and all its history (placements, sync runs,
+                              checksums, benchmarks, SMART checks) from the manifest; for test
+                              drives. Touches no drive
+  verify-drive NAME [--note TEXT]
+                              record that a full-surface scan (SpinRite etc.) found no new defects;
+                              resets the reallocated-sector baseline
+  restore FOLDER|SHARE [...] | --all [--dry-run]
+                              copy folders back onto the NAS from wherever they live (reverse of
+                              sync; never deletes)
+  remove-source PATH          stop backing up a share (drives untouched)
+  sources                     list the configured shares and whether each is mounted
+```
 
 `--config PATH` goes before the command.
 
@@ -544,7 +597,7 @@ SQLite. Timestamps are ISO 8601 UTC, sizes are bytes.
 | `drives` | serial (PK), name, capacity, added date, volume UUID, model, last seen usage, SMART status/detail/power-on hours, retired date |
 | `smart_checks` | one row per SMART read: drive serial, timestamp, reallocated-sector count, whether it's a manually verified checkpoint |
 | `folders` | folder path (PK), drive serial, size, assigned and last-synced times, last status, scope (`tree`, or `root` for a share's loose top-level files) |
-| `placement_history` | every `assigned`, `reassigned`, `split` and `removed` event |
+| `placement_history` | every `assigned`, `reassigned` and `removed` event (older rows can say `split`, from a since-removed command) |
 | `sync_runs` | one row per folder synced: exit status, `--stats` byte counts, and the start time of the `sync` run it belonged to |
 | `pending_deletions` | paths gone from the NAS (cause `missing_on_nas`, first seen and runs confirmed) or a folder's old drive after a reassign (cause `reassigned`) |
 | `source_inventory` | every folder seen on the NAS last run: placed, not backed up, or empty |

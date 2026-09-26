@@ -158,7 +158,7 @@
 <%- end -%>
 <%- if drives.any? -%>
     <p class="line muted"><%= bytes(total_capacity_bytes) %> total · <%= bytes(total_free_bytes) %> free ·
-      <%= drives.size %> drive<%= 's' if drives.size != 1 %>, <%= drives.count(&:mounted) %> connected · updated <%= relative_when(generated_at.utc.iso8601) %></p>
+      <%= drives.size %> drive<%= 's' if drives.size != 1 %>, <%= drives.count(&:mounted) %> connected<%- if uploads -%> · <%= h backblaze_summary(uploads) %><%- end -%> · updated <%= relative_when(generated_at.utc.iso8601) %></p>
 <%- end -%>
 <%- if issues.empty? -%>
     <p class="line muted">Nothing needs your attention.</p>
@@ -216,6 +216,9 @@
     <%- end -%>
       <div class="health <%= d.health %>" title="<%= h d.drive.smart_detail %>"><%= h health_line(d) %><%- if health_detail_shown?(d) -%><small><%= h d.drive.smart_detail %></small><%- end -%></div>
       <div class="sub muted"><%= h scrub_status_line(d) %><%- if scrub_overdue?(d) -%> <span class="badge warning">overdue</span><%- end -%></div>
+    <%- if uploads && (upload = uploads[d.drive.serial_number]) -%>
+      <div class="sub<%= ' muted' if upload.done? %>">Backblaze: <%= h upload.label %></div>
+    <%- end -%>
     <%- unless d.folders.empty? -%>
       <ul class="shares">
       <%- by_share(d.folders).each do |share, fs| -%>

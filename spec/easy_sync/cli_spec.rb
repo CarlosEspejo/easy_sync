@@ -20,8 +20,8 @@ RSpec.describe EasySync::CLI do
 
   let(:keep_awake) { instance_double(EasySync::Jbod::KeepAwake, start: false) }
 
-  def cli(*args, clock: Time)
-    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake, clock: clock)
+  def cli(*args, clock: Time, stdin: StringIO.new)
+    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake, clock: clock, stdin: stdin)
   end
 
   def manifest = EasySync::Jbod::Manifest.open(manifest_path)
@@ -266,6 +266,18 @@ RSpec.describe EasySync::CLI do
       m.close
       expect(cli('status').run).to eq(0)
       expect(out.string).to include("n/a (as of #{Time.parse('2026-09-24T03:25:29Z').localtime.strftime('%Y-%m-%d %H:%M')})")
+    end
+
+    it "shows whether Backblaze has uploaded each drive, and nothing about it when it isn't installed" do
+      expect(cli('status').run).to eq(0)
+      expect(out.string).not_to include('BACKBLAZE', 'Backblaze')
+
+      fake_backblaze({ File.join(mount_root, 'backup-01-3tb') => { files: 0, bytes: 0, scanned_at: Time.now },
+                       File.join(mount_root, 'backup-02-6tb') => { files: 12, bytes: 4 * 1000**3, scanned_at: Time.now } })
+      out.truncate(0); out.rewind
+      expect(cli('status').run).to eq(0)
+      expect(out.string).to include('BACKBLAZE', 'up to date', 'uploading, 12 files (3.7 GB) left',
+                                    'Backblaze: 1 of 2 drives not up to date yet; last backup pass finished')
     end
 
     describe '--smart' do
@@ -1285,38 +1297,6 @@ RSpec.describe EasySync::CLI do
     end
   end
 
-  describe 'split' do
-    let(:nas) { File.join(temp_dir, 'nas') }
-    let(:vol) { make_dirs(mount_root, 'backup-01-3tb').first }
-
-    before do
-      m = manifest
-      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
-      m.assign_folder('nas', 'S1')
-      m.close
-      write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: 'S1', friendly_name: 'backup-01-3tb' }.to_json)
-      write_file(File.join(nas, 'Movies', 'a.mkv'))
-      write_file(File.join(vol, 'nas', 'Movies', 'a.mkv'))
-      fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
-      fake_shell.on('du', output: ->(argv) { "4\t#{argv.last}\n" })
-    end
-
-    it 'converts a share placed whole, with a dry run that changes nothing first' do
-      expect(cli('split', 'nas', '--dry-run').run).to eq(0)
-      expect(out.string).to include('Would split nas on backup-01-3tb into 1 folder')
-      expect(manifest.folder('nas').scope).to eq('tree')
-
-      expect(cli('split', 'nas').run).to eq(0)
-      expect(manifest.folders.map { |f| [f.folder_path, f.scope] }).to eq([%w[nas root], ['nas/Movies', 'tree']])
-      expect(fake_shell.calls_to('rsync')).to be_empty
-    end
-
-    it 'needs a share name' do
-      expect(cli('split').run).to eq(1)
-      expect(err.string).to include('split needs a share name')
-    end
-  end
-
   describe 'add-source / remove-source / sources' do
     let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
 
@@ -1329,18 +1309,6 @@ RSpec.describe EasySync::CLI do
       out.truncate(0); out.rewind
       cli('sources').run
       expect(out.string).to include(tv, 'mounted')
-      expect(out.string).not_to include('placed whole')
-    end
-
-    it 'points out a share still placed whole, and how to split it' do
-      cli('add-source', tv).run
-      m = manifest
-      m.register_drive(serial_number: 'S1', friendly_name: 'backup-01-3tb', capacity_bytes: 3 * TB)
-      m.assign_folder('tv', 'S1')
-      m.close
-      out.truncate(0); out.rewind
-      cli('sources').run
-      expect(out.string).to include('placed whole; `easy_sync split tv` places its folders one by one')
     end
 
     it 'refuses an unmounted or duplicate share, and removes one without touching drives' do
@@ -1529,6 +1497,146 @@ RSpec.describe EasySync::CLI do
     it 'fails cleanly when --config has no path' do
       expect(described_class.new(['--config'], out: out, err: err, shell: fake_shell).run).to eq(1)
       expect(err.string).to include('--config needs a path')
+    end
+  end
+
+  describe 'eject' do
+    let(:clock) { double(now: Time.utc(2026, 9, 26, 12, 0)) }
+    let(:lock_path) { File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock') }
+    let(:disks) { { 'backup-01-3tb' => 'disk4', 'backup-02-6tb' => 'disk6', 'backup-03-8tb' => 'disk8' } }
+
+    before do
+      m = manifest
+      disks.each_key.with_index do |name, i|
+        m.register_drive(serial_number: "S#{i + 1}", friendly_name: name, capacity_bytes: 3 * TB)
+        m.update_drive_usage("S#{i + 1}", used_bytes: 1, free_bytes: 1, seen_at: '2026-09-01T00:00:00Z')
+      end
+      m.close
+      # backup-01 and backup-02 are connected; backup-03 is not.
+      %w[backup-01-3tb backup-02-6tb].each_with_index do |name, i|
+        vol = make_dirs(mount_root, name).first
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: "S#{i + 1}", friendly_name: name }.to_json)
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: #{disks[name].succ}\n")
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', disks[name].succ] },
+                      output: "APFS Physical Store: #{disks[name]}s2\n")
+      end
+      fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
+      # A real eject makes the volume vanish from /Volumes.
+      fake_shell.on(->(argv) { argv[0, 2] == %w[diskutil eject] }, output: lambda { |argv|
+        FileUtils.rm_rf(File.join(mount_root, disks.key(argv.last)))
+        "Disk #{argv.last} ejected\n"
+      })
+    end
+
+    def seen(name) = manifest.drive_by_name(name).last_seen_at
+
+    it 'ejects the physical disk under every connected drive and, with Backblaze, says when to connect them again' do
+      fake_backblaze({})
+      expect(cli('eject', clock: clock).run).to eq(0)
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to eq([%w[diskutil eject disk4], %w[diskutil eject disk6]])
+      expect(out.string).to include('Ejected backup-01-3tb (disk4)', 'Ejected backup-02-6tb (disk6)',
+                                    'All 2 drives are ejected; it is safe to power off the enclosure.',
+                                    'Connect again by 2026-10-26: Backblaze drops a drive')
+      expect(seen('backup-01-3tb')).to be > '2026-09-01T00:00:00Z'
+      expect(seen('backup-03-8tb')).to eq('2026-09-01T00:00:00Z')   # not connected, so not seen
+      expect(File.read(File.join(temp_dir, 'dashboard.html'))).to include('not connected')
+      expect(File).not_to exist(lock_path)
+    end
+
+    it 'ejects only the drives named, and says so for a name it cannot eject' do
+      expect(cli('eject', 'backup-02-6tb').run).to eq(0)
+      expect(out.string).to include('Ejected backup-02-6tb', 'The drive is ejected')
+      expect(out.string).not_to include('Connect again', 'Backblaze')   # not installed here
+      expect(out.string).not_to include('backup-01-3tb')
+
+      expect(cli('eject', 'backup-03-8tb').run).to eq(1)
+      expect(err.string).to include('backup-03-8tb is not connected')
+      expect(cli('eject', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+    end
+
+    it 'keeps the enclosure powered while a drive is still in use, naming what holds it' do
+      fake_shell.on(->(argv) { argv == %w[diskutil eject disk6] }, status: 1, output: <<~OUT)
+        Unmount of disk6 failed: at least one volume could not be unmounted
+        Unmount was dissented by PID 812 (/Library/Backblaze.bzpkg/bztransmit)
+        Dissenter parent PPID 1 (/sbin/launchd)
+      OUT
+      expect(cli('eject').run).to eq(1)
+      expect(out.string).to include('Ejected backup-01-3tb (disk4)',
+                                    'Could not eject backup-02-6tb: in use by pid 812 (/Library/Backblaze.bzpkg/bztransmit)',
+                                    'backup-02-6tb still connected: do not power off yet.')
+      expect(out.string).not_to include('safe to power off', 'Connect again')
+    end
+
+    it 'refuses while a sync is running' do
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nsync\n")
+      expect(cli('eject').run).to eq(1)
+      expect(err.string).to include("sync is running (pid #{Process.pid}); ejecting now would cut it off")
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to be_empty
+    end
+
+    it 'with --dry-run lists the drives and changes nothing' do
+      expect(cli('eject', '--dry-run').run).to eq(0)
+      expect(out.string).to include('Would eject backup-01-3tb', 'Would eject backup-02-6tb', 'Dry run: nothing ejected.')
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to be_empty
+      expect(seen('backup-01-3tb')).to eq('2026-09-01T00:00:00Z')
+      expect(File).not_to exist(File.join(temp_dir, 'dashboard.html'))
+    end
+
+    describe 'when Backblaze has not finished uploading a drive' do
+      def terminal(answer) = StringIO.new(answer).tap { |io| io.define_singleton_method(:tty?) { true } }
+      def ejected = fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }.map(&:last)
+
+      before do
+        fake_backblaze({ File.join(mount_root, 'backup-01-3tb') => { files: 0, bytes: 0, scanned_at: Time.now },
+                         File.join(mount_root, 'backup-02-6tb') => { files: 1204, bytes: 38 * 1000**3, scanned_at: Time.now } })
+      end
+
+      it 'names it and ejects nothing unless told yes (no is the default)' do
+        expect(cli('eject', stdin: terminal("\n")).run).to eq(1)
+        expect(out.string).to include("Backblaze hasn't finished with this drive:",
+                                      'backup-02-6tb    uploading, 1,204 files (35.4 GB) left',
+                                      'Eject anyway? [y/N] ', 'Nothing ejected.')
+        expect(out.string).not_to include('backup-01-3tb    ')   # up to date: not listed
+        expect(ejected).to be_empty
+      end
+
+      it 'ejects everything on y' do
+        expect(cli('eject', stdin: terminal("y\n")).run).to eq(0)
+        expect(ejected).to eq(%w[disk4 disk6])
+        expect(out.string).to include('All 2 drives are ejected')
+      end
+
+      it 'with --yes warns but does not ask' do
+        expect(cli('eject', '--yes').run).to eq(0)
+        expect(out.string).to include("Backblaze hasn't finished with this drive:")
+        expect(out.string).not_to include('Eject anyway?')
+        expect(ejected).to eq(%w[disk4 disk6])
+      end
+
+      it 'refuses without a terminal to ask on, pointing at --yes' do
+        expect(cli('eject').run).to eq(1)
+        expect(err.string).to include('no terminal to confirm on. Run it again with --yes')
+        expect(ejected).to be_empty
+      end
+
+      it 'does not ask when only an up-to-date drive is being ejected' do
+        expect(cli('eject', 'backup-01-3tb').run).to eq(0)
+        expect(out.string).not_to include('Backblaze hasn')
+        expect(ejected).to eq(%w[disk4])
+      end
+
+      it 'shows the warning in a dry run too' do
+        expect(cli('eject', '--dry-run').run).to eq(0)
+        expect(out.string).to include('Would eject backup-02-6tb', "Backblaze hasn't finished with this drive:")
+      end
+    end
+
+    it 'says so when no drive is connected' do
+      disks.each_key { |name| FileUtils.rm_rf(File.join(mount_root, name)) }
+      expect(cli('eject').run).to eq(0)
+      expect(out.string).to include('No easy_sync drive is connected; nothing to eject.')
     end
   end
 

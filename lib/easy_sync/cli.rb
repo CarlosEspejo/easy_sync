@@ -16,6 +16,8 @@ module EasySync
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]',
          'mirror the shares onto the drives; --accept-changes lets through a bulk change the tripwire stopped (this run only)'],
+        ['eject [NAME ...] [--dry-run] [--yes]', 'eject every connected backup drive (or just the ones named) so the enclosure can be ' \
+                                                 "powered off; asks first if Backblaze hasn't finished uploading one (--yes: don't ask)"],
         ['status [--all] [--smart]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder; ' \
                                      '--smart reads SMART from the mounted drives now instead of showing the last sync\'s reading'],
         ['dashboard', 'regenerate the HTML report']
@@ -30,7 +32,6 @@ module EasySync
         ['history [FOLDER]', 'where a folder has lived'],
         ['reassign FOLDER|SHARE DRIVE_NAME [--copy] [--note TEXT] [--force]',
          'move a folder (or every folder of a share) to another drive; --copy copies it drive-to-drive now instead of the next sync pulling it from the NAS'],
-        ['split SHARE [--dry-run]', 'place the folders of a share that was placed whole one by one, on the drive it is already on; copies nothing'],
         ['rename-drive OLD_NAME NEW_NAME', "relabel a drive, or swap two drives' names; touches no data"],
         ['replace-drive OLD_NAME [--to NEW_NAME] [--copy]', 'retire a drive; hand its folders to NEW, or let the next sync re-place them'],
         ['forget-drive NAME [...] [--dry-run]', 'delete a retired drive and all its history from the manifest (for test drives); touches no data'],
@@ -57,8 +58,9 @@ module EasySync
     end
 
     def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV,
-                   keep_awake: Jbod::KeepAwake.new, clock: Time)
+                   keep_awake: Jbod::KeepAwake.new, clock: Time, stdin: $stdin)
       @argv = argv.dup
+      @stdin = stdin
       @out = out
       @err = err
       @shell = shell
@@ -79,13 +81,13 @@ module EasySync
       when 'remove-source' then remove_source(@argv)
       when 'sources' then list_sources
       when 'sync' then sync(@argv)
+      when 'eject' then return eject(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)
       when 'restore' then restore(@argv)
       when 'status' then status(@argv)
       when 'history' then history(@argv.first)
       when 'reassign' then reassign(@argv)
-      when 'split' then split(@argv)
       when 'rename-drive' then rename_drive(@argv)
       when 'forget-drive' then forget_drive(@argv)
       when 'verify-drive' then verify_drive(@argv)
@@ -498,10 +500,7 @@ module EasySync
       end
       entries.each do |e|
         state = Dir.exist?(e[:path]) && !Dir.empty?(e[:path]) ? 'mounted' : 'NOT MOUNTED'
-        name = File.basename(e[:path])
-        whole = manifest.folder(name)
-        note = whole && !whole.root? ? "  placed whole; `easy_sync split #{name}` places its folders one by one" : ''
-        @out.puts "  #{e[:path].ljust(32)} #{state}#{note}"
+        @out.puts "  #{e[:path].ljust(32)} #{state}"
       end
     end
 
@@ -622,20 +621,6 @@ module EasySync
       raise Error, "copy failed (rsync exit #{result.status}); nothing was changed in the manifest" unless result.success?
     end
 
-    # Converts a share placed whole into folders placed one by one, on the
-    # drive that already holds it (see Jbod::Splitter). A dry run only reads.
-    def split(args)
-      opts = { dry_run: false }
-      OptionParser.new do |o|
-        o.on('--dry-run', 'Show what would change without writing anything') { opts[:dry_run] = true }
-      end.parse!(args)
-      share = args.first or raise Error, "split needs a share name, e.g. synology\n\n#{USAGE}"
-
-      splitter = Jbod::Splitter.new(settings, manifest: manifest, volume_info: volume_info, shell: @shell, out: @out)
-      lock = opts[:dry_run] ? ->(**, &blk) { blk.call } : Jbod::RunLock.new(settings[:lock_path]).method(:acquire)
-      lock.call(kind: 'split') { splitter.run(share, dry_run: opts[:dry_run]) }
-    end
-
     # The reverse of `sync`: copies folders from their drives back onto the
     # NAS. Never deletes anything already on the NAS. A dry run only reads
     # (rsync --dry-run plus no directory creation), so it may run alongside a
@@ -753,14 +738,18 @@ module EasySync
       mounted = volume_info.mounted_drives(drives).to_h { |m| [m.serial_number, m] }
       @out.puts 'Drives:'
       unless drives.empty?
+        backblaze = Jbod::Backblaze.read
+        uploads = backblaze&.drive_states(drives, mounted: mounted, mount_root: settings[:mount_root],
+                                                  last_copied_at: manifest.last_copied_at)
         rows = drives.map do |d|
           m = mounted[d.serial_number]
           [d.friendly_name, d.branded_model ? "#{d.serial_number} · #{d.branded_model}" : d.serial_number,
            m ? Jbod::Placement.format_bytes(m.free_bytes) : '—',
            m ? Jbod::Placement.format_bytes(m.used_bytes) : '—',
-           m && live_smart ? live_smart_summary(m) : smart_summary(d), drive_note(d, m)]
+           m && live_smart ? live_smart_summary(m) : smart_summary(d),
+           *(uploads ? [uploads[d.serial_number].label] : []), drive_note(d, m)]
         end
-        print_table(%w[DRIVE SERIAL FREE USED SMART] + [''], rows, right: [2, 3])
+        print_table(%w[DRIVE SERIAL FREE USED SMART] + (uploads ? ['BACKBLAZE'] : []) + [''], rows, right: [2, 3])
         if live_smart
           @out.puts
           @out.puts '  SMART read just now from the mounted drives (not saved); unmounted drives show their last reading.'
@@ -769,6 +758,7 @@ module EasySync
         total_free = drives.sum { |d| (mounted[d.serial_number]&.free_bytes || d.last_free_bytes).to_i }
         @out.puts
         @out.puts "Total: #{bytes(total_capacity)} capacity, #{bytes(total_free)} free right now"
+        print_backblaze_summary(backblaze, uploads) if uploads
       end
       retired = manifest.drives(include_retired: true).select(&:retired?).sort_by(&:retired_at).reverse
       return if retired.empty?
@@ -779,6 +769,16 @@ module EasySync
       line += " · #{hidden} more (see `status --all`)" if hidden.positive?
       @out.puts if drives.any?
       @out.puts line
+    end
+
+    # One line answering "can I power the drives off?": Backblaze uploads
+    # from the drives, so anything not up to date only reaches it the next
+    # time that drive is connected.
+    def print_backblaze_summary(backblaze, uploads)
+      pending = uploads.values.count { |s| !s.done? }
+      verdict = pending.zero? ? "every drive's data is uploaded" : "#{pending} of #{uploads.size} drives not up to date yet"
+      completed = backblaze.last_completed_at ? "; last backup pass finished #{local_time(backblaze.last_completed_at.iso8601, '%Y-%m-%d %H:%M')}" : ''
+      @out.puts "Backblaze: #{verdict}#{completed}"
     end
 
     def print_table(header, rows, right: [])
@@ -952,8 +952,7 @@ module EasySync
     end
 
     # A folder_path names that one folder. A share name (which is also the
-    # key of the share's root-files unit) names every folder of the share,
-    # unless the share is still placed whole.
+    # key of the share's root-files unit) names every folder of the share.
     def reassign_targets(name)
       exact = manifest.folder(name)
       return [exact] if exact && !exact.root?
@@ -1118,11 +1117,130 @@ module EasySync
     end
 
     def dashboard
+      @out.puts "Dashboard written to #{write_dashboard}"
+    end
+
+    def write_dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
       run = Jbod::RunLock.new(settings[:lock_path]).status
-      path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
-                            .write(settings[:dashboard_path], mounted: mounted, running: run)
-      @out.puts "Dashboard written to #{path}"
+      Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days],
+                                    mount_root: settings[:mount_root])
+                     .write(settings[:dashboard_path], mounted: mounted, running: run)
+    end
+
+    # Ejects every connected easy_sync drive (or just the ones named) so the
+    # enclosure can be powered off between syncs. Refuses while a sync, scrub
+    # or other run holds the lock, since ejecting would cut it off. Each drive
+    # is marked last seen now, which starts the dashboard's Backblaze
+    # 30-day countdown from the real disconnect rather than the last sync.
+    # Returns 1 if any drive stayed mounted: the enclosure is not safe to
+    # power off yet.
+    def eject(args)
+      opts = { dry_run: false, yes: false }
+      OptionParser.new do |o|
+        o.on('--dry-run', 'Show which drives would be ejected') { opts[:dry_run] = true }
+        o.on('-y', '--yes', "Eject even if Backblaze hasn't finished uploading a drive") { opts[:yes] = true }
+      end.parse!(args)
+      drives = drives_to_eject(args)
+      if drives.empty?
+        @out.puts 'No easy_sync drive is connected; nothing to eject.'
+        return 0
+      end
+      behind = backblaze_behind(drives)
+      if opts[:dry_run]
+        drives.each { |m| @out.puts "Would eject #{m.friendly_name} (#{m.mount_point})" }
+        warn_backblaze_behind(behind)
+        @out.puts 'Dry run: nothing ejected.'
+        return 0
+      end
+
+      lock = Jbod::RunLock.new(settings[:lock_path])
+      if (run = lock.status)
+        raise Error, "#{run.kind} is running (pid #{run.pid}); ejecting now would cut it off. " \
+                     'Let it finish (or stop it with Ctrl-C), then eject.'
+      end
+      unless behind.empty?
+        warn_backblaze_behind(behind)
+        return 1 unless opts[:yes] || confirm_eject
+      end
+
+      failed = lock.acquire(kind: 'eject') { drives.reject { |m| eject_one(m) } }
+      write_dashboard
+      report_ejected(drives.size - failed.size, failed)
+    end
+
+    # [[MountedDrive, Backblaze::DriveState], ...] for the drives Backblaze
+    # has not finished with. A drive Backblaze doesn't back up at all
+    # (:unknown) is not "behind", and without Backblaze nothing is.
+    def backblaze_behind(drives)
+      backblaze = Jbod::Backblaze.read or return []
+
+      copied = manifest.last_copied_at
+      drives.filter_map do |m|
+        state = backblaze.drive_state(m.mount_point, copied[m.serial_number])
+        [m, state] if %i[uploading waiting].include?(state.state)
+      end
+    end
+
+    def warn_backblaze_behind(behind)
+      return if behind.empty?
+
+      @out.puts "Backblaze hasn't finished with #{behind.size == 1 ? 'this drive' : "these #{behind.size} drives"}:"
+      behind.each { |m, state| @out.puts "  #{m.friendly_name.ljust(16)} #{state.label}" }
+      @out.puts 'Powered off, that data stays out of Backblaze until the drive is connected again.'
+    end
+
+    # Asks before ejecting a drive Backblaze is still uploading; no (the
+    # default) ejects nothing. Without a terminal to ask on it refuses, and
+    # --yes is the way to say yes up front.
+    def confirm_eject
+      raise Error, 'not ejecting: no terminal to confirm on. Run it again with --yes to eject anyway.' unless @stdin.tty?
+
+      @out.print 'Eject anyway? [y/N] '
+      @out.flush
+      return true if @stdin.gets.to_s.strip.match?(/\Ay(es)?\z/i)
+
+      @out.puts 'Nothing ejected.'
+      false
+    end
+
+    def drives_to_eject(names)
+      registered = manifest.drives(include_retired: true)
+      mounted = volume_info.mounted_drives(registered)
+      return mounted if names.empty?
+
+      names.map do |name|
+        registered.find { |d| d.friendly_name == name } or raise Error, "no drive named #{name}"
+        mounted.find { |m| m.friendly_name == name } or raise Error, "#{name} is not connected"
+      end
+    end
+
+    def eject_one(mounted)
+      manifest.update_drive_usage(mounted.serial_number, used_bytes: mounted.used_bytes, free_bytes: mounted.free_bytes,
+                                                         capacity_bytes: mounted.capacity_bytes)
+      result = volume_info.eject(mounted.mount_point)
+      if result.ok
+        @out.puts "Ejected #{mounted.friendly_name} (#{result.disk})"
+      else
+        reason = result.blocker ? "in use by pid #{result.blocker}" : result.message
+        @out.puts "Could not eject #{mounted.friendly_name}: #{reason}"
+      end
+      result.ok
+    end
+
+    def report_ejected(ejected, failed)
+      unless failed.empty?
+        @out.puts "#{failed.map(&:friendly_name).join(', ')} still connected: do not power off yet. " \
+                  'Close whatever is using it and run `easy_sync eject` again.'
+        return 1
+      end
+      @out.puts "#{ejected == 1 ? 'The drive is' : "All #{ejected} drives are"} ejected; it is safe to power off the enclosure."
+      return 0 unless Jbod::Backblaze.read
+
+      back_by = (@clock.now + Jbod::Dashboard::BACKBLAZE_DROP_DAYS * 86_400).strftime('%Y-%m-%d')
+      @out.puts "Connect again by #{back_by}: Backblaze drops a drive from its current backup after " \
+                "#{Jbod::Dashboard::BACKBLAZE_DROP_DAYS} days disconnected."
+      0
     end
   end
 end

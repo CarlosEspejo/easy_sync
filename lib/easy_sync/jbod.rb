@@ -15,13 +15,13 @@ require_relative 'jbod/keep_awake'
 require_relative 'jbod/planner'
 require_relative 'jbod/run_log'
 require_relative 'jbod/sync_eta'
+require_relative 'jbod/backblaze'
 require_relative 'jbod/dashboard'
 require_relative 'jbod/page_cache'
 require_relative 'jbod/scrubber'
 require_relative 'jbod/scrub_pool'
 require_relative 'jbod/benchmarker'
 require_relative 'jbod/runner'
-require_relative 'jbod/splitter'
 
 module EasySync
   # Folder-level mirroring from a NAS share onto independently mounted drives.
