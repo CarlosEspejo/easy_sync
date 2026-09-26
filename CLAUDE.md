@@ -113,9 +113,18 @@ visible on real hardware. Record what you learn in docs/hardware-notes.md.
 - The tool writes its own config (`Config#save`): `add-source` and
   `remove-source` rewrite `~/.easy_sync/config.yml`, preserving comments and
   order. A user never has to hand-edit YAML.
-- Release: `bundle exec rake release` builds, tags `v2.0.0`, pushes the tag
-  and publishes. Until it has run, `gem install easy_sync` gets 0.0.5
-  (`git tag -l v2.0.0` tells you which). Date the CHANGELOG entry first.
+- Versions: `main` always carries the *next* version as a pre-release
+  (`2.1.0.pre`), so a local `rake install` can never share a name with a
+  published gem. That happened once: a locally built `2.0.0` stayed in
+  RubyGems' cache, and `gem install easy_sync` later installed that stale
+  build instead of downloading the published one. Day to day, run
+  `bundle exec bin/easy_sync ...` from the repo instead of installing.
+- Release (2.0.0 shipped 2026-09-26): in one PR, drop `.pre` from
+  `lib/easy_sync/version.rb` and date its CHANGELOG entry; merge; then
+  `bundle exec rake release` (builds, tags `vX.Y.Z`, pushes the tag,
+  publishes; needs a push-scoped RubyGems API key from `gem signin`, run in a
+  real terminal). Add a GitHub release from the tag with the CHANGELOG entry
+  as notes, then bump `main` to the next `.pre`.
 
 ## Where things are documented
 
