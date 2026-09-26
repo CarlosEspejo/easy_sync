@@ -2,7 +2,7 @@
 
 Major features only, per released version. Commit history has the rest.
 
-## 2.0.0 (unreleased)
+## 2.0.0 (2026-09-26)
 
 A rewrite. easy_sync no longer takes snapshots of one folder: it mirrors NAS
 shares onto a set of independent drives (JBOD) and tracks where every folder
