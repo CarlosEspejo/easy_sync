@@ -1071,7 +1071,7 @@ RSpec.describe EasySync::CLI do
       cli('scrub').run
       expect(Dir.glob(File.join(temp_dir, 'logs', 'scrub-*.log')).size).to eq(1)
       expect(Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log'))).to be_empty
-      expect(File.read(Dir.glob(File.join(temp_dir, 'logs', 'scrub-*.log')).first)).to include('easy_sync 2.0.0 scrub')
+      expect(File.read(Dir.glob(File.join(temp_dir, 'logs', 'scrub-*.log')).first)).to include("easy_sync #{EasySync::VERSION} scrub")
     end
 
     it 'says the scrub stopped early, not that it finished, when the drive disappears mid-run' do
@@ -1741,8 +1741,8 @@ RSpec.describe EasySync::CLI do
     cli('sync').run   # fails fast: the configured source is not mounted
     logs = Dir.glob(File.join(temp_dir, 'logs', 'sync-*.log'))
     expect(logs.size).to eq(1)
-    expect(File.read(logs.first)).to include('easy_sync 2.0.0', 'rsync 3.5.0')
-    expect(out.string).to include('easy_sync 2.0.0')
+    expect(File.read(logs.first)).to include("easy_sync #{EasySync::VERSION}", 'rsync 3.5.0')
+    expect(out.string).to include("easy_sync #{EasySync::VERSION}")
   end
 
   it 'turns Ctrl-C into a calm message and exit 130, releasing the lock' do
