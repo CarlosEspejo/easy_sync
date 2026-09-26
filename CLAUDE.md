@@ -61,8 +61,10 @@ README.md is the user-facing truth; this file is for working on the code.
   minus its partition suffix) on an encrypted APFS USB drive prints
   `Disk disk4 ejected`, exits 0, and the volume leaves `/Volumes` and the
   disk leaves `diskutil list` (jbod-test-1/2, 2026-09-26). Getting it back
-  takes a replug. The "dissented by PID" failure `easy_sync eject` parses
-  has not been seen on real hardware yet.
+  takes a replug. With a file held open on the volume, the eject fails and
+  macOS names the holder ("dissented by PID 38139 (/bin/sleep)"): `easy_sync
+  eject` reported "in use by pid 38139 (/bin/sleep)", exited 1, and the
+  drive stayed mounted (jbod-test-1, 2026-09-26).
 - Backblaze Personal's state (read by `Jbod::Backblaze`, never written) is
   world-readable under `/Library/Backblaze.bzpkg/bzdata`: `bzvolumes.xml`
   maps a volume GUID to its mount point as hex with a trailing slash;
