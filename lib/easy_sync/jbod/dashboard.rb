@@ -49,6 +49,7 @@ module EasySync
         names = manifest.drives(include_retired: true).to_h { |d| [d.serial_number, d.retired? ? "#{d.friendly_name} (retired)" : d.friendly_name] }
         scrub_findings = manifest.scrub_findings
         backblaze = Backblaze.read(@backblaze_dir)
+        @backblaze_installed = !backblaze.nil?
         uploads = backblaze&.drive_states(manifest.drives, mounted: by_serial, mount_root: @mount_root,
                                                            last_copied_at: manifest.last_copied_at)
         trips = current_trips(runs)
@@ -168,7 +169,8 @@ module EasySync
 
       # Backblaze Personal drops a drive from the current backup once it has
       # not been connected for 30 days (history keeps it for a year). Warn
-      # with time to act.
+      # with time to act; only when Backblaze is installed, since without it
+      # a drive left disconnected is the normal state between syncs.
       BACKBLAZE_WARN_DAYS = 21
       BACKBLAZE_DROP_DAYS = 30
       STALE_SYNC_DAYS = 7
@@ -225,7 +227,7 @@ module EasySync
         end
         drives.each do |d|
           days = unseen_days(d)
-          next unless days && days >= BACKBLAZE_WARN_DAYS
+          next unless @backblaze_installed && days && days >= BACKBLAZE_WARN_DAYS
 
           name = h(d.drive.friendly_name)
           list << if days >= BACKBLAZE_DROP_DAYS
@@ -298,6 +300,7 @@ module EasySync
 
       def seen_level(view)
         days = unseen_days(view) or return nil
+        return nil unless @backblaze_installed
         return 'critical' if days >= BACKBLAZE_DROP_DAYS
 
         'warning' if days >= BACKBLAZE_WARN_DAYS

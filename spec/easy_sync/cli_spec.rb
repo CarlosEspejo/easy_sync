@@ -1530,7 +1530,8 @@ RSpec.describe EasySync::CLI do
 
     def seen(name) = manifest.drive_by_name(name).last_seen_at
 
-    it 'ejects the physical disk under every connected drive and says when to connect them again' do
+    it 'ejects the physical disk under every connected drive and, with Backblaze, says when to connect them again' do
+      fake_backblaze({})
       expect(cli('eject', clock: clock).run).to eq(0)
       expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to eq([%w[diskutil eject disk4], %w[diskutil eject disk6]])
       expect(out.string).to include('Ejected backup-01-3tb (disk4)', 'Ejected backup-02-6tb (disk6)',
@@ -1545,6 +1546,7 @@ RSpec.describe EasySync::CLI do
     it 'ejects only the drives named, and says so for a name it cannot eject' do
       expect(cli('eject', 'backup-02-6tb').run).to eq(0)
       expect(out.string).to include('Ejected backup-02-6tb', 'The drive is ejected')
+      expect(out.string).not_to include('Connect again', 'Backblaze')   # not installed here
       expect(out.string).not_to include('backup-01-3tb')
 
       expect(cli('eject', 'backup-03-8tb').run).to eq(1)

@@ -197,9 +197,9 @@ enclosure can be switched off until the next sync. It refuses while a sync or
 scrub is running, and never forces a drive that something (Spotlight,
 Backblaze) still has open: it names the process, says not to power off yet,
 and exits 1. Each drive is marked as last seen at that moment, and the
-dashboard is regenerated to show them disconnected. It ends with the date to
-connect them again by: Backblaze drops a drive from its current backup after
-30 days disconnected.
+dashboard is regenerated to show them disconnected. With Backblaze installed,
+it ends with the date to connect them again by: Backblaze drops a drive from
+its current backup after 30 days disconnected.
 
 If Backblaze hasn't finished uploading a drive (see Dashboard below), it lists
 those drives and asks `Eject anyway? [y/N]`; anything but `y` ejects nothing.
@@ -243,8 +243,9 @@ reports it, how long the drive has actually been powered on (SMART's
 Power_On_Hours), not calendar age — a 5-year-old drive that sat on a shelf
 can show far fewer hours than one bought last year and run around the clock
 — plus every folder on it. A drive that isn't connected shows when it was
-last seen, amber from 21 days and red from 30: Backblaze Personal drops a
-drive from its current backup after 30 days disconnected.
+last seen. With Backblaze Personal installed, that turns amber from 21 days
+and red from 30, with a warning at the top: Backblaze drops a drive from its
+current backup after 30 days disconnected.
 
 Each tile also says "scrubbed N days ago" or "never scrubbed", with an
 overdue badge once it passes `scrub_stale_days` - this never changes the

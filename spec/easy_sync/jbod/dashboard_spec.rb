@@ -66,6 +66,11 @@ RSpec.describe EasySync::Jbod::Dashboard do
     it 'warns before Backblaze drops a drive that has not been connected, and says when it has' do
       manifest.update_drive_usage('SN-backup-05-8tb', used_bytes: 1, free_bytes: 1, seen_at: '2026-08-20T12:00:00Z')   # 24 days
       manifest.update_drive_usage('SN-backup-06-8tb', used_bytes: 1, free_bytes: 1, seen_at: '2026-08-01T12:00:00Z')   # 43 days
+      without = dashboard.render
+      expect(verdict(without)).not_to include('not connected for', 'Backblaze')   # nobody to drop it: no countdown
+      expect(without).to include('seen ">last seen 24 days ago', 'seen ">last seen 43 days ago')
+
+      fake_backblaze({})
       html = dashboard.render
       expect(verdict(html)).to include('backup-05-8tb not connected for 24 days', 'Connect it within 6 days',
                                        'backup-06-8tb not connected for 43 days', "dropped out of Backblaze's current backup")

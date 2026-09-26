@@ -1234,8 +1234,10 @@ module EasySync
                   'Close whatever is using it and run `easy_sync eject` again.'
         return 1
       end
-      back_by = (@clock.now + Jbod::Dashboard::BACKBLAZE_DROP_DAYS * 86_400).strftime('%Y-%m-%d')
       @out.puts "#{ejected == 1 ? 'The drive is' : "All #{ejected} drives are"} ejected; it is safe to power off the enclosure."
+      return 0 unless Jbod::Backblaze.read
+
+      back_by = (@clock.now + Jbod::Dashboard::BACKBLAZE_DROP_DAYS * 86_400).strftime('%Y-%m-%d')
       @out.puts "Connect again by #{back_by}: Backblaze drops a drive from its current backup after " \
                 "#{Jbod::Dashboard::BACKBLAZE_DROP_DAYS} days disconnected."
       0
