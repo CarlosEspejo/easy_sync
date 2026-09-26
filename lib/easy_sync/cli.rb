@@ -16,7 +16,8 @@ module EasySync
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]',
          'mirror the shares onto the drives; --accept-changes lets through a bulk change the tripwire stopped (this run only)'],
-        ['eject [NAME ...] [--dry-run]', 'eject every connected backup drive (or just the ones named) so the enclosure can be powered off'],
+        ['eject [NAME ...] [--dry-run] [--yes]', 'eject every connected backup drive (or just the ones named) so the enclosure can be ' \
+                                                 "powered off; asks first if Backblaze hasn't finished uploading one (--yes: don't ask)"],
         ['status [--all] [--smart]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder; ' \
                                      '--smart reads SMART from the mounted drives now instead of showing the last sync\'s reading'],
         ['dashboard', 'regenerate the HTML report']
@@ -57,8 +58,9 @@ module EasySync
     end
 
     def initialize(argv, out: $stdout, err: $stderr, config_path: nil, shell: Shell.new, env: ENV,
-                   keep_awake: Jbod::KeepAwake.new, clock: Time)
+                   keep_awake: Jbod::KeepAwake.new, clock: Time, stdin: $stdin)
       @argv = argv.dup
+      @stdin = stdin
       @out = out
       @err = err
       @shell = shell
@@ -1134,15 +1136,20 @@ module EasySync
     # Returns 1 if any drive stayed mounted: the enclosure is not safe to
     # power off yet.
     def eject(args)
-      dry_run = false
-      OptionParser.new { |o| o.on('--dry-run', 'Show which drives would be ejected') { dry_run = true } }.parse!(args)
+      opts = { dry_run: false, yes: false }
+      OptionParser.new do |o|
+        o.on('--dry-run', 'Show which drives would be ejected') { opts[:dry_run] = true }
+        o.on('-y', '--yes', "Eject even if Backblaze hasn't finished uploading a drive") { opts[:yes] = true }
+      end.parse!(args)
       drives = drives_to_eject(args)
       if drives.empty?
         @out.puts 'No easy_sync drive is connected; nothing to eject.'
         return 0
       end
-      if dry_run
+      behind = backblaze_behind(drives)
+      if opts[:dry_run]
         drives.each { |m| @out.puts "Would eject #{m.friendly_name} (#{m.mount_point})" }
+        warn_backblaze_behind(behind)
         @out.puts 'Dry run: nothing ejected.'
         return 0
       end
@@ -1152,9 +1159,49 @@ module EasySync
         raise Error, "#{run.kind} is running (pid #{run.pid}); ejecting now would cut it off. " \
                      'Let it finish (or stop it with Ctrl-C), then eject.'
       end
+      unless behind.empty?
+        warn_backblaze_behind(behind)
+        return 1 unless opts[:yes] || confirm_eject
+      end
+
       failed = lock.acquire(kind: 'eject') { drives.reject { |m| eject_one(m) } }
       write_dashboard
       report_ejected(drives.size - failed.size, failed)
+    end
+
+    # [[MountedDrive, Backblaze::DriveState], ...] for the drives Backblaze
+    # has not finished with. A drive Backblaze doesn't back up at all
+    # (:unknown) is not "behind", and without Backblaze nothing is.
+    def backblaze_behind(drives)
+      backblaze = Jbod::Backblaze.read or return []
+
+      copied = manifest.last_copied_at
+      drives.filter_map do |m|
+        state = backblaze.drive_state(m.mount_point, copied[m.serial_number])
+        [m, state] if %i[uploading waiting].include?(state.state)
+      end
+    end
+
+    def warn_backblaze_behind(behind)
+      return if behind.empty?
+
+      @out.puts "Backblaze hasn't finished with #{behind.size == 1 ? 'this drive' : "these #{behind.size} drives"}:"
+      behind.each { |m, state| @out.puts "  #{m.friendly_name.ljust(16)} #{state.label}" }
+      @out.puts 'Powered off, that data stays out of Backblaze until the drive is connected again.'
+    end
+
+    # Asks before ejecting a drive Backblaze is still uploading; no (the
+    # default) ejects nothing. Without a terminal to ask on it refuses, and
+    # --yes is the way to say yes up front.
+    def confirm_eject
+      raise Error, 'not ejecting: no terminal to confirm on. Run it again with --yes to eject anyway.' unless @stdin.tty?
+
+      @out.print 'Eject anyway? [y/N] '
+      @out.flush
+      return true if @stdin.gets.to_s.strip.match?(/\Ay(es)?\z/i)
+
+      @out.puts 'Nothing ejected.'
+      false
     end
 
     def drives_to_eject(names)

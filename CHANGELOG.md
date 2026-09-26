@@ -48,7 +48,8 @@ lives. Nothing from 0.0.x carries over; see "Breaking changes".
   copies it drive-to-drive).
 - `plan` measures shares and checks every folder fits a drive.
 - `eject` ejects every connected drive so the enclosure can be powered off
-  between syncs, and says when to connect them again for Backblaze.
+  between syncs, and says when to connect them again for Backblaze. It asks
+  before ejecting a drive Backblaze hasn't finished uploading.
 - `clean` removes excluded junk (`.DS_Store`, `#recycle`, ...) from the drives.
 
 ### Reporting

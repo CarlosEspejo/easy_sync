@@ -201,6 +201,11 @@ dashboard is regenerated to show them disconnected. It ends with the date to
 connect them again by: Backblaze drops a drive from its current backup after
 30 days disconnected.
 
+If Backblaze hasn't finished uploading a drive (see Dashboard below), it lists
+those drives and asks `Eject anyway? [y/N]`; anything but `y` ejects nothing.
+`--yes` skips the question, and with no terminal to ask on (a script) it
+refuses unless `--yes` is given.
+
 Dashboard
 ---------
 
@@ -526,9 +531,10 @@ Back up:
   sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]
                               mirror the shares onto the drives; --accept-changes lets through a
                               bulk change the tripwire stopped (this run only)
-  eject [NAME ...] [--dry-run]
+  eject [NAME ...] [--dry-run] [--yes]
                               eject every connected backup drive (or just those named) so the
-                              enclosure can be powered off; refuses while a run is in progress
+                              enclosure can be powered off; refuses while a run is in progress,
+                              asks first if Backblaze hasn't finished one (--yes: don't ask)
   status [--all] [--smart]    whether a sync is running (and for how long), drives, health and
                               folders, in the terminal. Health is the last sync's SMART reading (an
                               n/a says when it was taken); --smart reads the mounted drives now,

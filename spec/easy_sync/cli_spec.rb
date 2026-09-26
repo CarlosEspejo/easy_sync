@@ -20,8 +20,8 @@ RSpec.describe EasySync::CLI do
 
   let(:keep_awake) { instance_double(EasySync::Jbod::KeepAwake, start: false) }
 
-  def cli(*args, clock: Time)
-    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake, clock: clock)
+  def cli(*args, clock: Time, stdin: StringIO.new)
+    described_class.new(args, out: out, err: err, config_path: config_path, shell: fake_shell, keep_awake: keep_awake, clock: clock, stdin: stdin)
   end
 
   def manifest = EasySync::Jbod::Manifest.open(manifest_path)
@@ -1580,6 +1580,55 @@ RSpec.describe EasySync::CLI do
       expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to be_empty
       expect(seen('backup-01-3tb')).to eq('2026-09-01T00:00:00Z')
       expect(File).not_to exist(File.join(temp_dir, 'dashboard.html'))
+    end
+
+    describe 'when Backblaze has not finished uploading a drive' do
+      def terminal(answer) = StringIO.new(answer).tap { |io| io.define_singleton_method(:tty?) { true } }
+      def ejected = fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }.map(&:last)
+
+      before do
+        fake_backblaze({ File.join(mount_root, 'backup-01-3tb') => { files: 0, bytes: 0, scanned_at: Time.now },
+                         File.join(mount_root, 'backup-02-6tb') => { files: 1204, bytes: 38 * 1000**3, scanned_at: Time.now } })
+      end
+
+      it 'names it and ejects nothing unless told yes (no is the default)' do
+        expect(cli('eject', stdin: terminal("\n")).run).to eq(1)
+        expect(out.string).to include("Backblaze hasn't finished with this drive:",
+                                      'backup-02-6tb    uploading, 1,204 files (35.4 GB) left',
+                                      'Eject anyway? [y/N] ', 'Nothing ejected.')
+        expect(out.string).not_to include('backup-01-3tb    ')   # up to date: not listed
+        expect(ejected).to be_empty
+      end
+
+      it 'ejects everything on y' do
+        expect(cli('eject', stdin: terminal("y\n")).run).to eq(0)
+        expect(ejected).to eq(%w[disk4 disk6])
+        expect(out.string).to include('All 2 drives are ejected')
+      end
+
+      it 'with --yes warns but does not ask' do
+        expect(cli('eject', '--yes').run).to eq(0)
+        expect(out.string).to include("Backblaze hasn't finished with this drive:")
+        expect(out.string).not_to include('Eject anyway?')
+        expect(ejected).to eq(%w[disk4 disk6])
+      end
+
+      it 'refuses without a terminal to ask on, pointing at --yes' do
+        expect(cli('eject').run).to eq(1)
+        expect(err.string).to include('no terminal to confirm on. Run it again with --yes')
+        expect(ejected).to be_empty
+      end
+
+      it 'does not ask when only an up-to-date drive is being ejected' do
+        expect(cli('eject', 'backup-01-3tb').run).to eq(0)
+        expect(out.string).not_to include('Backblaze hasn')
+        expect(ejected).to eq(%w[disk4])
+      end
+
+      it 'shows the warning in a dry run too' do
+        expect(cli('eject', '--dry-run').run).to eq(0)
+        expect(out.string).to include('Would eject backup-02-6tb', "Backblaze hasn't finished with this drive:")
+      end
     end
 
     it 'says so when no drive is connected' do
