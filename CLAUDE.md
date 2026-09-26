@@ -2,6 +2,8 @@
 
 macOS-only Ruby gem (2.0.0) that mirrors NAS shares onto independent drives.
 README.md is the user-facing truth; this file is for working on the code.
+Feature designs, real-hardware results and measurements live in `docs/`
+(map at the bottom).
 
 ## Run the suite before every push
 
@@ -10,82 +12,21 @@ README.md is the user-facing truth; this file is for working on the code.
 - Every external call (rsync, df, du, diskutil, smartctl, caffeinate) goes through
   `EasySync::Shell`; specs inject `FakeShell` (spec/support/fake_shell.rb) and
   register responses with `fake_shell.on(...)`. Never let a spec shell out for real.
-- The suite redirects the home directory (`stub_const` on `Config::HOME_DIR` in
-  spec_helper). Keep it that way: an earlier version of a test
-  found the developer's real config and moved it into a temp dir that was then
-  deleted. Any new default path must be derived from `HOME_DIR` at call time
-  (`Config.defaults`), never at load time.
+- spec_helper redirects the home directory (`Config::HOME_DIR`) and the
+  Backblaze install (`Backblaze::DATA_DIR`) into the temp dir. Keep it that
+  way: an earlier test found the developer's real config and moved it into a
+  temp dir that was then deleted. Any new default path must be derived at call
+  time (`Config.defaults`), never at load time.
 - Specs use paths under `temp_dir`, never literal `/Volumes/...` (that broke on a
   real Mac where `/Volumes` is not writable).
 
-## Things learned on real hardware (do not re-derive)
+## Before touching rsync flags, diskutil/smartctl parsing, `Shell`, the schema, scrub's reads or Backblaze
 
-- rsync 3.5: `--exclude=/*/` (anchored, directories only) copies only a
-  source's top-level files, and a `--delete` probe with it but WITHOUT
-  `--delete-excluded` never reports the destination's subdirectories, even
-  ones missing from the source. That is how a share's root-files unit lives
-  in the same directory as the share's per-folder units.
-- rsync 3.5 with `--delete --max-delete=0` does NOT name the files it skips; it
-  prints "N skipped" and exits 25. Deletions are found with a separate read-only
-  probe: `rsync -an --itemize-changes --delete --delete-excluded`.
-- smartctl's exit status is inconsistent (exit 0 with "not supported" on some
-  devices, 2 on others); parse output, never trust the code. USB bridges often
-  hide SMART entirely: that is the 'unknown' state, not an error.
-- `diskutil apfs list` shows a locked volume by name with "FileVault: Yes (Locked)"
-  and "Mount Point: Not Mounted"; the Name and FileVault lines are several lines
-  apart. `diskutil apfs lockVolume/unlockVolume` accept the volume name.
-- A smartctl read can fail once on a drive that reads fine minutes before
-  and after (backup-07-6tb in the ThunderBay, 2026-09-23). `smart_health`
-  retries, and `Runner#check_health` keeps the last known status rather
-  than overwriting it with 'unknown'.
-- Physical disk for smartctl: `diskutil info <mount>` -> "Part of Whole" ->
-  `diskutil info <that>` -> "APFS Physical Store".
-- `caffeinate -i -w <pid>` exits on its own when the pid does; spawn it detached.
-- The real `~/.easy_sync/manifest.sqlite3` is stamped `user_version` 5 (left over
-  from pre-2.0 builds) although 2.0's schema counts from 1. Add columns by
-  checking `PRAGMA table_info`, never by comparing version numbers: a
-  version-gated `ALTER TABLE` was skipped on the real manifest and crashed the
-  first sync after it (`no such column: model`).
-- `du` over SMB: seconds for thousands of single-file movie folders, minutes for a
-  share with hundreds of thousands of files. rsync's read-only walk of an
-  unchanged folder is ~0.15 s.
-- Headless Chrome refuses windows narrower than ~500 px; render phone widths
-  inside a 400 px iframe.
-- `F_NOCACHE` does NOT make a read skip the page cache for pages already in
-  it; it only stops the read adding new ones. A just-synced file scrubbed at
-  2 GB/s from a USB drive until `Jbod::PageCache.evict` (mmap +
-  `msync(MS_SYNC|MS_INVALIDATE)`, via Fiddle) dropped its pages first. Any
-  "read it off the platter" code needs both. Fiddle is a bundled gem in Ruby
-  4.0, so it's declared in the gemspec.
-- `diskutil eject disk4` (the whole physical disk, from `physical_disk_for`
-  minus its partition suffix) on an encrypted APFS USB drive prints
-  `Disk disk4 ejected`, exits 0, and the volume leaves `/Volumes` and the
-  disk leaves `diskutil list` (jbod-test-1/2, 2026-09-26). Getting it back
-  takes a replug. With a file held open on the volume, the eject fails and
-  macOS names the holder ("dissented by PID 38139 (/bin/sleep)"): `easy_sync
-  eject` reported "in use by pid 38139 (/bin/sleep)", exited 1, and the
-  drive stayed mounted (jbod-test-1, 2026-09-26).
-- Backblaze Personal's state (read by `Jbod::Backblaze`, never written) is
-  world-readable under `/Library/Backblaze.bzpkg/bzdata`: `bzvolumes.xml`
-  maps a volume GUID to its mount point as hex with a trailing slash;
-  `bzreports/bzstat_remainingbackup.xml` has files/bytes left per GUID;
-  `bzfilelists/<GUID>______filelist.dat`'s mtime is that volume's last
-  scan (2026-09-26: 09:47-10:01 local for the fleet, all 0 left). A zero
-  counted before easy_sync's last copy onto the drive is stale, hence
-  the `waiting` state. spec_helper stubs `Backblaze::DATA_DIR` into the
-  temp dir: no spec may read the real install.
-- Pulling a drive's cable mid-read: the marker file vanishes and reads fail;
-  scrub stops as "unmounted" without flagging the in-flight file. A
-  FileVault test drive came back mounted and unlocked on replug.
-- Scrub reads a fleet drive (spinning SATA, ThunderBay) at ~201 MB/s;
-  `jbod-test-1` (USB) at ~150 MB/s.
-
-- Forwarding a signal to a child process (Ctrl-C during a copy) must signal its
-  whole process group, not just its pid: `Open3.popen2e(*argv, pgroup: true)`,
-  then `Process.kill('INT', -wait.pid)` (negative pid = the group). Signalling
-  only the child's own pid left rsync's helper processes running and Ruby
-  blocked waiting on them; a plain `sh -c '...; sleep N'` child in specs won't
-  even forward the signal to its own `sleep` without this.
+Read docs/hardware-notes.md. Each entry there was learned on real drives or
+tools and would be expensive to re-derive (rsync 3.5's `--exclude=/*/` and
+`--max-delete` behaviour, smartctl exit codes, the manifest's stale
+`user_version` 5, `F_NOCACHE` vs. the page cache, signalling a process
+group, `diskutil eject` output, Backblaze's state files).
 
 ## Invariants (never break these)
 
@@ -100,164 +41,93 @@ README.md is the user-facing truth; this file is for working on the code.
   up from the drives, so a moved folder is uploaded again). A folder changes
   drive only through `reassign` (`--copy` copies drive-to-drive).
 - Placement units: one per top-level folder of a share, plus one `root` unit
-  (keyed by the share name) for its loose top-level files. There is no
-  `split:` setting. A new unit goes to a drive already holding part of its
-  share if it fits there. Nothing splits a single top-level folder further: one
-  bigger than every drive stays unplaced ("not backed up"). See
-  docs/fine-placement.md.
+  (keyed by the share name) for its loose top-level files. A new unit goes to
+  a drive already holding part of its share if it fits there. Nothing splits
+  a single top-level folder further: one bigger than every drive stays
+  unplaced ("not backed up"). See docs/fine-placement.md.
 - Drives are matched by the serial in `<drive>/.easy_sync/drive.json`, never by
   mount path. Unknown or retired volumes are never written to.
 - A missing or empty share is skipped, never mirrored.
 - A folder with no real file on the NAS (only hidden/excluded names) is never
-  placed (`Runner#empty_source?`); shows up in the report as `empty`, not `placed`.
+  placed (`Runner#empty_source?`); it shows in the report as `empty`.
 - Placement always leaves `reserve` bytes free on a drive (config `:reserve:`,
   default 2gb) for APFS metadata, the `.easy_sync/` state copies, and rsync's
   temp file mid-copy.
-- **`--dry-run` writes nothing, anywhere.** No folder assignment, no
-  `sync_runs`/`pending_deletions`/`source_inventory` row, no drive usage/health
-  update, no dashboard write, no `.easy_sync/` copy to any drive. This was
-  violated once (dry-run recorded folders as synced with 0-duration,
-  full-size "transfers"), found only by reading the dashboard after a real
-  dry run — the specs hadn't asserted "manifest unchanged" strongly enough.
-  If you touch `Runner#run`, grep it for `unless @dry_run` and make sure every
-  new write site has the guard.
+- **`--dry-run` writes nothing, anywhere**: no folder assignment, no
+  `sync_runs`/`pending_deletions`/`source_inventory` row, no drive usage or
+  health update, no dashboard, no `.easy_sync/` copy to any drive. It was
+  violated once and found only by reading the dashboard after a real dry run.
+  If you touch `Runner#run`, grep it for `unless @dry_run` and guard every new
+  write site; specs must assert the manifest is unchanged.
 - A `sync` decides every placement first (phase 1: measure, place, record the
-  full `source_inventory` — placed/unplaced/empty for every folder seen on the
-  NAS), *then* copies (phase 2). This is why an interrupted 3-day copy still
-  leaves a complete, accurate "what's backed up vs not" picture — don't
-  collapse the phases back into one loop.
+  full `source_inventory` for every folder seen on the NAS), *then* copies
+  (phase 2). That is why an interrupted 3-day copy still leaves an accurate
+  "what's backed up vs not" picture. Don't collapse the phases into one loop.
 - Tile colour on the dashboard means SMART health, never fullness. A JBOD
   drive at 97% used is working as intended.
-- The dashboard's "not backed up" count/list (from `source_inventory`) is the
-  number a real user actually cares about — it's what tells them whether to
-  buy another drive. Don't let a future change make it silently disappear
-  again the way it did before `source_inventory` existed (dashboard only knew
-  about *placed* folders, so with small test drives it quietly showed "94
-  movies" and said nothing about the other 2,286 that didn't fit).
+- The dashboard's "not backed up" count (from `source_inventory`) is the
+  number the user acts on: it says whether to buy another drive. It once
+  silently disappeared (the dashboard only knew *placed* folders); don't let a
+  change hide it again.
 - Anything that shells out is injectable and faked in specs.
-- Sync is intentionally sequential: one rsync process, one folder, at a time
-  (`Runner#run`'s `plan.each { sync_folder }`, and `Shell#run` blocks on
-  `wait.value` before returning). Don't parallelize this as a speed
-  optimization — the source is one NAS behind one network link, so concurrent
-  rsyncs would contend for the same bandwidth and NAS disks rather than add
-  throughput; rsync itself has no `--parallel` flag for exactly this reason.
-- `restore` (the reverse of `sync`, `lib/easy_sync/jbod/restorer.rb`) never
-  passes `--delete`, on purpose: it only adds/updates files on the NAS,
-  mirroring how the old drobo-sync restore scripts worked. It resolves a
-  folder's NAS destination from the *current* `:sources:` config by matching
-  the share name, so a folder whose share was `remove-source`d is skipped
-  with an error telling you to `add-source` it again rather than guessed at.
+- Sync is sequential on purpose: one rsync, one folder at a time. The source is
+  one NAS behind one link, so parallel rsyncs would contend, not add
+  throughput. `sync` must keep its aggregate at 50 MB/s or more
+  (docs/performance.md).
+- `restore` never passes `--delete`: it only adds/updates files on the NAS. It
+  resolves a folder's NAS destination from the *current* `:sources:` by share
+  name, so a folder whose share was `remove-source`d is skipped with an error,
+  never guessed at.
+- Backblaze is optional: everything about it (`status`/dashboard upload state,
+  the 30-day disconnect countdown, `eject`'s prompt) appears only when
+  `Jbod::Backblaze.read` finds an install.
 
-## Verify live when you touch the sync path
+## Verify live when you touch the sync path (or anything in hardware-notes)
 
 Two 250 GB USB drives (`jbod-test-1`, `jbod-test-2`, APFS encrypted; the
-passphrase is in the gitignored `CLAUDE.local.md`) exist for this. Keep a scratch config via `--config` so the real
-`~/.easy_sync/` is never touched, and a scratch source tree under the scratchpad.
-Several bugs here were only visible on real hardware; the specs encode the
-assumptions, they cannot check them.
+passphrase is in the gitignored `CLAUDE.local.md`) exist for this. Use a
+scratch config via `--config` so the real `~/.easy_sync/` is never touched,
+and a scratch source tree under the scratchpad. Several bugs here were only
+visible on real hardware. Record what you learn in docs/hardware-notes.md.
 
 ## Repo / process notes
 
-- Public repo, solo maintainer (`CarlosEspejo` is the
-  only collaborator with write access — verified via the collaborators API,
-  not assumed). `main` protection: force-push and deletion blocked, **not**
-  locked, **no** required reviews (dropped deliberately: required-review only
-  gates people who already have write access, i.e. just the owner; it does
-  nothing against non-collaborators, who can't push regardless of branch
-  protection). If you ever re-add required reviews, remember
-  `enforce_admins: false` lets the owner bypass them — a solo-maintainer PR
-  can't self-approve otherwise.
+- Public repo, solo maintainer. `main` blocks force-push and deletion; no
+  required reviews (they would only gate the owner). Work on a branch and open
+  a PR; the owner squash-merges.
 - The repo is public: never commit real drive serials, volume UUIDs, folder
   names from the library, or passphrases, not even in a comment, a spec or a
   doc. Use made-up ones (`SN-backup-04-8tb`, `movies/Metropolis (1927)`).
   Drive names (`backup-0N-Xtb`), share names, models and fleet-wide counts
-  are fine. A 2026-09-26 audit against the real manifest found the current
-  files clean; older commits still hold five serials and the test drives'
-  passphrase (fixed in the working tree on 2026-09-21).
-- The README's dashboard screenshots (`docs/images/dashboard-{light,dark}.png`)
-  come from `bundle exec ruby script/dashboard_screenshot.rb`, which renders a
-  made-up manifest (never the real library: the repo is public). Re-run it and
-  commit the PNGs whenever the dashboard's look changes.
+  are fine. Older commits still hold five serials and the test drives'
+  passphrase; history was deliberately not rewritten.
+- The README's dashboard screenshots come from
+  `bundle exec ruby script/dashboard_screenshot.rb` (a made-up manifest and
+  Backblaze install). Re-run it and commit the PNGs when the dashboard's look
+  changes.
 - A slow `commit && push` can be auto-backgrounded and look finished when it
-  isn't: confirm with `git log origin/<branch>..HEAD` (empty = pushed) before
-  reporting it done.
-- 2.0.0 dropped ALL 1.x compatibility on purpose (single-user gem, no reason
-  to carry it): no snapshot mode, no nested `:jbod:` config layout, no
-  `~/.easy_syncrc.yml` migration, no `easy_sync jbod <cmd>` alias, no legacy
-  drive-marker path, no schema-upgrade path from pre-2.0 manifests (schema
-  starts at version 1 again). Don't re-add any of this without being asked.
-- Config is now flat and the tool *writes* it (`Config#save`, `Config.dump`):
-  `add-source`, `remove-source`, `plan --apply` all rewrite
-  `~/.easy_sync/config.yml` directly, preserving comments/order. A first-time
-  user never has to hand-edit YAML.
+  isn't: `git log origin/<branch>..HEAD` must be empty before calling it done.
+- 2.0.0 dropped all 1.x compatibility on purpose (snapshot mode, nested
+  config, `~/.easy_syncrc.yml` migration, `easy_sync jbod` alias, old markers,
+  pre-2.0 schema upgrades). Don't re-add any of it unless asked.
+- The tool writes its own config (`Config#save`): `add-source` and
+  `remove-source` rewrite `~/.easy_sync/config.yml`, preserving comments and
+  order. A user never has to hand-edit YAML.
+- Release: `bundle exec rake release` builds, tags `v2.0.0`, pushes the tag
+  and publishes. Until it has run, `gem install easy_sync` gets 0.0.5
+  (`git tag -l v2.0.0` tells you which). Date the CHANGELOG entry first.
 
-## Open items
+## Where things are documented
 
-- Fine placement (no `split:` setting; `reassign --copy`; Purger overlap
-  guard) is built and passed the real-hardware checklist on 2026-09-23
-  (docs/fine-placement.md). The one-off `easy_sync split` command converted
-  the fleet's last two whole-share rows (`synology`, `pro`) that evening, and
-  the following sync finished with all 2,712 units `ok`. With no whole-share
-  row left in the real manifest (checked 2026-09-25), `split` and `Runner`'s
-  whole-share support were removed.
-
-- Ransomware tripwire (stop a sync that would replace or remove far more
-  existing files than normal) is built and checked on `jbod-test-1`
-  (2026-09-24), but ships report-only (`tripwire_enforce: false`). Before
-  enforcing, it still needs phase 1b's duration and the sync aggregate
-  measured on the real fleet, and a couple of weeks of real counts. See
-  docs/tripwire.md, "As built". The pre-copy check probe replaced the
-  post-copy one, so `sync` now runs every already-synced folder's
-  `rsync -an` before copying anything. A folder whose check fails is not
-  copied. Recovery after the fact is still Synology snapshots + Backblaze
-  history, not the drives.
-- Bit-rot detection (`easy_sync scrub`) is built and passed the real-hardware
-  checklist on 2026-09-21 (results in docs/integrity-scan.md). The first
-  full pass of the real fleet ran 2026-09-22 (02:55-14:26 UTC, ~11.5 h;
-  backup-06-8tb's ~125k files were last to finish): 137,805 files, all
-  `ok`. `--all` works through every mounted, non-retired drive stalest
-  first, `scrub_jobs` drives at once (default 4; the real config sets 8).
-  `easy_sync scrub --for 8h` fits an overnight window.
-  Moving a folder to another drive loses its checksums: the new drive has
-  none yet, and the old drive's rows stay until that drive is scrubbed
-  again (`prune_checksums`). After `synology` moved from backup-06-8tb to
-  backup-07-6tb (2026-09-23), both drives were scrubbed on 2026-09-24:
-  backup-07-6tb holds `synology`'s 122,908 rows, all `ok`, and backup-06-8tb's
-  stale copies are pruned.
-- Parallel scrub (`scrub --jobs N`, one thread per drive, default 4) is built
-  and verified against the real ThunderBay 8 fleet on 2026-09-21: see
-  docs/parallel-scrub.md. 4 drives at once measured at ~782 MB/s aggregate,
-  8 at once at ~1175 MB/s (both confirmed with `iostat`); the default stays
-  4 since 8-way was only measured this one pass.
-- Measured sync throughput (62.9 MB/s aggregate; any change to `sync` must
-  keep the aggregate at 50 MB/s or more), per-drive benchmarks, enclosure
-  bandwidth and hash speeds: docs/performance.md.
-- Backblaze (Personal, taken from the drives): **1 year version history**,
-  verified — the old Drobo volume is gone from today's backup but still
-  browsable back to Sept 2025. A drive not connected for 30 days drops out of
-  the *current* backup but stays in history, so it is a ~1-year countdown, not
-  instant loss. `drives.last_seen_at` already has what a warning would need.
-- **The OWC ThunderBay 8 (Thunderbolt) has replaced the Drobo.** 8 active
-  drives, 44.59 TB. The two `jbod-test` drives were retired in the real
-  manifest; `easy_sync forget-drive` (2026-09-24) deletes a retired drive and
-  all its history, for exactly this case. Live testing on them uses a scratch
-  `--config`, so the real manifest never needs them. The first full sync of the real library (~31.9 TB) finished
-  around 2026-09-21 — check `easy_sync status` / the dashboard for current
-  placement. Every share is now placed folder by folder (see the fine-placement
-  bullet above). The NAS side limits sync speed, never the drives; Time
-  Machine (backing up to the same Synology) is the first thing to check when
-  a sync looks slow. Numbers and method: docs/performance.md.
-- `easy_sync benchmark` is built (`Jbod::Benchmarker`, `drive_benchmarks`, last
-  25 runs per drive). It was checked on `jbod-test-1` on 2026-09-22: 1.5 GB test
-  file, write 86-99 MB/s, read ~163 MB/s (close to scrub's ~150 MB/s on it, so
-  the page cache was bypassed), and Ctrl-C removed the test file. The first
-  real-fleet `benchmark --all` ran 2026-09-22 (14:54-15:08, 8 GB file,
-  write/read MiB/s): 01-8tb 224/247, 07-6tb 180/196, 03-8tb 158/163,
-  04-8tb 136/154, 02-6tb 137/142, 06-8tb 130/136, 08-2tb 107/123,
-  05-3tb 106/112. Each drive has one run so far; a SLOWER flag needs 3
-  earlier runs. It reports MiB/s (as
-  scrub does); the 8 GB table in docs/performance.md doesn't say whether it
-  used MB or MiB (~5% apart), so compare against it loosely.
-- 2.0.0 is published only once `bundle exec rake release` has run (builds,
-  tags `v2.0.0`, pushes the tag, publishes); until then `gem install easy_sync`
-  fetches 0.0.5. `git tag -l v2.0.0` tells you which.
+- docs/hardware-notes.md: traps found on real drives, rsync and macOS tools.
+- docs/fine-placement.md: folder-by-folder placement, `reassign --copy`, the
+  Purger overlap guard, and its real-hardware results.
+- docs/tripwire.md: the ransomware tripwire, report-only until
+  `tripwire_enforce`, and what it needs measured before enforcing.
+- docs/integrity-scan.md: `scrub` (bit-rot detection), its real-hardware
+  results, the fleet's first full pass, and the Backblaze disconnect warning.
+- docs/parallel-scrub.md: `scrub --jobs N`.
+- docs/performance.md: sync throughput, drive, enclosure and hash speeds,
+  `benchmark` results. The NAS limits sync speed, never the drives; Time
+  Machine on the same Synology is the first suspect when a sync is slow.
+- CHANGELOG.md: major features per release.

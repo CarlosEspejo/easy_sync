@@ -409,10 +409,27 @@ Use the `jbod-test` drives with a scratch `--config` (see CLAUDE.md):
    ~9 GB movie files, a 2-minute limit ran about 3 minutes, since a file
    already being hashed always finishes.
 
-## Separate and smaller: warn before Backblaze drops a drive
+### First full pass of the real fleet (2026-09-22)
 
-This is not part of this feature. Build it first if there is time. Backblaze
-Personal drops a drive from the current backup after 30 days disconnected,
-although version history keeps it for a year. `drives.last_seen_at` already
-records when each drive was last mounted. Warn in `status` and on the
-dashboard when a drive reaches 21 days, which leaves 9 days to act.
+`scrub --all` ran 02:55-14:26 UTC (~11.5 h): 137,805 files, all `ok`.
+backup-06-8tb's ~125k files finished last. `--all` works through every
+mounted, non-retired drive stalest first, `scrub_jobs` drives at once
+(default 4; the real config sets 8). `easy_sync scrub --for 8h` fits an
+overnight window.
+
+### Moving a folder loses its checksums
+
+The new drive has no checksums for a moved folder yet, and the old drive's
+rows stay until that drive is scrubbed again (`prune_checksums`). After
+`synology` moved from backup-06-8tb to backup-07-6tb (2026-09-23), both
+drives were scrubbed on 2026-09-24: backup-07-6tb then held `synology`'s
+122,908 rows, all `ok`, and backup-06-8tb's stale copies were pruned.
+
+## Separate and smaller: warn before Backblaze drops a drive (built)
+
+Backblaze Personal drops a drive from the current backup after 30 days
+disconnected, although version history keeps it for a year (verified: the
+old Drobo volume stayed browsable after it left the current backup). The
+dashboard warns at 21 days, which leaves 9 days to act, from
+`drives.last_seen_at`, and `eject` prints the date to reconnect by. Both
+appear only when Backblaze is installed (`Jbod::Backblaze.read`).
