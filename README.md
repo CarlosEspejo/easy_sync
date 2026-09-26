@@ -17,6 +17,10 @@ or later (the first release with APFS on external drives). It is developed and
 tested on macOS 26. Also needed: Ruby 3.3 or newer and rsync 3.0 or newer
 (`brew install rsync`; the copy macOS ships is too old). `smartctl`
 (`brew install smartmontools`) is optional and adds drive health.
+Backblaze Personal is
+optional too: if it backs up the drives, easy_sync reads its local state
+(read-only) to show whether each drive has finished uploading, and `eject`
+asks before powering off one that hasn't (see "Dashboard" below).
 
 Quick start
 -----------
@@ -140,8 +144,8 @@ a `.DS_Store`) is not placed; the run says so.
 
 Once placed, a folder never moves on its own: there is no automatic
 rebalancing. Moving data between drives costs time, needs both drives
-connected, and makes the offsite backup (Backblaze, taken from the drives)
-upload it all again, so it only happens when you ask. To move a folder, or
+connected, and makes an offsite backup taken from the drives (such as
+Backblaze Personal) upload it all again, so it only happens when you ask. To move a folder, or
 every folder of a share, run `easy_sync reassign FOLDER|SHARE DRIVE --copy`:
 it copies drive-to-drive (much faster than the NAS), and the next sync only
 confirms the copy. The old copy is removed later, after the grace period (see
@@ -364,8 +368,8 @@ The tripwire
 ------------
 
 A mirror copies damage too: if ransomware rewrites or renames files on the NAS,
-the next sync would overwrite the good copies on the drives, and Backblaze
-would then upload the damage from them. The tripwire stops a sync before
+the next sync would overwrite the good copies on the drives, and an offsite
+backup of the drives would then upload the damage from them. The tripwire stops a sync before
 it copies anything when far more existing files would change than a media
 library changes normally:
 
@@ -429,8 +433,8 @@ Bit rot: `scrub`
 rsync only checks data while it copies it; nothing checks it again afterwards.
 If a bit flips on a drive a year later, the file keeps the same size and
 mtime, so rsync's quick check skips it on every future sync - the bad copy
-sits there unnoticed. That matters here because **the offsite backup
-(Backblaze) is taken from the drives, not from the NAS**: a rotted file gets
+sits there unnoticed. That matters when **an offsite backup (such as
+Backblaze Personal) is taken from the drives, not from the NAS**: a rotted file gets
 uploaded as a "change", and the only good copy is the one on the NAS you
 don't know you need to go get.
 
