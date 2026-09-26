@@ -112,13 +112,6 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(runner.source_folders.first.map { |f| [f.key, f.root_only] }).to include(['tv', true])
     end
 
-    it 'keeps a share an earlier build placed whole as one unit until it is split by hand' do
-      make_shows('Show A')
-      manifest.assign_folder('tv', 'SN-backup-04-8tb')
-      expect(runner.source_folders.first.map { |f| [f.key, f.path, f.root_only] })
-        .to eq([['photos/2024', album, nil], ['tv', tv, nil]])
-    end
-
     it 'skips a share that is not mounted and reports it' do
       report = described_class::Report.new
       folders, available = runner.source_folders(report)
@@ -215,12 +208,13 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(File.read(dashboard_path)).not_to include('not backed up. Move them')
     end
 
-    it 'after `split`, syncs each folder in place and flags only a folder that is gone from the NAS' do
+    it 'syncs a share placed folder by folder in place and flags only a folder that is gone from the NAS' do
       make_shows('Show A')
       write_file(File.join(tv, 'notes.txt'))
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv', 'SN-backup-04-8tb')
-      manifest.split_whole_folder('tv', units: [['Show A', 100], ['Old Show', 50]], root_size: 1, note: 'split')
+      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
+      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
+      manifest.assign_folder('tv/Old Show', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
@@ -263,20 +257,20 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'syncs an existing folder back to its assigned drive even when another drive has more room' do
-      manifest.assign_folder('photos', 'SN-backup-01-3tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-01-3tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-01-3tb', free: 10), mount('backup-07-8tb', free: 8 * TB)])
-      expect(mirror).to receive(:sync).with(photos, "#{mount_root}/backup-01-3tb/photos", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).with(album, "#{mount_root}/backup-01-3tb/photos/2024", root_only: false).and_return(ok_result)
 
       report = runner.run
       expect(report.placed).to be_empty
-      expect(manifest.folder('photos').drive_serial).to eq('SN-backup-01-3tb')
+      expect(manifest.folder('photos/2024').drive_serial).to eq('SN-backup-01-3tb')
     end
 
     it 'follows the drive to a different mount point when the volume name moved' do
-      manifest.assign_folder('photos', 'SN-backup-02-6tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-02-6tb')
       moved = "#{mount_root}/backup-02-6tb 1"
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-02-6tb', free: 1 * TB, at: moved)])
-      expect(mirror).to receive(:sync).with(photos, "#{moved}/photos", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).with(album, "#{moved}/photos/2024", root_only: false).and_return(ok_result)
 
       report = runner.run
       expect(report.warnings).to include(a_string_matching(/mounted at .*backup-02-6tb 1 \(matched by serial/))
@@ -284,16 +278,16 @@ RSpec.describe EasySync::Jbod::Runner do
 
     it 'skips folders whose drive is not mounted and warns' do
       make_shows('Show A')
-      manifest.assign_folder('photos', 'SN-backup-03-6tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-03-6tb')
       manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       expect(mirror).to receive(:sync).once.with("#{tv}/Show A", "#{mount_root}/backup-04-8tb/tv/Show A", root_only: false).and_return(ok_result)
 
       report = runner.run
-      expect(report.skipped).to eq(['photos'])
+      expect(report.skipped).to eq(['photos/2024'])
       expect(report.synced).to eq(['tv/Show A'])
-      expect(manifest.folder('photos').last_sync_status).to eq('skipped_unmounted')
-      expect(report.warnings).to include(a_string_matching(/photos: its drive backup-03-6tb is not mounted/))
+      expect(manifest.folder('photos/2024').last_sync_status).to eq('skipped_unmounted')
+      expect(report.warnings).to include(a_string_matching(%r{photos/2024: its drive backup-03-6tb is not mounted}))
       expect(report.warnings).to include(a_string_matching(/drive backup-01-3tb .* is not mounted/))
     end
 
@@ -370,25 +364,25 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'reports drive-full separately from a generic rsync failure and leaves the folder resumable' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 500)])
       full_result = EasySync::Jbod::Mirror::Result.new(exit_status: 11, total_size_bytes: nil, bytes_transferred: nil,
                                                         disk_full: true, output: 'No space left on device')
       allow(mirror).to receive(:sync).and_return(full_result)
 
       report = runner.run
-      expect(report.drive_full).to eq(['photos'])
+      expect(report.drive_full).to eq(['photos/2024'])
       expect(report.failed).to be_empty
-      expect(manifest.folder('photos').last_sync_status).to eq('drive_full')
-      expect(report.warnings).to include(a_string_matching(/photos did not fully sync: backup-04-8tb is full/))
+      expect(manifest.folder('photos/2024').last_sync_status).to eq('drive_full')
+      expect(report.warnings).to include(a_string_matching(%r{photos/2024 did not fully sync: backup-04-8tb is full}))
       expect(File.read(dashboard_path)).to include('drive full')
     end
 
     it 'marks folders of an unmounted share as skipped rather than missing' do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
-      expect(mirror).to receive(:sync).once.with(photos, anything, root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).once.with(album, anything, root_only: false).and_return(ok_result)
 
       report = runner.run
       expect(report.missing_on_source).to be_empty
@@ -450,16 +444,16 @@ RSpec.describe EasySync::Jbod::Runner do
     it 'records an inventory of everything on the NAS: placed, unplaced and empty' do
       make_shows('Big Show', 'Small Show')
       make_dirs(tv, 'Empty Show')
-      sizes['photos'] = 100
+      sizes['2024'] = 100
       sizes['Big Show'] = 5_000
       sizes['Small Show'] = 200
-      manifest.assign_folder('photos', 'SN-backup-04-8tb', size_bytes: 100)
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb', size_bytes: 100)
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1_000)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
       inv = manifest.source_inventory.to_h { |e| [e.folder_path, [e.state, e.size_bytes, e.detail]] }
-      expect(inv).to eq('photos' => ['placed', 100, 'on backup-04-8tb'],
+      expect(inv).to eq('photos/2024' => ['placed', 100, 'on backup-04-8tb'],
                         'tv/Big Show' => ['unplaced', 5_000, 'no drive has room'],
                         'tv/Empty Show' => ['empty', 0, 'no real files on the NAS'],
                         'tv/Small Show' => ['placed', 200, 'on backup-04-8tb'])
@@ -518,7 +512,7 @@ RSpec.describe EasySync::Jbod::Runner do
 
     it 'flags folders that vanished from a mounted share but keeps them in the manifest' do
       make_shows('Show A')
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
       manifest.assign_folder('tv/Cancelled Show', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
@@ -625,66 +619,66 @@ RSpec.describe EasySync::Jbod::Runner do
     let(:drive_root) { "#{mount_root}/backup-04-8tb" }
 
     before do
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
-      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos', { '2024/IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1] })
-      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', '2024/IMG_0001.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
-      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', 'good.jpg', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos/2024', { 'IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos/2024', 'IMG_0001.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos/2024', 'good.jpg', outcome: :baseline, digest: 'x', at: '2026-09-01T00:00:00Z')
     end
 
     it 'refetches flagged files after a successful copy pass and marks them refetched' do
-      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos", root_only: false).and_return(ok_result)
-      expect(mirror).to receive(:refetch).with(photos, "#{drive_root}/photos", ['2024/IMG_0001.jpg'])
+      expect(mirror).to receive(:sync).with(album, "#{drive_root}/photos/2024", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:refetch).with(album, "#{drive_root}/photos/2024", ['IMG_0001.jpg'])
                                          .and_return(EasySync::Shell::Result.new(output: '', status: 0))
 
       report = runner.run
-      expect(report.refetched).to eq([['photos', 1]])
-      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      expect(report.refetched).to eq([['photos/2024', 1]])
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos/2024').find { |r| r.relative_path == 'IMG_0001.jpg' }
       expect(row.refetched_at).to eq('2026-09-13T12:00:00Z')
       expect(out.string).to include('refetched 1 file flagged by scrub')
     end
 
     it 'does not refetch anything when nothing is flagged' do
-      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', '2024/IMG_0001.jpg', outcome: :repaired, digest: 'x', at: '2026-09-01T00:00:00Z')
-      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos", root_only: false).and_return(ok_result)
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos/2024', 'IMG_0001.jpg', outcome: :repaired, digest: 'x', at: '2026-09-01T00:00:00Z')
+      expect(mirror).to receive(:sync).with(album, "#{drive_root}/photos/2024", root_only: false).and_return(ok_result)
       expect(mirror).not_to receive(:refetch)
       runner.run
     end
 
     it 'skips a flagged file that no longer exists on the NAS instead of failing the whole refetch' do
-      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos',
-                                   { '2024/IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1], 'gone.jpg' => [1, 1] })
-      manifest.checksum_hashed('SN-backup-04-8tb', 'photos', 'gone.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_checksums('SN-backup-04-8tb', 'photos/2024',
+                                   { 'IMG_0001.jpg' => [1, 1], 'good.jpg' => [1, 1], 'gone.jpg' => [1, 1] })
+      manifest.checksum_hashed('SN-backup-04-8tb', 'photos/2024', 'gone.jpg', outcome: :corrupt, at: '2026-09-01T00:00:00Z')
       expect(mirror).to receive(:sync).and_return(ok_result)
-      expect(mirror).to receive(:refetch).with(photos, "#{drive_root}/photos", ['2024/IMG_0001.jpg'])
+      expect(mirror).to receive(:refetch).with(album, "#{drive_root}/photos/2024", ['IMG_0001.jpg'])
                                          .and_return(EasySync::Shell::Result.new(output: '', status: 0))
       runner.run
-      gone = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == 'gone.jpg' }
+      gone = manifest.checksum_rows('SN-backup-04-8tb', 'photos/2024').find { |r| r.relative_path == 'gone.jpg' }
       expect(gone.refetched_at).to be_nil
     end
 
     it 'does not refetch when the copy pass fails' do
-      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos", root_only: false).and_return(failed_result)
+      expect(mirror).to receive(:sync).with(album, "#{drive_root}/photos/2024", root_only: false).and_return(failed_result)
       expect(mirror).not_to receive(:refetch)
       report = runner.run
       expect(report.refetched).to be_empty
-      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos/2024').find { |r| r.relative_path == 'IMG_0001.jpg' }
       expect(row.refetched_at).to be_nil
     end
 
     it 'warns and leaves the flags untouched when the refetch itself fails' do
-      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).with(album, "#{drive_root}/photos/2024", root_only: false).and_return(ok_result)
       expect(mirror).to receive(:refetch).and_return(EasySync::Shell::Result.new(output: 'boom', status: 23))
 
       report = runner.run
       expect(report.refetched).to be_empty
-      expect(report.warnings).to include(a_string_matching(/photos: refetch of 1 scrub-flagged file failed/))
-      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos').find { |r| r.relative_path == '2024/IMG_0001.jpg' }
+      expect(report.warnings).to include(a_string_matching(%r{photos/2024: refetch of 1 scrub-flagged file failed}))
+      row = manifest.checksum_rows('SN-backup-04-8tb', 'photos/2024').find { |r| r.relative_path == 'IMG_0001.jpg' }
       expect(row.refetched_at).to be_nil
     end
 
     it 'in dry-run, only prints what would be refetched and calls neither refetch nor mark_refetched' do
-      expect(mirror).to receive(:sync).with(photos, "#{drive_root}/photos", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).with(album, "#{drive_root}/photos/2024", root_only: false).and_return(ok_result)
       expect(mirror).not_to receive(:refetch)
       before_dump = manifest.db.execute('SELECT * FROM file_checksums ORDER BY relative_path')
 
@@ -745,29 +739,29 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'purges a file once it has expired and the drive is mounted' do
-      synced_before('photos', 'SN-backup-04-8tb')
-      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
-      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      synced_before('photos/2024', 'SN-backup-04-8tb')
+      manifest.reconcile_pending('photos/2024', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(report.purged).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
-      expect(File).not_to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(report.purged).to eq([['photos/2024', 'old.jpg', 'backup-04-8tb']])
+      expect(File).not_to exist(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       expect(manifest.deletions.size).to eq(1)
-      expect(File.read(dashboard_path)).to include('photos/old.jpg deleted from backup-04-8tb')
+      expect(File.read(dashboard_path)).to include('photos/2024/old.jpg deleted from backup-04-8tb')
     end
 
     it 'does not purge a file that reappeared on the NAS' do
-      synced_before('photos')
-      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
-      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      synced_before('photos/2024')
+      manifest.reconcile_pending('photos/2024', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
       expect(report.purged).to be_empty
       expect(manifest.pending_deletions).to be_empty
-      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(File).to exist(File.join(drive_root, 'photos', '2024', 'old.jpg'))
     end
 
     it 'starts the clock on a whole folder that vanished from a mounted share, then removes it after the grace period' do
@@ -797,22 +791,22 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'honours --no-purge and purge: false' do
-      synced_before('photos')
-      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
-      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      synced_before('photos/2024')
+      manifest.reconcile_pending('photos/2024', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file']]))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       build_runner(settings, purge: false).run
-      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(File).to exist(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       build_runner(settings.merge(purge: false)).run
-      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(File).to exist(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       expect(manifest.pending_deletions.first.missing_runs).to eq(3)
     end
 
     it 'in dry-run mode writes nothing at all to the manifest and leaves the dashboard alone' do
       make_shows('Show A')
-      manifest.assign_folder('photos', 'SN-backup-04-8tb')
+      manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
       allow(mirror).to receive(:check).and_return(check_result(missing: [['gone.jpg', 'file']]))
       allow(mirror).to receive(:sync).and_return(ok_result)
@@ -826,7 +820,7 @@ RSpec.describe EasySync::Jbod::Runner do
       expect(manifest.sync_runs).to be_empty
       expect(manifest.pending_deletions).to be_empty
       expect(manifest.history('tv/Show A')).to be_empty
-      expect(manifest.folder('photos')).to have_attributes(last_sync_status: nil, last_synced_at: nil)
+      expect(manifest.folder('photos/2024')).to have_attributes(last_sync_status: nil, last_synced_at: nil)
       expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(last_used_bytes: nil, smart_status: nil)
       expect(manifest.db.execute('SELECT * FROM folders').to_s + manifest.db.execute('SELECT * FROM drives').to_s).to eq(before)
       expect(File).not_to exist(dashboard_path)
@@ -835,16 +829,16 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'in dry-run mode touches neither the drives nor the pending table' do
-      synced_before('photos')
-      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
-      manifest.reconcile_pending('photos', [['old.jpg', 'file']], at: '2026-09-05T00:00:00Z')
-      write_file(File.join(drive_root, 'photos', 'old.jpg'))
+      synced_before('photos/2024')
+      manifest.reconcile_pending('photos/2024', [['old.jpg', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_pending('photos/2024', [['old.jpg', 'file']], at: '2026-09-05T00:00:00Z')
+      write_file(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       allow(mirror).to receive(:check).and_return(check_result(missing: [['old.jpg', 'file'], ['new.jpg', 'file']]))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = build_runner(settings, dry_run: true).run
-      expect(report.would_purge).to eq([['photos', 'old.jpg', 'backup-04-8tb']])
-      expect(File).to exist(File.join(drive_root, 'photos', 'old.jpg'))
+      expect(report.would_purge).to eq([['photos/2024', 'old.jpg', 'backup-04-8tb']])
+      expect(File).to exist(File.join(drive_root, 'photos', '2024', 'old.jpg'))
       expect(manifest.pending_deletions.map { |p| [p.relative_path, p.missing_runs] }).to eq([['old.jpg', 2]])
     end
   end

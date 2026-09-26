@@ -116,6 +116,30 @@ last check left off - so file sizes and cache state vary by drive):
 8-way scales as well as 4-way did, with the enclosure's bandwidth headroom
 above easily covering it. CPU is never the limit (see "Hash speed" below).
 
+## `easy_sync benchmark` (sequential write/read per drive)
+
+Checked on `jbod-test-1` on 2026-09-22: a 1.5 GB test file wrote at
+86-99 MB/s and read at ~163 MB/s. That is close to scrub's ~150 MB/s on the
+same drive, so the page cache was bypassed. Ctrl-C removed the test file.
+
+First real-fleet `benchmark --all`, 2026-09-22 14:54-15:08, 8 GB file,
+write/read in MiB/s (as `benchmark` and `scrub` report):
+
+| drive | write | read |
+|---|---|---|
+| backup-01-8tb | 224 | 247 |
+| backup-07-6tb | 180 | 196 |
+| backup-03-8tb | 158 | 163 |
+| backup-04-8tb | 136 | 154 |
+| backup-02-6tb | 137 | 142 |
+| backup-06-8tb | 130 | 136 |
+| backup-08-2tb | 107 | 123 |
+| backup-05-3tb | 106 | 112 |
+
+Each drive had one run then; a SLOWER flag needs 3 earlier runs. The 8 GB
+table under "Drives are not the limit" doesn't say whether it used MB or
+MiB (~5% apart), so compare the two loosely.
+
 ## Hash speed (Apple Silicon)
 
 SHA-256 2514 MB/s, SHA-1 2486, MD5 763. Apple Silicon speeds up SHA but not

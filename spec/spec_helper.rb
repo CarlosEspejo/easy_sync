@@ -22,5 +22,7 @@ RSpec.configure do |config|
   # developer's home directory. Point every default path into the temp dir.
   config.before do
     stub_const('EasySync::Config::HOME_DIR', File.join(temp_dir, 'home', '.easy_sync'))
+    # Nor at the real Backblaze install: specs that want one build it here.
+    stub_const('EasySync::Jbod::Backblaze::DATA_DIR', File.join(temp_dir, 'backblaze'))
   end
 end

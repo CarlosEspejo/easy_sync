@@ -76,16 +76,6 @@ RSpec.describe EasySync::Config do
     expect { reloaded.add_source('/Volumes/pro') }.to raise_error(EasySync::Error, /already a source/)
   end
 
-  it 'ignores a :split: setting left over from 2.0 and drops it on the next save' do
-    File.write(path, "---\n:sources:\n- :path: \"/Volumes/tv\"\n  :split: true\n- :path: \"/Volumes/pro\"\n  :split: false\n")
-    config, = described_class.load(path)
-    expect(config.source_entries).to eq([{ path: '/Volumes/tv' }, { path: '/Volumes/pro' }])
-    expect(config.settings[:sources]).to eq([{ path: '/Volumes/tv' }, { path: '/Volumes/pro' }])
-    config.remove_source('/Volumes/pro')
-    config.save
-    expect(File.read(path)).not_to include('split')
-  end
-
   it 'keeps keys it does not know and non-scalar values when rewriting' do
     File.write(path, { custom: 'x', exclude_folders: ['#recycle', '.DS_Store'], rsync_args: ['--bwlimit=1000'] }.to_yaml)
     config, = described_class.load(path)

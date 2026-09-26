@@ -17,6 +17,11 @@ module EasySync
 
       Usage = Struct.new(:capacity_bytes, :used_bytes, :free_bytes, keyword_init: true)
 
+      # +disk+ is what was ejected ("disk4", or the mount point when the
+      # physical disk couldn't be resolved). +blocker+ is the process macOS
+      # says kept a volume busy ("1234 (/usr/libexec/...)"), when it names one.
+      Ejection = Struct.new(:ok, :disk, :message, :blocker, keyword_init: true)
+
       attr_reader :mount_root
 
       def initialize(mount_root: '/Volumes', shell: Shell.new)
@@ -226,6 +231,18 @@ module EasySync
         return nil unless container_info.success?
 
         container_info.output[/APFS Physical Store:\s*(disk\d+s\d+)/, 1] || container
+      end
+
+      # Ejects the whole physical disk under a mounted drive, as Finder's Eject
+      # does, so the enclosure can be powered off. Never forces: a volume some
+      # process still has open (Spotlight, Backblaze) stays mounted and the
+      # result names that process.
+      def eject(mount_point)
+        disk = physical_disk_for(mount_point).to_s[/\Adisk\d+/] || mount_point
+        result = @shell.capture(['diskutil', 'eject', disk])
+        lines = result.output.lines.map(&:strip).reject(&:empty?)
+        Ejection.new(ok: result.success?, disk: disk, message: lines.last.to_s,
+                     blocker: result.output[/dissented by PID (\d+(?: \([^)]*\))?)/, 1])
       end
 
       # Best-effort FileVault lock state for a registered drive that isn't

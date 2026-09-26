@@ -16,7 +16,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   before do
     drives
-    manifest.assign_folder('movies/Heat (1995)', serial)
+    manifest.assign_folder('movies/Metropolis (1927)', serial)
     write_marker(drive_root, serial)
   end
 
@@ -27,11 +27,11 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   def write(rel, content = 'sample content, sample content')
-    write_file(File.join(drive_root, 'movies', 'Heat (1995)', rel), content)
+    write_file(File.join(drive_root, 'movies', 'Metropolis (1927)', rel), content)
   end
 
   def rows
-    manifest.checksum_rows(serial, 'movies/Heat (1995)')
+    manifest.checksum_rows(serial, 'movies/Metropolis (1927)')
   end
 
   it 'gives every file a baseline on the first run, and hashes nothing new on a second run with no changes' do
@@ -52,7 +52,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
   it 'tracks only the top-level files of a root-files unit, never files in the share\'s subfolders' do
     manifest.assign_folder('movies', serial, scope: 'root')
     write_file(File.join(drive_root, 'movies', 'index.txt'), 'top level')
-    write('movie.mkv')   # movies/Heat (1995)/movie.mkv belongs to the Heat folder
+    write('movie.mkv')   # movies/Metropolis (1927)/movie.mkv belongs to the Metropolis folder
     scrubber.run(mounted_drive)
     expect(manifest.checksum_rows(serial, 'movies').map(&:relative_path)).to eq(['index.txt'])
     expect(rows.map(&:relative_path)).to eq(['movie.mkv'])
@@ -101,7 +101,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
     scrubber.run(mounted_drive)
     expect(rows).not_to be_empty
 
-    manifest.reassign_folder('movies/Heat (1995)', 'SN-backup-05-8tb')
+    manifest.reassign_folder('movies/Metropolis (1927)', 'SN-backup-05-8tb')
     scrubber.run(mounted_drive)
     expect(rows).to be_empty
   end
@@ -110,7 +110,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
     write('movie.mkv')
     write('.DS_Store')
     target = write('real.txt')
-    File.symlink(target, File.join(drive_root, 'movies', 'Heat (1995)', 'link.txt'))
+    File.symlink(target, File.join(drive_root, 'movies', 'Metropolis (1927)', 'link.txt'))
 
     scrubber.run(mounted_drive)
     expect(rows.map(&:relative_path)).to contain_exactly('movie.mkv', 'real.txt')
@@ -134,7 +134,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
     scrubber.run(mounted_drive)
     expect(rows.first).to have_attributes(status: 'unreadable', digest: nil)
 
-    manifest.mark_refetched(serial, 'movies/Heat (1995)', ['movie.mkv'])
+    manifest.mark_refetched(serial, 'movies/Metropolis (1927)', ['movie.mkv'])
     allow(File).to receive(:open).with(path, 'rb').and_call_original
     result = scrubber.run(mounted_drive)
     expect(result.repaired).to eq(1)
@@ -174,7 +174,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   describe 'refetched rows (sync repaired a flagged file)' do
     let(:original_content) { 'sample content, sample content' }
-    let(:path) { File.join(drive_root, 'movies', 'Heat (1995)', 'movie.mkv') }
+    let(:path) { File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv') }
 
     before do
       write('movie.mkv', original_content)
@@ -184,7 +184,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
       File.utime(mtime, mtime, path)
       scrubber.run(mounted_drive)   # -> corrupt
       expect(rows.first.status).to eq('corrupt')
-      manifest.mark_refetched(serial, 'movies/Heat (1995)', ['movie.mkv'])
+      manifest.mark_refetched(serial, 'movies/Metropolis (1927)', ['movie.mkv'])
     end
 
     it 'goes back to ok once the refetched file matches its baseline' do
@@ -201,7 +201,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
       result = scrubber.run(mounted_drive)   # still corrupted content, refetched_at was set but bytes unchanged
       expect(result.unresolved).to eq(1)
       expect(rows.first.status).to eq('unresolved')
-      expect(manifest.flagged_checksums(serial, 'movies/Heat (1995)')).to be_empty
+      expect(manifest.flagged_checksums(serial, 'movies/Metropolis (1927)')).to be_empty
     end
   end
 
