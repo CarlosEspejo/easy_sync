@@ -47,6 +47,8 @@ lives. Nothing from 0.0.x carries over; see "Breaking changes".
 - `reassign` moves a folder or a whole share to another drive (`--copy`
   copies it drive-to-drive).
 - `plan` measures shares and checks every folder fits a drive.
+- `eject` ejects every connected drive so the enclosure can be powered off
+  between syncs, and says when to connect them again for Backblaze.
 - `clean` removes excluded junk (`.DS_Store`, `#recycle`, ...) from the drives.
 
 ### Reporting

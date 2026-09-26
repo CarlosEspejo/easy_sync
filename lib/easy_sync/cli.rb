@@ -16,6 +16,7 @@ module EasySync
       ['Back up', [
         ['sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]',
          'mirror the shares onto the drives; --accept-changes lets through a bulk change the tripwire stopped (this run only)'],
+        ['eject [NAME ...] [--dry-run]', 'eject every connected backup drive (or just the ones named) so the enclosure can be powered off'],
         ['status [--all] [--smart]', 'whether a sync is running, drives, their health, and a folder summary; --all lists every folder; ' \
                                      '--smart reads SMART from the mounted drives now instead of showing the last sync\'s reading'],
         ['dashboard', 'regenerate the HTML report']
@@ -78,6 +79,7 @@ module EasySync
       when 'remove-source' then remove_source(@argv)
       when 'sources' then list_sources
       when 'sync' then sync(@argv)
+      when 'eject' then return eject(@argv)
       when 'register-drive' then register_drive(@argv)
       when 'replace-drive' then replace_drive(@argv)
       when 'restore' then restore(@argv)
@@ -1098,11 +1100,82 @@ module EasySync
     end
 
     def dashboard
+      @out.puts "Dashboard written to #{write_dashboard}"
+    end
+
+    def write_dashboard
       mounted = volume_info.mounted_drives(manifest.drives)
       run = Jbod::RunLock.new(settings[:lock_path]).status
-      path = Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
-                            .write(settings[:dashboard_path], mounted: mounted, running: run)
-      @out.puts "Dashboard written to #{path}"
+      Jbod::Dashboard.new(manifest, grace_days: settings[:grace_days], scrub_stale_days: settings[:scrub_stale_days])
+                     .write(settings[:dashboard_path], mounted: mounted, running: run)
+    end
+
+    # Ejects every connected easy_sync drive (or just the ones named) so the
+    # enclosure can be powered off between syncs. Refuses while a sync, scrub
+    # or other run holds the lock, since ejecting would cut it off. Each drive
+    # is marked last seen now, which starts the dashboard's Backblaze
+    # 30-day countdown from the real disconnect rather than the last sync.
+    # Returns 1 if any drive stayed mounted: the enclosure is not safe to
+    # power off yet.
+    def eject(args)
+      dry_run = false
+      OptionParser.new { |o| o.on('--dry-run', 'Show which drives would be ejected') { dry_run = true } }.parse!(args)
+      drives = drives_to_eject(args)
+      if drives.empty?
+        @out.puts 'No easy_sync drive is connected; nothing to eject.'
+        return 0
+      end
+      if dry_run
+        drives.each { |m| @out.puts "Would eject #{m.friendly_name} (#{m.mount_point})" }
+        @out.puts 'Dry run: nothing ejected.'
+        return 0
+      end
+
+      lock = Jbod::RunLock.new(settings[:lock_path])
+      if (run = lock.status)
+        raise Error, "#{run.kind} is running (pid #{run.pid}); ejecting now would cut it off. " \
+                     'Let it finish (or stop it with Ctrl-C), then eject.'
+      end
+      failed = lock.acquire(kind: 'eject') { drives.reject { |m| eject_one(m) } }
+      write_dashboard
+      report_ejected(drives.size - failed.size, failed)
+    end
+
+    def drives_to_eject(names)
+      registered = manifest.drives(include_retired: true)
+      mounted = volume_info.mounted_drives(registered)
+      return mounted if names.empty?
+
+      names.map do |name|
+        registered.find { |d| d.friendly_name == name } or raise Error, "no drive named #{name}"
+        mounted.find { |m| m.friendly_name == name } or raise Error, "#{name} is not connected"
+      end
+    end
+
+    def eject_one(mounted)
+      manifest.update_drive_usage(mounted.serial_number, used_bytes: mounted.used_bytes, free_bytes: mounted.free_bytes,
+                                                         capacity_bytes: mounted.capacity_bytes)
+      result = volume_info.eject(mounted.mount_point)
+      if result.ok
+        @out.puts "Ejected #{mounted.friendly_name} (#{result.disk})"
+      else
+        reason = result.blocker ? "in use by pid #{result.blocker}" : result.message
+        @out.puts "Could not eject #{mounted.friendly_name}: #{reason}"
+      end
+      result.ok
+    end
+
+    def report_ejected(ejected, failed)
+      unless failed.empty?
+        @out.puts "#{failed.map(&:friendly_name).join(', ')} still connected: do not power off yet. " \
+                  'Close whatever is using it and run `easy_sync eject` again.'
+        return 1
+      end
+      back_by = (@clock.now + Jbod::Dashboard::BACKBLAZE_DROP_DAYS * 86_400).strftime('%Y-%m-%d')
+      @out.puts "#{ejected == 1 ? 'The drive is' : "All #{ejected} drives are"} ejected; it is safe to power off the enclosure."
+      @out.puts "Connect again by #{back_by}: Backblaze drops a drive from its current backup after " \
+                "#{Jbod::Dashboard::BACKBLAZE_DROP_DAYS} days disconnected."
+      0
     end
   end
 end

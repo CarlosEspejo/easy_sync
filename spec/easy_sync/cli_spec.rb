@@ -1488,6 +1488,95 @@ RSpec.describe EasySync::CLI do
     end
   end
 
+  describe 'eject' do
+    let(:clock) { double(now: Time.utc(2026, 9, 26, 12, 0)) }
+    let(:lock_path) { File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock') }
+    let(:disks) { { 'backup-01-3tb' => 'disk4', 'backup-02-6tb' => 'disk6', 'backup-03-8tb' => 'disk8' } }
+
+    before do
+      m = manifest
+      disks.each_key.with_index do |name, i|
+        m.register_drive(serial_number: "S#{i + 1}", friendly_name: name, capacity_bytes: 3 * TB)
+        m.update_drive_usage("S#{i + 1}", used_bytes: 1, free_bytes: 1, seen_at: '2026-09-01T00:00:00Z')
+      end
+      m.close
+      # backup-01 and backup-02 are connected; backup-03 is not.
+      %w[backup-01-3tb backup-02-6tb].each_with_index do |name, i|
+        vol = make_dirs(mount_root, name).first
+        write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), { serial_number: "S#{i + 1}", friendly_name: name }.to_json)
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', vol] }, output: "Part of Whole: #{disks[name].succ}\n")
+        fake_shell.on(->(argv) { argv == ['diskutil', 'info', disks[name].succ] },
+                      output: "APFS Physical Store: #{disks[name]}s2\n")
+      end
+      fake_shell.on('df', output: ->(argv) { df_output(argv.last, capacity_kb: 3 * 1024**3, used_kb: 1024) })
+      # A real eject makes the volume vanish from /Volumes.
+      fake_shell.on(->(argv) { argv[0, 2] == %w[diskutil eject] }, output: lambda { |argv|
+        FileUtils.rm_rf(File.join(mount_root, disks.key(argv.last)))
+        "Disk #{argv.last} ejected\n"
+      })
+    end
+
+    def seen(name) = manifest.drive_by_name(name).last_seen_at
+
+    it 'ejects the physical disk under every connected drive and says when to connect them again' do
+      expect(cli('eject', clock: clock).run).to eq(0)
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to eq([%w[diskutil eject disk4], %w[diskutil eject disk6]])
+      expect(out.string).to include('Ejected backup-01-3tb (disk4)', 'Ejected backup-02-6tb (disk6)',
+                                    'All 2 drives are ejected; it is safe to power off the enclosure.',
+                                    'Connect again by 2026-10-26: Backblaze drops a drive')
+      expect(seen('backup-01-3tb')).to be > '2026-09-01T00:00:00Z'
+      expect(seen('backup-03-8tb')).to eq('2026-09-01T00:00:00Z')   # not connected, so not seen
+      expect(File.read(File.join(temp_dir, 'dashboard.html'))).to include('not connected')
+      expect(File).not_to exist(lock_path)
+    end
+
+    it 'ejects only the drives named, and says so for a name it cannot eject' do
+      expect(cli('eject', 'backup-02-6tb').run).to eq(0)
+      expect(out.string).to include('Ejected backup-02-6tb', 'The drive is ejected')
+      expect(out.string).not_to include('backup-01-3tb')
+
+      expect(cli('eject', 'backup-03-8tb').run).to eq(1)
+      expect(err.string).to include('backup-03-8tb is not connected')
+      expect(cli('eject', 'nope').run).to eq(1)
+      expect(err.string).to include('no drive named nope')
+    end
+
+    it 'keeps the enclosure powered while a drive is still in use, naming what holds it' do
+      fake_shell.on(->(argv) { argv == %w[diskutil eject disk6] }, status: 1, output: <<~OUT)
+        Unmount of disk6 failed: at least one volume could not be unmounted
+        Unmount was dissented by PID 812 (/Library/Backblaze.bzpkg/bztransmit)
+        Dissenter parent PPID 1 (/sbin/launchd)
+      OUT
+      expect(cli('eject').run).to eq(1)
+      expect(out.string).to include('Ejected backup-01-3tb (disk4)',
+                                    'Could not eject backup-02-6tb: in use by pid 812 (/Library/Backblaze.bzpkg/bztransmit)',
+                                    'backup-02-6tb still connected: do not power off yet.')
+      expect(out.string).not_to include('safe to power off', 'Connect again')
+    end
+
+    it 'refuses while a sync is running' do
+      FileUtils.mkdir_p(File.dirname(lock_path))
+      File.write(lock_path, "#{Process.pid}\nsync\n")
+      expect(cli('eject').run).to eq(1)
+      expect(err.string).to include("sync is running (pid #{Process.pid}); ejecting now would cut it off")
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to be_empty
+    end
+
+    it 'with --dry-run lists the drives and changes nothing' do
+      expect(cli('eject', '--dry-run').run).to eq(0)
+      expect(out.string).to include('Would eject backup-01-3tb', 'Would eject backup-02-6tb', 'Dry run: nothing ejected.')
+      expect(fake_shell.calls.select { |a| a[0, 2] == %w[diskutil eject] }).to be_empty
+      expect(seen('backup-01-3tb')).to eq('2026-09-01T00:00:00Z')
+      expect(File).not_to exist(File.join(temp_dir, 'dashboard.html'))
+    end
+
+    it 'says so when no drive is connected' do
+      disks.each_key { |name| FileUtils.rm_rf(File.join(mount_root, name)) }
+      expect(cli('eject').run).to eq(0)
+      expect(out.string).to include('No easy_sync drive is connected; nothing to eject.')
+    end
+  end
+
   describe 'forget-drive' do
     before do
       m = manifest

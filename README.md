@@ -173,7 +173,7 @@ A sync run
    That feeds the tripwire (below) and the deletion grace period.
 5. Files gone from the NAS are recorded once their folder copies cleanly (see
    below), and any that have been gone long enough are removed from the drives.
-5. Drive usage and SMART health are recorded, the manifest and config are copied
+6. Drive usage and SMART health are recorded, the manifest and config are copied
    to every mounted drive, and the dashboard is regenerated.
 
 A folder that has outgrown its drive gets a distinct "drive full" status rather
@@ -187,6 +187,19 @@ the NAS is: removed once the folder is verified synced to its new drive and
 it's been that way for `grace_days` (see "Deletions have a grace period"
 below) - it is not deleted immediately, so a bad reassign can still be undone
 before the old copy disappears.
+
+### Powering off between syncs
+
+    easy_sync eject                 # --dry-run lists the drives; name drives to eject just those
+
+Ejects every connected backup drive the way Finder's Eject does, so the
+enclosure can be switched off until the next sync. It refuses while a sync or
+scrub is running, and never forces a drive that something (Spotlight,
+Backblaze) still has open: it names the process, says not to power off yet,
+and exits 1. Each drive is marked as last seen at that moment, and the
+dashboard is regenerated to show them disconnected. It ends with the date to
+connect them again by: Backblaze drops a drive from its current backup after
+30 days disconnected.
 
 Dashboard
 ---------
@@ -502,6 +515,9 @@ Back up:
   sync [--dry-run] [--no-purge] [--no-keep-awake] [--accept-changes [FOLDER ...]]
                               mirror the shares onto the drives; --accept-changes lets through a
                               bulk change the tripwire stopped (this run only)
+  eject [NAME ...] [--dry-run]
+                              eject every connected backup drive (or just those named) so the
+                              enclosure can be powered off; refuses while a run is in progress
   status [--all] [--smart]    whether a sync is running (and for how long), drives, health and
                               folders, in the terminal. Health is the last sync's SMART reading (an
                               n/a says when it was taken); --smart reads the mounted drives now,

@@ -57,6 +57,12 @@ README.md is the user-facing truth; this file is for working on the code.
   `msync(MS_SYNC|MS_INVALIDATE)`, via Fiddle) dropped its pages first. Any
   "read it off the platter" code needs both. Fiddle is a bundled gem in Ruby
   4.0, so it's declared in the gemspec.
+- `diskutil eject disk4` (the whole physical disk, from `physical_disk_for`
+  minus its partition suffix) on an encrypted APFS USB drive prints
+  `Disk disk4 ejected`, exits 0, and the volume leaves `/Volumes` and the
+  disk leaves `diskutil list` (jbod-test-1/2, 2026-09-26). Getting it back
+  takes a replug. The "dissented by PID" failure `easy_sync eject` parses
+  has not been seen on real hardware yet.
 - Pulling a drive's cable mid-read: the marker file vanishes and reads fail;
   scrub stops as "unmounted" without flagging the in-flight file. A
   FileVault test drive came back mounted and unlocked on replug.
