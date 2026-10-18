@@ -22,8 +22,8 @@ covers that today:
   overwritten file on a drive also becomes the current version offsite.
 
 The tripwire stops the copy *before* it starts when a run would change far
-more existing files than the library ever changes normally. A media library
-adds files, and now and then one is replaced (a better rip, a re-tag). It
+more existing files than the library ever changes normally. A library adds
+files, and now and then one is replaced (an edited photo, a re-tagged song). It
 almost never rewrites hundreds of existing files at once. Ransomware always
 does.
 
@@ -111,7 +111,7 @@ Rollout):
   3-file folder with one replaced file from tripping.
 - **Whole run:** trips when the sum of changed files across all checked
   folders ≥ `tripwire_run_files`. This is the check that catches ransomware
-  spread across thousands of single-file movie folders, none of which
+  spread across thousands of small single-file folders, none of which
   trips on its own. Because every folder is checked before any copy
   starts, the run stops before *anything* is overwritten.
 - `tripwire_run_files: 0` turns the tripwire off entirely (report-only
@@ -214,14 +214,14 @@ Differences from the design above, all found while building it:
   the purge is skipped.
 
 Checked on `jbod-test-1` (2026-09-24, scratch config, enforce on,
-200-file album + ten single-file movie folders):
+200-file album + ten single-file folders):
 
 | Step | Result |
 |---|---|
 | 120 album files rewritten as `*.locked`, originals removed; `sync --dry-run` | prints the trip with 10 samples, exit 0, manifest `.dump` identical |
 | same, `sync` | album held back (`tripped`), other 10 synced, exit 1, no `.locked` file on the drive, no deletion clock started |
 | `sync --accept-changes tripsrc/Album` | copied, 120 pending deletions, trip recorded with `accepted_at` |
-| `tripwire_run_files: 8`, one file rewritten in each movie folder | whole run stopped: nothing copied or purged, all 11 `tripped`, dashboard headline "Sync stopped: 10 files would change" (the 120 already-pending files not counted), exit 1 |
+| `tripwire_run_files: 8`, one file rewritten in each single-file folder | whole run stopped: nothing copied or purged, all 11 `tripped`, dashboard headline "Sync stopped: 10 files would change" (the 120 already-pending files not counted), exit 1 |
 | `sync --accept-changes`, then a plain `sync` | copied; the following run reports 0 changed files |
 
 **Still to do before enforcing (Rollout):** measure phase 1b's duration on

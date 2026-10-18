@@ -108,7 +108,7 @@ gate it on `user_version` (see CLAUDE.md: the real manifest is stamped 5).
 ```sql
 CREATE TABLE IF NOT EXISTS file_checksums (
   drive_serial  TEXT    NOT NULL REFERENCES drives(serial_number),
-  folder_path   TEXT    NOT NULL,              -- folders.folder_path, e.g. "movies/Metropolis (1927)"
+  folder_path   TEXT    NOT NULL,              -- folders.folder_path, e.g. "documents/Tax Returns"
   relative_path TEXT    NOT NULL,              -- path inside the folder
   size_bytes    INTEGER NOT NULL,
   mtime         INTEGER NOT NULL,              -- File.lstat.mtime.to_i
@@ -406,7 +406,7 @@ Use the `jbod-test` drives with a scratch `--config` (see CLAUDE.md):
 
    201 MB/s matches the ~200 MB/s estimate, so the full-fleet timings in
    "Decisions" stand. `--for` also stopped correctly on real hardware; with
-   ~9 GB movie files, a 2-minute limit ran about 3 minutes, since a file
+   ~9 GB files, a 2-minute limit ran about 3 minutes, since a file
    already being hashed always finishes.
 
 ### First full pass of the real fleet (2026-09-22)

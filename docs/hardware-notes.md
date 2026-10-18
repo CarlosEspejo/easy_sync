@@ -30,7 +30,7 @@ relevant entry before changing code that touches that tool.
   checking `PRAGMA table_info`, never by comparing version numbers: a
   version-gated `ALTER TABLE` was skipped on the real manifest and crashed the
   first sync after it (`no such column: model`).
-- `du` over SMB: seconds for thousands of single-file movie folders, minutes for a
+- `du` over SMB: seconds for thousands of small single-file folders, minutes for a
   share with hundreds of thousands of files. rsync's read-only walk of an
   unchanged folder is ~0.15 s.
 - Headless Chrome refuses windows narrower than ~500 px; render phone widths

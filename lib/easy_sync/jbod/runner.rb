@@ -19,7 +19,7 @@ module EasySync
       end
 
       # A placement unit as seen on the NAS. +key+ is its manifest folder_path:
-      # "tv/Show Name" for a subfolder, or the share name ("synology") with
+      # "photos/Album Name" for a subfolder, or the share name ("synology") with
       # +root_only+ for the share's loose top-level files (see
       # docs/fine-placement.md).
       SourceFolder = Struct.new(:key, :path, :root_only, keyword_init: true) do
@@ -549,7 +549,7 @@ module EasySync
       end
 
       # True when a folder holds no regular file apart from excluded/hidden
-      # names (a show folder left with just a .DS_Store, an empty downloads
+      # names (an album folder left with just a .DS_Store, an empty downloads
       # dir). Stops at the first real file, so a full folder costs one stat.
       def empty_source?(path)
         excluded = Array(settings[:exclude_folders])

@@ -2,8 +2,7 @@
 
 These numbers were measured, not estimated. Re-measure rather than eyeball.
 The fleet is 8 drives, 44.59 TB (4 × 7.28, 2 × 5.46, 1 × 2.73, 1 × 1.82 TB),
-against a library of about 31.9 TB (tv 17.7, movies 12.3, synology 1.9,
-pro 0.04).
+against a library of about 31.9 TB across four shares, the largest 17.7 TB.
 
 ## Sync throughput: 62.9 MB/s aggregate
 
@@ -40,7 +39,7 @@ SELECT folder_path, bytes_transferred,
   would bring the aggregate down to 42–47 MB/s. That is why `scrub` is a
   separate command (see `docs/integrity-scan.md`).
 - **Time Machine skews the numbers.** It backs up to a sparsebundle on the
-  same Synology (DS1019) that serves the media shares, so it competes for the
+  same Synology (DS1019) that serves the shares, so it competes for the
   same array and SMB link. It was running during part of this run. Run
   `sudo tmutil disable` before re-measuring, and check it first whenever a
   sync looks slow.

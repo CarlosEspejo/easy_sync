@@ -43,7 +43,7 @@ module EasySync
       end
 
       # One `du -sk` over every subfolder; the tool's own `du` cost was
-      # measured at ~6 s for 2,380 movie folders over SMB.
+      # measured at ~6 s for 2,380 single-file folders over SMB.
       def du(paths)
         return {} if paths.empty?
 

@@ -16,7 +16,7 @@ are still in `placement_history`.
 Each source used to carry `split: true|false`:
 
 - `false`: the whole share is one unit (`folders.folder_path` = `"synology"`).
-- `true`: each top-level subfolder is a unit (`"synology/Movies"`), and loose
+- `true`: each top-level subfolder is a unit (`"synology/Photos"`), and loose
   top-level files are silently not backed up.
 
 That caused three problems:
@@ -74,7 +74,7 @@ directories only). The probe uses `--delete --exclude=/*/` **without**
 `--delete-excluded`, so rsync protects the excluded subfolders and never
 reports them. Checked against rsync 3.5.0 on scratch directories: the copy
 moved only the two top-level files, and the probe reported only a stale
-top-level file, not `TV/` (present on the destination only) or `Movies/`.
+top-level file, not `Documents/` (present on the destination only) or `Photos/`.
 
 **`Purger`.**
 - Before any whole-folder `rm_rf`, it skips the candidate if a live folder on
@@ -119,15 +119,15 @@ Kept as the record of what was checked; steps 1-2 used `split`, which is
 gone now.
 
 On `jbod-test-1`/`jbod-test-2` with a scratch `--config` (CLAUDE.md, "Verify
-live"), and a scratch share with `Movies/`, `TV/` and two loose root files:
+live"), and a scratch share with `Photos/`, `Documents/` and two loose root files:
 
 1. Make the share a whole placement on `jbod-test-1` (a `tree` row keyed by
    the share), sync it.
-2. `split SHARE`: no rsync runs; rows for `SHARE/Movies`, `SHARE/TV`, and
+2. `split SHARE`: no rsync runs; rows for `SHARE/Photos`, `SHARE/Documents`, and
    `SHARE` becomes `root`; inodes unchanged.
 3. `sync`: ~0 bytes transferred; the root unit copies only loose files.
    Delete a loose file on the NAS → only that file becomes pending. Delete
-   `TV/` on the NAS → only `SHARE/TV` becomes pending.
+   `Documents/` on the NAS → only `SHARE/Documents` becomes pending.
 4. A new share syncs as per-folder units, all on one drive while it fits.
 5. `reassign SHARE jbod-test-2 --copy`: local rsync only; the next sync
    transfers ~0 bytes; the old copy is only removed after an `ok` sync and
@@ -138,7 +138,7 @@ live"), and a scratch share with `Movies/`, `TV/` and two loose root files:
 
 ## Results (2026-09-23, jbod-test-1/2, scratch config, all six steps passed)
 
-The scratch "NAS" was a local tree (`fpshare`: `Movies/` 64 MB, `TV/` 32 MB,
+The scratch "NAS" was a local tree (`fpshare`: `Photos/` 64 MB, `Documents/` 32 MB,
 two loose files; `fpshare/` placed whole on `jbod-test-1` through a `tree`
 row). The drives' own `.easy_sync/` folders were backed up first and
 restored afterwards, identical.
@@ -146,15 +146,15 @@ restored afterwards, identical.
 1. The whole share synced as one unit, 100.7 MB; `sources` said
    "placed whole; `easy_sync split fpshare` places its folders one by one".
 2. `split fpshare --dry-run` wrote nothing. `split fpshare` gave
-   `fpshare` (root, 20 B), `fpshare/Movies`, `fpshare/TV`, all on
+   `fpshare` (root, 20 B), `fpshare/Photos`, `fpshare/Documents`, all on
    jbod-test-1, with 0 pending deletions. Every file kept its inode.
 3. The next `sync` transferred **0 bytes** for all three units. The root
    unit's rsync total was 20 B (only the loose files), so `--exclude=/*/`
    behaves on the real drive as it did on scratch dirs. After deleting
-   `loose2.txt` and `TV/` on the NAS, exactly two candidates appeared:
-   (`fpshare/TV`, whole folder) and (`fpshare`, `loose2.txt`); the root
-   unit's probe did not report `TV/`. Once expired, the purge removed just
-   those two; `Movies/` and `loose1.txt` were untouched.
+   `loose2.txt` and `Documents/` on the NAS, exactly two candidates appeared:
+   (`fpshare/Documents`, whole folder) and (`fpshare`, `loose2.txt`); the root
+   unit's probe did not report `Documents/`. Once expired, the purge removed just
+   those two; `Photos/` and `loose1.txt` were untouched.
 4. `add-source fpnew` dropped the leftover `:split: false` from the config
    on save; `plan` only reported. The sync placed `fpnew/A` on the drive
    with the most free space and `fpnew/B` "with the rest of fpnew".

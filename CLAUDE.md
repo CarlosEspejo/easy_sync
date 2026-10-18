@@ -97,7 +97,7 @@ visible on real hardware. Record what you learn in docs/hardware-notes.md.
   a PR; the owner squash-merges.
 - The repo is public: never commit real drive serials, volume UUIDs, folder
   names from the library, or passphrases, not even in a comment, a spec or a
-  doc. Use made-up ones (`SN-backup-04-8tb`, `movies/Metropolis (1927)`).
+  doc. Use made-up ones (`SN-backup-04-8tb`, `documents/Tax Returns`).
   Drive names (`backup-0N-Xtb`), share names, models and fleet-wide counts
   are fine. Older commits still hold five serials and the test drives'
   passphrase; history was deliberately not rewritten.

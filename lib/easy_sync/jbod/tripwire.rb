@@ -3,7 +3,7 @@
 module EasySync
   module Jbod
     # Decides whether a sync would overwrite too much of the backup at once:
-    # far more existing files replaced or gone on the NAS than a media library
+    # far more existing files replaced or gone on the NAS than a library
     # ever changes normally, which is what ransomware looks like. Pure logic
     # over the per-folder Mirror::Check results; Runner acts on the Decision.
     # See docs/tripwire.md.
