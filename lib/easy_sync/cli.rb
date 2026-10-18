@@ -475,7 +475,7 @@ module EasySync
     # (kept with the rest of the share while a drive has room); loose
     # top-level files are one more unit.
     def add_source(args)
-      path = args.first or raise Error, "add-source needs the share's path, e.g. /Volumes/tv\n\n#{USAGE}"
+      path = args.first or raise Error, "add-source needs the share's path, e.g. /Volumes/photos\n\n#{USAGE}"
       path = File.expand_path(path)
       raise Error, "#{path} is not mounted (or is empty)" unless Dir.exist?(path) && !Dir.empty?(path)
 
@@ -631,7 +631,7 @@ module EasySync
         o.on('--dry-run', 'Show what would be restored without changing the NAS') { opts[:dry_run] = true }
         o.on('--all', 'Restore every folder in the manifest') { opts[:all] = true }
       end.parse!(args)
-      raise Error, "restore needs a folder or share name (e.g. tv or \"tv/Show Name\"), or --all\n\n#{USAGE}" if args.empty? && !opts[:all]
+      raise Error, "restore needs a folder or share name (e.g. photos or \"photos/Album Name\"), or --all\n\n#{USAGE}" if args.empty? && !opts[:all]
 
       restorer = Jbod::Restorer.new(settings, manifest: manifest, shell: @shell, out: @out)
       folders = opts[:all] ? manifest.folders : restorer.resolve(args)

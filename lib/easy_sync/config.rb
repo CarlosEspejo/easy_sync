@@ -14,7 +14,7 @@ module EasySync
       # Each top-level folder of a share is placed on its own (kept on the
       # same drive as the rest of the share while it fits); loose top-level
       # files form one more unit. See docs/fine-placement.md.
-      sources: [{ path: '/Volumes/photos' }, { path: '/Volumes/tv' }, { path: '/Volumes/movies' }],
+      sources: [{ path: '/Volumes/photos' }, { path: '/Volumes/documents' }, { path: '/Volumes/music' }],
       mount_root: '/Volumes',
       reserve: '2gb',       # headroom placement always leaves on a drive: APFS metadata, the .easy_sync copies, rsync temp files
       keep_awake: true,     # hold off idle sleep (caffeinate) for the length of a sync, on macOS
