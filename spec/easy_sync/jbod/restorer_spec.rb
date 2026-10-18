@@ -8,18 +8,18 @@ RSpec.describe EasySync::Jbod::Restorer do
   let(:out) { StringIO.new }
   let(:settings) do
     { exclude_folders: ['#recycle', '.DS_Store'],
-      sources: [{ path: File.join(nas, 'tv') }, { path: File.join(nas, 'pro') }] }
+      sources: [{ path: File.join(nas, 'projects') }, { path: File.join(nas, 'pro') }] }
   end
   let(:restorer) { described_class.new(settings, manifest: manifest, shell: fake_shell, out: out) }
   let(:mounted_list) { [mounted(drives['backup-04-8tb'], free: 1 * TB, mount_point: drive_root)] }
 
   before do
     drives
-    manifest.assign_folder('tv/Breaking Bad', 'SN-backup-04-8tb')
+    manifest.assign_folder('projects/Website', 'SN-backup-04-8tb')
     manifest.assign_folder('pro', 'SN-backup-04-8tb')
-    write_file(File.join(drive_root, 'tv', 'Breaking Bad', 'S01E01.mp4'), 'x' * 100)
+    write_file(File.join(drive_root, 'projects', 'Website', 'page1.pdf'), 'x' * 100)
     write_file(File.join(drive_root, 'pro', 'Course', 'lesson1.mp4'), 'x' * 100)
-    FileUtils.mkdir_p(File.join(nas, 'tv'))
+    FileUtils.mkdir_p(File.join(nas, 'projects'))
     FileUtils.mkdir_p(File.join(nas, 'pro'))
   end
 
@@ -29,20 +29,20 @@ RSpec.describe EasySync::Jbod::Restorer do
     end
 
     it 'expands a share name to every folder placed under it' do
-      expect(restorer.resolve(['tv']).map(&:folder_path)).to eq(['tv/Breaking Bad'])
+      expect(restorer.resolve(['projects']).map(&:folder_path)).to eq(['projects/Website'])
     end
 
     it 'de-duplicates when a target and its share both match' do
-      expect(restorer.resolve(['tv', 'tv/Breaking Bad']).map(&:folder_path)).to eq(['tv/Breaking Bad'])
+      expect(restorer.resolve(['projects', 'projects/Website']).map(&:folder_path)).to eq(['projects/Website'])
     end
 
     it 'expands a share name to its root-files unit plus every folder under it' do
-      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
-      expect(restorer.resolve(['tv']).map(&:folder_path)).to eq(['tv', 'tv/Breaking Bad'])
+      manifest.assign_folder('projects', 'SN-backup-04-8tb', scope: 'root')
+      expect(restorer.resolve(['projects']).map(&:folder_path)).to eq(['projects', 'projects/Website'])
     end
 
     it 'raises for a name matching nothing placed' do
-      expect { restorer.resolve(['movies']) }.to raise_error(EasySync::Jbod::Restorer::UnknownTarget, /movies/)
+      expect { restorer.resolve(['documents']) }.to raise_error(EasySync::Jbod::Restorer::UnknownTarget, /documents/)
     end
   end
 
@@ -50,7 +50,7 @@ RSpec.describe EasySync::Jbod::Restorer do
     it 'rsyncs each folder from its drive back onto the configured NAS share, with --partial and no --delete' do
       fake_shell.on('rsync', output: rsync_stats)
       result = restorer.run(manifest.folders, mounted_list)
-      expect(result.restored).to contain_exactly('tv/Breaking Bad', 'pro')
+      expect(result.restored).to contain_exactly('projects/Website', 'pro')
       expect(result.skipped).to be_empty
       expect(result.failed).to be_empty
 
@@ -60,23 +60,23 @@ RSpec.describe EasySync::Jbod::Restorer do
         expect(argv).to include('-a', '--partial')
         expect(argv).not_to include('--delete')
       end
-      tv_call = calls.find { |a| a.last(2).first.include?('Breaking Bad') }
-      expect(tv_call.last(2)).to eq(["#{File.join(drive_root, 'tv/Breaking Bad')}/", "#{File.join(nas, 'tv/Breaking Bad')}/"])
+      projects_call = calls.find { |a| a.last(2).first.include?('Website') }
+      expect(projects_call.last(2)).to eq(["#{File.join(drive_root, 'projects/Website')}/", "#{File.join(nas, 'projects/Website')}/"])
     end
 
     it 'restores only the top-level files of a root-files unit' do
-      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
-      write_file(File.join(drive_root, 'tv', 'notes.txt'))
+      manifest.assign_folder('projects', 'SN-backup-04-8tb', scope: 'root')
+      write_file(File.join(drive_root, 'projects', 'notes.txt'))
       fake_shell.on('rsync', output: rsync_stats)
-      restorer.run([manifest.folder('tv')], mounted_list)
+      restorer.run([manifest.folder('projects')], mounted_list)
       call = fake_shell.calls_to('rsync').last
       expect(call).to include('--exclude=/*/')
-      expect(call.last(2)).to eq(["#{drive_root}/tv/", "#{nas}/tv/"])
+      expect(call.last(2)).to eq(["#{drive_root}/projects/", "#{nas}/projects/"])
     end
 
     it 'skips a folder whose drive is not mounted' do
       result = restorer.run(manifest.folders, [])
-      expect(result.skipped).to contain_exactly('tv/Breaking Bad', 'pro')
+      expect(result.skipped).to contain_exactly('projects/Website', 'pro')
       expect(out.string).to include('its drive backup-04-8tb is not mounted')
     end
 

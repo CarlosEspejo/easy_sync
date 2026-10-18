@@ -16,7 +16,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   before do
     drives
-    manifest.assign_folder('movies/Metropolis (1927)', serial)
+    manifest.assign_folder('documents/Tax Returns', serial)
     write_marker(drive_root, serial)
   end
 
@@ -27,16 +27,16 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   def write(rel, content = 'sample content, sample content')
-    write_file(File.join(drive_root, 'movies', 'Metropolis (1927)', rel), content)
+    write_file(File.join(drive_root, 'documents', 'Tax Returns', rel), content)
   end
 
   def rows
-    manifest.checksum_rows(serial, 'movies/Metropolis (1927)')
+    manifest.checksum_rows(serial, 'documents/Tax Returns')
   end
 
   it 'gives every file a baseline on the first run, and hashes nothing new on a second run with no changes' do
-    write('movie.mkv')
-    write('extras/trailer.mkv')
+    write('scan.pdf')
+    write('extras/appendix.pdf')
 
     result = scrubber.run(mounted_drive)
     expect(result.baselined).to eq(2)
@@ -50,16 +50,16 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'tracks only the top-level files of a root-files unit, never files in the share\'s subfolders' do
-    manifest.assign_folder('movies', serial, scope: 'root')
-    write_file(File.join(drive_root, 'movies', 'index.txt'), 'top level')
-    write('movie.mkv')   # movies/Metropolis (1927)/movie.mkv belongs to the Metropolis folder
+    manifest.assign_folder('documents', serial, scope: 'root')
+    write_file(File.join(drive_root, 'documents', 'index.txt'), 'top level')
+    write('scan.pdf')   # documents/Tax Returns/scan.pdf belongs to the Tax Returns folder
     scrubber.run(mounted_drive)
-    expect(manifest.checksum_rows(serial, 'movies').map(&:relative_path)).to eq(['index.txt'])
-    expect(rows.map(&:relative_path)).to eq(['movie.mkv'])
+    expect(manifest.checksum_rows(serial, 'documents').map(&:relative_path)).to eq(['index.txt'])
+    expect(rows.map(&:relative_path)).to eq(['scan.pdf'])
   end
 
   it 'flags rot (content changed, mtime restored) as corrupt, keeping the known-good digest' do
-    path = write('movie.mkv')
+    path = write('scan.pdf')
     scrubber.run(mounted_drive)
     original_digest = rows.first.digest
     mtime = File.mtime(path)
@@ -72,7 +72,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'resets and re-baselines a file whose mtime legitimately changed, rather than flagging it corrupt' do
-    path = write('movie.mkv')
+    path = write('scan.pdf')
     scrubber.run(mounted_drive)
     new_mtime = Time.now + 3600
     File.utime(new_mtime, new_mtime, path)
@@ -85,39 +85,39 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'removes the row for a deleted file and adds one for a new file' do
-    gone = write('movie.mkv')
-    write('extras/trailer.mkv')
+    gone = write('scan.pdf')
+    write('extras/appendix.pdf')
     scrubber.run(mounted_drive)
     File.delete(gone)
-    write('subs.srt')
+    write('notes.txt')
 
     result = scrubber.run(mounted_drive)
     expect(result.removed).to eq(1)
-    expect(rows.map(&:relative_path)).to contain_exactly('extras/trailer.mkv', 'subs.srt')
+    expect(rows.map(&:relative_path)).to contain_exactly('extras/appendix.pdf', 'notes.txt')
   end
 
   it "drops a drive's rows once the folder is reassigned off it" do
-    write('movie.mkv')
+    write('scan.pdf')
     scrubber.run(mounted_drive)
     expect(rows).not_to be_empty
 
-    manifest.reassign_folder('movies/Metropolis (1927)', 'SN-backup-05-8tb')
+    manifest.reassign_folder('documents/Tax Returns', 'SN-backup-05-8tb')
     scrubber.run(mounted_drive)
     expect(rows).to be_empty
   end
 
   it 'never tracks a file matching exclude_folders, and skips symlinks' do
-    write('movie.mkv')
+    write('scan.pdf')
     write('.DS_Store')
     target = write('real.txt')
-    File.symlink(target, File.join(drive_root, 'movies', 'Metropolis (1927)', 'link.txt'))
+    File.symlink(target, File.join(drive_root, 'documents', 'Tax Returns', 'link.txt'))
 
     scrubber.run(mounted_drive)
-    expect(rows.map(&:relative_path)).to contain_exactly('movie.mkv', 'real.txt')
+    expect(rows.map(&:relative_path)).to contain_exactly('scan.pdf', 'real.txt')
   end
 
   it 'Errno::EIO on a normal row marks it unreadable' do
-    path = write('movie.mkv')
+    path = write('scan.pdf')
     scrubber.run(mounted_drive)
     allow(File).to receive(:open).and_call_original
     allow(File).to receive(:open).with(path, 'rb').and_raise(Errno::EIO)
@@ -128,13 +128,13 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'clears the flags of a file unreadable on its very first read once a refetch makes it readable' do
-    path = write('movie.mkv')
+    path = write('scan.pdf')
     allow(File).to receive(:open).and_call_original
     allow(File).to receive(:open).with(path, 'rb').and_raise(Errno::EIO)
     scrubber.run(mounted_drive)
     expect(rows.first).to have_attributes(status: 'unreadable', digest: nil)
 
-    manifest.mark_refetched(serial, 'movies/Metropolis (1927)', ['movie.mkv'])
+    manifest.mark_refetched(serial, 'documents/Tax Returns', ['scan.pdf'])
     allow(File).to receive(:open).with(path, 'rb').and_call_original
     result = scrubber.run(mounted_drive)
     expect(result.repaired).to eq(1)
@@ -144,8 +144,8 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'leaves every row alone when a folder cannot be walked completely' do
-    write('movie.mkv')
-    write('extras/trailer.mkv')
+    write('scan.pdf')
+    write('extras/appendix.pdf')
     scrubber.run(mounted_drive)
     before_dump = manifest.db.execute('SELECT * FROM file_checksums ORDER BY relative_path')
 
@@ -157,7 +157,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'does not flag a file whose read failed because the drive was unplugged mid-read' do
-    path = write('movie.mkv')
+    path = write('scan.pdf')
     scrubber.run(mounted_drive)
     marker = File.join(drive_root, EasySync::Jbod::MARKER_FILE)
     allow(File).to receive(:open).and_call_original
@@ -174,17 +174,17 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   describe 'refetched rows (sync repaired a flagged file)' do
     let(:original_content) { 'sample content, sample content' }
-    let(:path) { File.join(drive_root, 'movies', 'Metropolis (1927)', 'movie.mkv') }
+    let(:path) { File.join(drive_root, 'documents', 'Tax Returns', 'scan.pdf') }
 
     before do
-      write('movie.mkv', original_content)
+      write('scan.pdf', original_content)
       scrubber.run(mounted_drive)   # baseline
       mtime = File.mtime(path)
       File.open(path, 'r+b') { |f| f.write('X') }
       File.utime(mtime, mtime, path)
       scrubber.run(mounted_drive)   # -> corrupt
       expect(rows.first.status).to eq('corrupt')
-      manifest.mark_refetched(serial, 'movies/Metropolis (1927)', ['movie.mkv'])
+      manifest.mark_refetched(serial, 'documents/Tax Returns', ['scan.pdf'])
     end
 
     it 'goes back to ok once the refetched file matches its baseline' do
@@ -201,14 +201,14 @@ RSpec.describe EasySync::Jbod::Scrubber do
       result = scrubber.run(mounted_drive)   # still corrupted content, refetched_at was set but bytes unchanged
       expect(result.unresolved).to eq(1)
       expect(rows.first.status).to eq('unresolved')
-      expect(manifest.flagged_checksums(serial, 'movies/Metropolis (1927)')).to be_empty
+      expect(manifest.flagged_checksums(serial, 'documents/Tax Returns')).to be_empty
     end
   end
 
   describe 'the deadline' do
     it 'stops before starting the next file once passed, and a later run picks up the file that was skipped first' do
-      write('a.mkv', 'aaa')
-      write('b.mkv', 'bbb')
+      write('a.pdf', 'aaa')
+      write('b.pdf', 'bbb')
       scrubber.run(mounted_drive)   # baseline both, unconstrained
       verified_before = rows.to_h { |r| [r.relative_path, r.verified_at] }
 
@@ -241,9 +241,9 @@ RSpec.describe EasySync::Jbod::Scrubber do
   end
 
   it 'prints a progress line once per commit interval' do
-    write('a.mkv', 'aaa')
-    write('b.mkv', 'bbb')
-    write('c.mkv', 'ccc')
+    write('a.pdf', 'aaa')
+    write('b.pdf', 'bbb')
+    write('c.pdf', 'ccc')
 
     t = now
     ticking = double('clock')
@@ -258,9 +258,9 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   describe 'batched writes (Jbod::ScrubPool runs several of these against one manifest at once)' do
     it 'flushes at each commit interval crossed, and once more at the end' do
-      write('a.mkv', 'aaa')
-      write('b.mkv', 'bbb')
-      write('c.mkv', 'ccc')
+      write('a.pdf', 'aaa')
+      write('b.pdf', 'bbb')
+      write('c.pdf', 'ccc')
 
       t = now
       ticking = double('clock')
@@ -282,7 +282,7 @@ RSpec.describe EasySync::Jbod::Scrubber do
     end
 
     it 'flushes hash outcomes exactly once, at the end, when the clock never crosses the commit interval' do
-      write('a.mkv', 'aaa')
+      write('a.pdf', 'aaa')
       flushes = 0
       allow(manifest.db).to receive(:transaction).with(:immediate).and_wrap_original do |m, *args, &blk|
         flushes += 1
@@ -295,23 +295,23 @@ RSpec.describe EasySync::Jbod::Scrubber do
     end
 
     it 'flushes files completed before an Interrupt, leaving the interrupted file untouched' do
-      write('a.mkv', 'aaa')
-      path_b = write('b.mkv', 'bbb')
-      write('c.mkv', 'ccc')
+      write('a.pdf', 'aaa')
+      path_b = write('b.pdf', 'bbb')
+      write('c.pdf', 'ccc')
       allow(File).to receive(:open).and_call_original
       allow(File).to receive(:open).with(path_b, 'rb').and_raise(Interrupt)
 
       expect { scrubber.run(mounted_drive) }.to raise_error(Interrupt)
       by_path = rows.to_h { |r| [r.relative_path, r.digest] }
-      expect(by_path['a.mkv']).to be_a(String)
-      expect(by_path['b.mkv']).to be_nil
-      expect(by_path['c.mkv']).to be_nil
+      expect(by_path['a.pdf']).to be_a(String)
+      expect(by_path['b.pdf']).to be_nil
+      expect(by_path['c.pdf']).to be_nil
     end
   end
 
   it 'stops mid-run when the drive marker disappears, and does not touch the row about to be processed' do
-    write('a.mkv', 'aaa')
-    write('b.mkv', 'bbb')
+    write('a.pdf', 'aaa')
+    write('b.pdf', 'bbb')
     scrubber.run(mounted_drive)
     verified_before = rows.map(&:verified_at)
 
@@ -325,11 +325,11 @@ RSpec.describe EasySync::Jbod::Scrubber do
 
   describe 'dry run' do
     it 'reports what it would do and leaves the manifest completely unchanged' do
-      write('movie.mkv')
+      write('scan.pdf')
       scrubber.run(mounted_drive)   # establish a real baseline first
       before_dump = manifest.db.execute('SELECT * FROM file_checksums ORDER BY relative_path')
 
-      write('new_file.mkv')
+      write('new_file.pdf')
       dry_scrubber = described_class.new(manifest, excludes: [], clock: clock, out: out, dry_run: true)
       result = dry_scrubber.run(mounted_drive)
 

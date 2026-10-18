@@ -4,10 +4,10 @@ RSpec.describe EasySync::Jbod::Runner do
   let(:mount_root) { File.join(temp_dir, 'Volumes') }
   let(:photos) { File.join(mount_root, 'photos') }
   let(:album) { File.join(photos, '2024') }          # a new share: each subfolder is its own unit
-  let(:tv) { File.join(mount_root, 'tv') }
+  let(:projects) { File.join(mount_root, 'projects') }
   let(:dashboard_path) { File.join(temp_dir, 'out', 'dashboard.html') }
   let(:settings) do
-    EasySync::Config.defaults.merge(sources: [{ path: photos }, { path: tv }],
+    EasySync::Config.defaults.merge(sources: [{ path: photos }, { path: projects }],
                                           mount_root: mount_root, dashboard_path: dashboard_path,
                                           exclude_folders: ['#recycle', '@eaDir'])
   end
@@ -46,10 +46,10 @@ RSpec.describe EasySync::Jbod::Runner do
     EasySync::Jbod::Mirror::Result.new(exit_status: status, total_size_bytes: nil, bytes_transferred: nil, output: '')
   end
 
-  # A show folder on the NAS has episodes in it; a bare directory would be
+  # A project folder on the NAS has files in it; a bare directory would be
   # (correctly) skipped as empty.
-  def make_shows(*names)
-    names.each { |n| write_file(File.join(tv, n, 'ep1.mkv')) }
+  def make_projects(*names)
+    names.each { |n| write_file(File.join(projects, n, 'page1.pdf')) }
   end
 
   def mount(name, free:, used: nil, at: "#{mount_root}/#{name}")
@@ -73,43 +73,43 @@ RSpec.describe EasySync::Jbod::Runner do
 
   describe '#sources' do
     it 'accepts hashes and plain path strings' do
-      r = build_runner(settings.merge(sources: [photos, { path: tv }]))
-      expect(r.sources.map(&:path)).to eq([photos, tv])
-      expect(r.sources.map(&:name)).to eq(%w[photos tv])
+      r = build_runner(settings.merge(sources: [photos, { path: projects }]))
+      expect(r.sources.map(&:path)).to eq([photos, projects])
+      expect(r.sources.map(&:name)).to eq(%w[photos projects])
     end
   end
 
   describe '#source_folders' do
     it 'makes each top-level subfolder of a share its own unit' do
-      make_shows('Show A', 'Show B', '#recycle', '@eaDir', '.hidden')
+      make_projects('Project A', 'Project B', '#recycle', '@eaDir', '.hidden')
       folders, available = runner.source_folders
-      expect(folders.map(&:key)).to eq(['photos/2024', 'tv/Show A', 'tv/Show B'])
-      expect(folders.map(&:path)).to eq([album, "#{tv}/Show A", "#{tv}/Show B"])
+      expect(folders.map(&:key)).to eq(['photos/2024', 'projects/Project A', 'projects/Project B'])
+      expect(folders.map(&:path)).to eq([album, "#{projects}/Project A", "#{projects}/Project B"])
       expect(folders.map(&:root_only)).to all(be_falsey)
-      expect(available).to eq(%w[photos tv])
+      expect(available).to eq(%w[photos projects])
     end
 
     it 'adds a root unit for loose top-level files, so they are backed up too' do
-      make_shows('Show A')
-      write_file(File.join(tv, 'Stray Episode.mkv'))
-      write_file(File.join(tv, '.DS_Store'))
+      make_projects('Project A')
+      write_file(File.join(projects, 'Stray File.pdf'))
+      write_file(File.join(projects, '.DS_Store'))
       report = described_class::Report.new
       folders, = runner.source_folders(report)
       expect(folders.map { |f| [f.key, f.path, f.root_only] })
-        .to eq([['photos/2024', album, nil], ['tv/Show A', "#{tv}/Show A", nil], ['tv', tv, true]])
+        .to eq([['photos/2024', album, nil], ['projects/Project A', "#{projects}/Project A", nil], ['projects', projects, true]])
       expect(report.warnings).to be_empty
     end
 
     it 'adds no root unit for a share whose only top-level files are hidden or excluded' do
-      make_shows('Show A')
-      write_file(File.join(tv, '.DS_Store'))
-      expect(runner.source_folders.first.map(&:key)).to eq(['photos/2024', 'tv/Show A'])
+      make_projects('Project A')
+      write_file(File.join(projects, '.DS_Store'))
+      expect(runner.source_folders.first.map(&:key)).to eq(['photos/2024', 'projects/Project A'])
     end
 
     it 'keeps an already-placed root unit even once its loose files are gone, so their removal is noticed' do
-      make_shows('Show A')
-      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
-      expect(runner.source_folders.first.map { |f| [f.key, f.root_only] }).to include(['tv', true])
+      make_projects('Project A')
+      manifest.assign_folder('projects', 'SN-backup-04-8tb', scope: 'root')
+      expect(runner.source_folders.first.map { |f| [f.key, f.root_only] }).to include(['projects', true])
     end
 
     it 'skips a share that is not mounted and reports it' do
@@ -117,15 +117,15 @@ RSpec.describe EasySync::Jbod::Runner do
       folders, available = runner.source_folders(report)
       expect(folders.map(&:key)).to eq(['photos/2024'])
       expect(available).to eq(['photos'])
-      expect(report.warnings).to include(a_string_matching(%r{source .*/tv is not mounted}))
+      expect(report.warnings).to include(a_string_matching(%r{source .*/projects is not mounted}))
     end
 
     it 'treats an empty mount point as not mounted, so --delete can never wipe a backup' do
-      FileUtils.mkdir_p(tv)
+      FileUtils.mkdir_p(projects)
       report = described_class::Report.new
       folders, = runner.source_folders(report)
       expect(folders.map(&:key)).to eq(['photos/2024'])
-      expect(report.warnings).to include(a_string_matching(%r{source .*/tv is not mounted}))
+      expect(report.warnings).to include(a_string_matching(%r{source .*/projects is not mounted}))
     end
 
     it 'refuses to run when no share is mounted' do
@@ -164,7 +164,7 @@ RSpec.describe EasySync::Jbod::Runner do
       # them, so `df` still reports the drive as nearly empty (7.9 TB free).
       # A new 1 TB folder must not be placed there: 7.5 TB already promised
       # + 1 TB new leaves nothing for the drive to actually hold.
-      manifest.assign_folder('tv/Old Show', 'SN-backup-04-8tb', size_bytes: (7.5 * TB).to_i)
+      manifest.assign_folder('projects/Old Project', 'SN-backup-04-8tb', size_bytes: (7.5 * TB).to_i)
       sizes['2024'] = 1 * TB
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 7.9 * TB)])
 
@@ -176,84 +176,84 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'announces how many new folders it will measure and reports each as it goes' do
-      make_shows('Show A')
+      make_projects('Project A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
       expect(out.string).to include('2 new folders to measure and place', 'measuring photos/2024 (new folder 1)',
-                                    'measuring tv/Show A (new folder 2)')
+                                    'measuring projects/Project A (new folder 2)')
     end
 
     it 'mirrors a subfolder unit under the share name on the drive' do
-      make_shows('Show A')
+      make_projects('Project A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       expect(mirror).to receive(:sync).with(album, "#{mount_root}/backup-04-8tb/photos/2024", root_only: false).and_return(ok_result)
-      expect(mirror).to receive(:sync).with("#{tv}/Show A", "#{mount_root}/backup-04-8tb/tv/Show A", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).with("#{projects}/Project A", "#{mount_root}/backup-04-8tb/projects/Project A", root_only: false).and_return(ok_result)
 
       runner.run
-      expect(manifest.folders.map(&:folder_path)).to eq(['photos/2024', 'tv/Show A'])
+      expect(manifest.folders.map(&:folder_path)).to eq(['photos/2024', 'projects/Project A'])
     end
 
     it 'backs up loose top-level files as a root unit, copying only those files' do
-      make_shows('Show A')
-      write_file(File.join(tv, 'Stray Episode.mkv'), 'x' * 300)
+      make_projects('Project A')
+      write_file(File.join(projects, 'Stray File.pdf'), 'x' * 300)
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       runner.run
-      expect(mirror).to have_received(:sync).with(tv, "#{mount_root}/backup-04-8tb/tv", root_only: true)
-      expect(manifest.folder('tv')).to have_attributes(scope: 'root', drive_serial: 'SN-backup-04-8tb')
-      expect(out.string).to include('Placing new folder tv (300 B)')   # sized from the loose files alone, not du of the share
-      expect(File.read(dashboard_path)).to include('tv (loose files)')
+      expect(mirror).to have_received(:sync).with(projects, "#{mount_root}/backup-04-8tb/projects", root_only: true)
+      expect(manifest.folder('projects')).to have_attributes(scope: 'root', drive_serial: 'SN-backup-04-8tb')
+      expect(out.string).to include('Placing new folder projects (300 B)')   # sized from the loose files alone, not du of the share
+      expect(File.read(dashboard_path)).to include('projects (loose files)')
       expect(File.read(dashboard_path)).not_to include('not backed up. Move them')
     end
 
     it 'syncs a share placed folder by folder in place and flags only a folder that is gone from the NAS' do
-      make_shows('Show A')
-      write_file(File.join(tv, 'notes.txt'))
+      make_projects('Project A')
+      write_file(File.join(projects, 'notes.txt'))
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv', 'SN-backup-04-8tb', scope: 'root')
-      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv/Old Show', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects', 'SN-backup-04-8tb', scope: 'root')
+      manifest.assign_folder('projects/Project A', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects/Old Project', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
       expect(report.placed).to be_empty
-      expect(mirror).to have_received(:sync).with("#{tv}/Show A", "#{mount_root}/backup-04-8tb/tv/Show A", root_only: false)
-      expect(mirror).to have_received(:sync).with(tv, "#{mount_root}/backup-04-8tb/tv", root_only: true)
-      expect(report.missing_on_source).to eq(['tv/Old Show'])
-      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.relative_path] }).to eq([['tv/Old Show', '']])
+      expect(mirror).to have_received(:sync).with("#{projects}/Project A", "#{mount_root}/backup-04-8tb/projects/Project A", root_only: false)
+      expect(mirror).to have_received(:sync).with(projects, "#{mount_root}/backup-04-8tb/projects", root_only: true)
+      expect(report.missing_on_source).to eq(['projects/Old Project'])
+      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.relative_path] }).to eq([['projects/Old Project', '']])
     end
 
     it 'keeps a share on the drive that already holds part of it while it fits, even if another has more room' do
-      make_shows('Show A', 'Show B')
-      manifest.assign_folder('tv/Show A', 'SN-backup-01-3tb', size_bytes: 1_000)
+      make_projects('Project A', 'Project B')
+      manifest.assign_folder('projects/Project A', 'SN-backup-01-3tb', size_bytes: 1_000)
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-01-3tb', free: 1 * TB), mount('backup-07-8tb', free: 8 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(report.placed).to include(['tv/Show B', 'backup-01-3tb'])
-      expect(manifest.history('tv/Show B').first.note).to include('with the rest of tv')
+      expect(report.placed).to include(['projects/Project B', 'backup-01-3tb'])
+      expect(manifest.history('projects/Project B').first.note).to include('with the rest of projects')
     end
 
     it 'spills a share onto another drive only when the drive holding it has no room' do
-      make_shows('Show A', 'Show B')
-      sizes['Show B'] = 5_000
-      manifest.assign_folder('tv/Show A', 'SN-backup-01-3tb', size_bytes: 1_000)
+      make_projects('Project A', 'Project B')
+      sizes['Project B'] = 5_000
+      manifest.assign_folder('projects/Project A', 'SN-backup-01-3tb', size_bytes: 1_000)
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-01-3tb', free: 3_000), mount('backup-07-8tb', free: 8 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
-      expect(runner.run.placed).to include(['tv/Show B', 'backup-07-8tb'])
+      expect(runner.run.placed).to include(['projects/Project B', 'backup-07-8tb'])
     end
 
     it 'keeps a new share together within one run too, including in dry-run' do
-      make_shows('A', 'B', 'C')
+      make_projects('A', 'B', 'C')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-01-3tb', free: 1 * TB), mount('backup-02-6tb', free: 1 * TB - 1)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = build_runner(settings, dry_run: true).run
-      expect(report.placed.select { |k, _| k.start_with?('tv/') }.map(&:last).uniq.size).to eq(1)
+      expect(report.placed.select { |k, _| k.start_with?('projects/') }.map(&:last).uniq.size).to eq(1)
     end
 
     it 'syncs an existing folder back to its assigned drive even when another drive has more room' do
@@ -277,15 +277,15 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'skips folders whose drive is not mounted and warns' do
-      make_shows('Show A')
+      make_projects('Project A')
       manifest.assign_folder('photos/2024', 'SN-backup-03-6tb')
-      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects/Project A', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
-      expect(mirror).to receive(:sync).once.with("#{tv}/Show A", "#{mount_root}/backup-04-8tb/tv/Show A", root_only: false).and_return(ok_result)
+      expect(mirror).to receive(:sync).once.with("#{projects}/Project A", "#{mount_root}/backup-04-8tb/projects/Project A", root_only: false).and_return(ok_result)
 
       report = runner.run
       expect(report.skipped).to eq(['photos/2024'])
-      expect(report.synced).to eq(['tv/Show A'])
+      expect(report.synced).to eq(['projects/Project A'])
       expect(manifest.folder('photos/2024').last_sync_status).to eq('skipped_unmounted')
       expect(report.warnings).to include(a_string_matching(%r{photos/2024: its drive backup-03-6tb is not mounted}))
       expect(report.warnings).to include(a_string_matching(/drive backup-01-3tb .* is not mounted/))
@@ -380,14 +380,14 @@ RSpec.describe EasySync::Jbod::Runner do
 
     it 'marks folders of an unmounted share as skipped rather than missing' do
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects/Project A', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       expect(mirror).to receive(:sync).once.with(album, anything, root_only: false).and_return(ok_result)
 
       report = runner.run
       expect(report.missing_on_source).to be_empty
-      expect(report.skipped).to eq(['tv/Show A'])
-      expect(manifest.folder('tv/Show A').last_sync_status).to eq('skipped_source_unmounted')
+      expect(report.skipped).to eq(['projects/Project A'])
+      expect(manifest.folder('projects/Project A').last_sync_status).to eq('skipped_source_unmounted')
       expect(File.read(dashboard_path)).to include('share not mounted')
     end
 
@@ -406,7 +406,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'accounts for folders placed earlier in the same run when choosing the next drive' do
-      make_shows('A', 'B')
+      make_projects('A', 'B')
       sizes['2024'] = 0
       sizes['A'] = 600
       sizes['B'] = 500   # no longer fits beside A (400 left), so it can't stay with its share
@@ -414,7 +414,7 @@ RSpec.describe EasySync::Jbod::Runner do
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(report.placed).to eq([['photos/2024', 'backup-01-3tb'], ['tv/A', 'backup-01-3tb'], ['tv/B', 'backup-02-6tb']])
+      expect(report.placed).to eq([['photos/2024', 'backup-01-3tb'], ['projects/A', 'backup-01-3tb'], ['projects/B', 'backup-02-6tb']])
     end
 
     it 'keeps the configured reserve free on a drive when placing' do
@@ -427,26 +427,26 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'does not place a folder that has no real files on the NAS' do
-      make_dirs(tv, 'Empty Show', 'DS Only', 'Real Show')
-      write_file(File.join(tv, 'DS Only', '.DS_Store'))
-      write_file(File.join(tv, 'Real Show', 'Season 01', 'ep1.mkv'))
+      make_dirs(projects, 'Empty Project', 'DS Only', 'Real Project')
+      write_file(File.join(projects, 'DS Only', '.DS_Store'))
+      write_file(File.join(projects, 'Real Project', 'Drafts', 'page1.pdf'))
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(report.empty).to eq(['tv/DS Only', 'tv/Empty Show'])
-      expect(report.placed.map(&:first)).to eq(['photos/2024', 'tv/Real Show'])
-      expect(manifest.folder('tv/Empty Show')).to be_nil
-      expect(report.warnings).to include(a_string_matching(%r{tv/DS Only has no files on the NAS}))
+      expect(report.empty).to eq(['projects/DS Only', 'projects/Empty Project'])
+      expect(report.placed.map(&:first)).to eq(['photos/2024', 'projects/Real Project'])
+      expect(manifest.folder('projects/Empty Project')).to be_nil
+      expect(report.warnings).to include(a_string_matching(%r{projects/DS Only has no files on the NAS}))
       expect(out.string).to include('empty 2')
     end
 
     it 'records an inventory of everything on the NAS: placed, unplaced and empty' do
-      make_shows('Big Show', 'Small Show')
-      make_dirs(tv, 'Empty Show')
+      make_projects('Big Project', 'Small Project')
+      make_dirs(projects, 'Empty Project')
       sizes['2024'] = 100
-      sizes['Big Show'] = 5_000
-      sizes['Small Show'] = 200
+      sizes['Big Project'] = 5_000
+      sizes['Small Project'] = 200
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb', size_bytes: 100)
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1_000)])
       allow(mirror).to receive(:sync).and_return(ok_result)
@@ -454,16 +454,16 @@ RSpec.describe EasySync::Jbod::Runner do
       report = runner.run
       inv = manifest.source_inventory.to_h { |e| [e.folder_path, [e.state, e.size_bytes, e.detail]] }
       expect(inv).to eq('photos/2024' => ['placed', 100, 'on backup-04-8tb'],
-                        'tv/Big Show' => ['unplaced', 5_000, 'no drive has room'],
-                        'tv/Empty Show' => ['empty', 0, 'no real files on the NAS'],
-                        'tv/Small Show' => ['placed', 200, 'on backup-04-8tb'])
+                        'projects/Big Project' => ['unplaced', 5_000, 'no drive has room'],
+                        'projects/Empty Project' => ['empty', 0, 'no real files on the NAS'],
+                        'projects/Small Project' => ['placed', 200, 'on backup-04-8tb'])
       expect(out.string).to include('Plan: 2 folders to sync (1 newly placed), 1 not backed up (4.9 KB: no room), 1 empty on the NAS')
-      expect(report.unplaced).to eq(['tv/Big Show'])
+      expect(report.unplaced).to eq(['projects/Big Project'])
     end
 
     it 'flags folders missing from the NAS before the copy phase begins' do
-      make_shows('Show A')
-      manifest.assign_folder('tv/Vanished', 'SN-backup-04-8tb')
+      make_projects('Project A')
+      manifest.assign_folder('projects/Vanished', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
@@ -471,7 +471,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'decides every placement before the first copy, so an interrupted copy phase still leaves the full plan' do
-      make_shows('A', 'B')
+      make_projects('A', 'B')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
@@ -499,28 +499,28 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'records a failed rsync and keeps going' do
-      make_shows('B')
+      make_projects('B')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(failed_result(23), ok_result)
 
       report = runner.run
       expect(report.failed).to eq(['photos/2024'])
-      expect(report.synced).to eq(['tv/B'])
+      expect(report.synced).to eq(['projects/B'])
       expect(manifest.folder('photos/2024')).to have_attributes(last_sync_status: 'failed', last_synced_at: nil)
       expect(manifest.sync_runs(folder_path: 'photos/2024').first.exit_status).to eq(23)
     end
 
     it 'flags folders that vanished from a mounted share but keeps them in the manifest' do
-      make_shows('Show A')
+      make_projects('Project A')
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
-      manifest.assign_folder('tv/Cancelled Show', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects/Project A', 'SN-backup-04-8tb')
+      manifest.assign_folder('projects/Cancelled Project', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       report = runner.run
-      expect(report.missing_on_source).to eq(['tv/Cancelled Show'])
-      expect(manifest.folder('tv/Cancelled Show')).not_to be_nil
+      expect(report.missing_on_source).to eq(['projects/Cancelled Project'])
+      expect(manifest.folder('projects/Cancelled Project')).not_to be_nil
       expect(File.read(dashboard_path)).to include('missing on NAS')
     end
 
@@ -694,7 +694,7 @@ RSpec.describe EasySync::Jbod::Runner do
     let(:drive_root) { "#{mount_root}/backup-04-8tb" }
 
     before do
-      make_shows('Show A')
+      make_projects('Project A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
     end
 
@@ -714,17 +714,17 @@ RSpec.describe EasySync::Jbod::Runner do
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
       expect(mirror).not_to have_received(:check)
-      expect(manifest.folder('tv/Show A').last_sync_status).to eq('ok')
+      expect(manifest.folder('projects/Project A').last_sync_status).to eq('ok')
     end
 
     it 'skips a folder whose check failed, records nothing for it, and carries on with the rest' do
       synced_before('photos/2024')
-      synced_before('tv/Show A')
+      synced_before('projects/Project A')
       allow(mirror).to receive(:check) { |source, *| source == album ? nil : check_result }
       allow(mirror).to receive(:sync).and_return(ok_result)
       report = runner.run
       expect(mirror).to have_received(:sync).once
-      expect(report.synced).to eq(['tv/Show A'])
+      expect(report.synced).to eq(['projects/Project A'])
       expect(report.check_failed).to eq(['photos/2024'])
       expect(manifest.folder('photos/2024').last_sync_status).to eq('skipped_check_failed')
       expect(report.warnings).to include(a_string_matching(%r{photos/2024: the pre-copy check failed}))
@@ -765,26 +765,26 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'starts the clock on a whole folder that vanished from a mounted share, then removes it after the grace period' do
-      manifest.assign_folder('tv/Cancelled', 'SN-backup-04-8tb')
-      write_file(File.join(drive_root, 'tv', 'Cancelled', 'ep1.mkv'))
+      manifest.assign_folder('projects/Cancelled', 'SN-backup-04-8tb')
+      write_file(File.join(drive_root, 'projects', 'Cancelled', 'page1.pdf'))
       allow(mirror).to receive(:sync).and_return(ok_result)
 
       runner.run
-      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.kind, p.missing_runs] }).to eq([['tv/Cancelled', 'folder', 1]])
-      expect(Dir).to exist(File.join(drive_root, 'tv', 'Cancelled'))
+      expect(manifest.pending_deletions.map { |p| [p.folder_path, p.kind, p.missing_runs] }).to eq([['projects/Cancelled', 'folder', 1]])
+      expect(Dir).to exist(File.join(drive_root, 'projects', 'Cancelled'))
       expect(File.read(dashboard_path)).to include('deleted from drive after 2026-09-20')
 
       manifest.db.execute("UPDATE pending_deletions SET first_missing_at = '2026-09-01T00:00:00Z'")
       report = build_runner(settings).run
-      expect(report.purged).to eq([['tv/Cancelled', '', 'backup-04-8tb']])
-      expect(Dir).not_to exist(File.join(drive_root, 'tv', 'Cancelled'))
-      expect(manifest.folder('tv/Cancelled')).to be_nil
-      expect(manifest.history('tv/Cancelled').map(&:event)).to eq(%w[removed assigned])
+      expect(report.purged).to eq([['projects/Cancelled', '', 'backup-04-8tb']])
+      expect(Dir).not_to exist(File.join(drive_root, 'projects', 'Cancelled'))
+      expect(manifest.folder('projects/Cancelled')).to be_nil
+      expect(manifest.history('projects/Cancelled').map(&:event)).to eq(%w[removed assigned])
     end
 
     it 'does not start a clock for folders whose share is not mounted' do
-      FileUtils.rm_rf(tv)
-      manifest.assign_folder('tv/Show A', 'SN-backup-04-8tb')
+      FileUtils.rm_rf(projects)
+      manifest.assign_folder('projects/Project A', 'SN-backup-04-8tb')
       allow(mirror).to receive(:sync).and_return(ok_result)
       runner.run
       expect(manifest.pending_deletions).to be_empty
@@ -805,7 +805,7 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'in dry-run mode writes nothing at all to the manifest and leaves the dashboard alone' do
-      make_shows('Show A')
+      make_projects('Project A')
       manifest.assign_folder('photos/2024', 'SN-backup-04-8tb')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB, used: 7 * TB)])
       allow(mirror).to receive(:check).and_return(check_result(missing: [['gone.jpg', 'file']]))
@@ -814,18 +814,18 @@ RSpec.describe EasySync::Jbod::Runner do
 
       report = build_runner(settings, dry_run: true).run
 
-      expect(report.placed).to eq([['tv/Show A', 'backup-04-8tb']])           # decided, not recorded
-      expect(manifest.folder('tv/Show A')).to be_nil
+      expect(report.placed).to eq([['projects/Project A', 'backup-04-8tb']])           # decided, not recorded
+      expect(manifest.folder('projects/Project A')).to be_nil
       expect(manifest.source_inventory).to be_empty
       expect(manifest.sync_runs).to be_empty
       expect(manifest.pending_deletions).to be_empty
-      expect(manifest.history('tv/Show A')).to be_empty
+      expect(manifest.history('projects/Project A')).to be_empty
       expect(manifest.folder('photos/2024')).to have_attributes(last_sync_status: nil, last_synced_at: nil)
       expect(manifest.drive('SN-backup-04-8tb')).to have_attributes(last_used_bytes: nil, smart_status: nil)
       expect(manifest.db.execute('SELECT * FROM folders').to_s + manifest.db.execute('SELECT * FROM drives').to_s).to eq(before)
       expect(File).not_to exist(dashboard_path)
       expect(volume_info).not_to have_received(:copy_state)
-      expect(out.string).to include('Would place new folder tv/Show A', 'DRY RUN: nothing was copied, recorded, or deleted')
+      expect(out.string).to include('Would place new folder projects/Project A', 'DRY RUN: nothing was copied, recorded, or deleted')
     end
 
     it 'in dry-run mode touches neither the drives nor the pending table' do
@@ -847,21 +847,21 @@ RSpec.describe EasySync::Jbod::Runner do
     let(:drive_root) { "#{mount_root}/backup-04-8tb" }
     let(:enforced) { settings.merge(tripwire_enforce: true) }
     let(:purger) { instance_double(EasySync::Jbod::Purger) }
-    let(:show) { "#{tv}/Show A" }
+    let(:project) { "#{projects}/Project A" }
     let(:checks) { {} }
 
     before do
-      make_shows('Show A')
+      make_projects('Project A')
       synced_before('photos/2024')
-      synced_before('tv/Show A')
+      synced_before('projects/Project A')
       allow(volume_info).to receive(:mounted_drives).and_return([mount('backup-04-8tb', free: 1 * TB)])
       allow(mirror).to receive(:check) { |source, *| checks.fetch(source, check_result) }
       allow(mirror).to receive(:sync).and_return(ok_result)
       allow(purger).to receive(:run).and_return(EasySync::Jbod::Purger::Result.new(purged: [], would_purge: [], skipped: []))
-      # An expired deletion in tv/Show A, still missing, so the purge has work to do.
-      manifest.reconcile_pending('tv/Show A', [['old.mkv', 'file']], at: '2026-09-01T00:00:00Z')
-      manifest.reconcile_pending('tv/Show A', [['old.mkv', 'file']], at: '2026-09-02T00:00:00Z')
-      checks[show] = check_result(missing: [['old.mkv', 'file']])
+      # An expired deletion in projects/Project A, still missing, so the purge has work to do.
+      manifest.reconcile_pending('projects/Project A', [['old.pdf', 'file']], at: '2026-09-01T00:00:00Z')
+      manifest.reconcile_pending('projects/Project A', [['old.pdf', 'file']], at: '2026-09-02T00:00:00Z')
+      checks[project] = check_result(missing: [['old.pdf', 'file']])
     end
 
     def rows(table) = manifest.db.execute("SELECT * FROM #{table}")
@@ -874,7 +874,7 @@ RSpec.describe EasySync::Jbod::Runner do
     it 'is report-only by default: it says what it would have stopped and copies everything' do
       checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
       report = build_runner(settings, purger: purger).run
-      expect(report.synced).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(report.synced).to contain_exactly('photos/2024', 'projects/Project A')
       expect(report.trips.map(&:folder_path)).to eq(['photos/2024'])
       expect(report.tripped).to be_empty
       expect(rows('tripwire_trips')).to be_empty
@@ -886,7 +886,7 @@ RSpec.describe EasySync::Jbod::Runner do
       checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
       report = build_runner(enforced, purger: purger).run
       expect(mirror).to have_received(:sync).once
-      expect(report.synced).to eq(['tv/Show A'])
+      expect(report.synced).to eq(['projects/Project A'])
       expect(report.tripped).to eq(['photos/2024'])
       expect(report.run_tripped).to be(false)
       expect(purger).to have_received(:run)
@@ -901,15 +901,15 @@ RSpec.describe EasySync::Jbod::Runner do
 
     it 'stops the whole run when changes spread thin add up: nothing copied, nothing purged' do
       checks[album] = check_result(replaced: Array.new(300) { |i| "a#{i}.jpg" }, source_files: 10_000)
-      checks[show] = check_result(replaced: Array.new(200) { |i| "b#{i}.mkv" }, missing: [['old.mkv', 'file']], source_files: 10_000)
+      checks[project] = check_result(replaced: Array.new(200) { |i| "b#{i}.pdf" }, missing: [['old.pdf', 'file']], source_files: 10_000)
       report = build_runner(enforced, purger: purger).run
       expect(mirror).not_to have_received(:sync)
       expect(purger).not_to have_received(:run)
       expect(report.run_tripped).to be(true)
-      expect(report.tripped).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(report.tripped).to contain_exactly('photos/2024', 'projects/Project A')
       expect(manifest.folders.map(&:last_sync_status).uniq).to eq(['tripped'])
       expect(manifest.pending_deletions.first.missing_runs).to eq(2)   # no clock moved
-      expect(manifest.latest_trips.map { |t| [t.folder_path, t.scope] }).to eq([['photos/2024', 'run'], ['tv/Show A', 'run']])
+      expect(manifest.latest_trips.map { |t| [t.folder_path, t.scope] }).to eq([['photos/2024', 'run'], ['projects/Project A', 'run']])
       expect(report.warnings).to include(a_string_matching(/SYNC STOPPED: 500 existing files/))
       expect(volume_info).to have_received(:copy_state).at_least(:once)
       expect(File.read(dashboard_path)).to include('Sync stopped: 500 files would change on the NAS side')
@@ -918,7 +918,7 @@ RSpec.describe EasySync::Jbod::Runner do
     it 'syncs a bulk change once accepted, records the acceptance, and the next quiet run is clean' do
       checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
       report = build_runner(enforced, purger: purger, accept_changes: true).run
-      expect(report.synced).to contain_exactly('photos/2024', 'tv/Show A')
+      expect(report.synced).to contain_exactly('photos/2024', 'projects/Project A')
       expect(report.tripped).to be_empty
       expect(manifest.accepted_trips.map { |t| [t.folder_path, t.accepted_at] }).to eq([['photos/2024', '2026-09-13T12:00:00Z']])
       expect(File.read(dashboard_path)).to include('Accepted bulk changes')
@@ -949,16 +949,16 @@ RSpec.describe EasySync::Jbod::Runner do
 
     it 'accepts only the named folders' do
       checks[album] = check_result(replaced: Array.new(80) { |i| "IMG_#{i}.jpg" })
-      checks[show] = check_result(replaced: Array.new(90) { |i| "e#{i}.mkv" })
-      report = build_runner(enforced, purger: purger, accept_changes: ['photos/2024', 'tv/Typo']).run
+      checks[project] = check_result(replaced: Array.new(90) { |i| "e#{i}.pdf" })
+      report = build_runner(enforced, purger: purger, accept_changes: ['photos/2024', 'projects/Typo']).run
       expect(report.synced).to eq(['photos/2024'])
-      expect(report.tripped).to eq(['tv/Show A'])
-      expect(report.warnings).to include('--accept-changes: tv/Typo is not in this sync')
+      expect(report.tripped).to eq(['projects/Project A'])
+      expect(report.warnings).to include('--accept-changes: projects/Typo is not in this sync')
     end
 
     it 'in dry-run prints what would trip and leaves the manifest byte-for-byte unchanged' do
       checks[album] = check_result(replaced: Array.new(300) { |i| "a#{i}.jpg" }, source_files: 10_000)
-      checks[show] = check_result(replaced: Array.new(250) { |i| "b#{i}.mkv" }, source_files: 10_000)
+      checks[project] = check_result(replaced: Array.new(250) { |i| "b#{i}.pdf" }, source_files: 10_000)
       before = whole_manifest
       report = build_runner(enforced, purger: purger, dry_run: true).run
       expect(whole_manifest).to eq(before)
@@ -977,11 +977,11 @@ RSpec.describe EasySync::Jbod::Runner do
     end
 
     it 'checks a root-files unit with root_only, so its subfolders never count as missing' do
-      write_file(File.join(tv, 'Stray.mkv'))
-      synced_before('tv')
-      manifest.db.execute("UPDATE folders SET scope = 'root' WHERE folder_path = 'tv'")
+      write_file(File.join(projects, 'Stray.pdf'))
+      synced_before('projects')
+      manifest.db.execute("UPDATE folders SET scope = 'root' WHERE folder_path = 'projects'")
       build_runner(enforced, purger: purger).run
-      expect(mirror).to have_received(:check).with(tv, "#{drive_root}/tv", root_only: true)
+      expect(mirror).to have_received(:check).with(projects, "#{drive_root}/projects", root_only: true)
     end
   end
 

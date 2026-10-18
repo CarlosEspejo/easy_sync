@@ -12,34 +12,34 @@ RSpec.describe EasySync::Jbod::SyncEta do
   end
 
   it 'combines the observed transfer rate and verify time into one estimate' do
-    manifest.assign_folder('Movies/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
-    manifest.assign_folder('Movies/B', 'S1', size_bytes: 50 * GB)
-    manifest.record_sync(folder_path: 'Movies/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
+    manifest.assign_folder('Letters/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
+    manifest.assign_folder('Letters/B', 'S1', size_bytes: 50 * GB)
+    manifest.record_sync(folder_path: 'Letters/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
                          finished_at: '2026-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
-    manifest.assign_folder('Movies/C', 'S1', size_bytes: 200 * GB)
+    manifest.assign_folder('Letters/C', 'S1', size_bytes: 200 * GB)
     # a real transfer this run: 20 GB in 20s = 1 GB/s
-    manifest.record_sync(folder_path: 'Movies/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
+    manifest.record_sync(folder_path: 'Letters/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
                          finished_at: '2026-09-15T08:00:30Z', exit_status: 0, bytes_transferred: 20 * GB, total_size_bytes: 200 * GB)
-    manifest.assign_folder('Movies/D', 'S1', size_bytes: 10 * GB)
+    manifest.assign_folder('Letters/D', 'S1', size_bytes: 10 * GB)
     # a verify-only run this run: 2s, nothing transferred
-    manifest.record_sync(folder_path: 'Movies/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
+    manifest.record_sync(folder_path: 'Letters/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
                          finished_at: '2026-09-15T08:00:33Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10 * GB)
 
     e = described_class.for(manifest, started)
-    # never-synced remaining: Movies/A = 1, at 1 GB/s that's 100s
-    # to re-verify: Movies/B (synced before this run) = 1, at the observed 2s (Movies/D's verify)
+    # never-synced remaining: Letters/A = 1, at 1 GB/s that's 100s
+    # to re-verify: Letters/B (synced before this run) = 1, at the observed 2s (Letters/D's verify)
     expect(e).to have_attributes(status: :estimate, never_synced_count: 1, to_reverify: 1, seconds: 102.0)
   end
 
   it "estimates a folder to re-verify from its own last verify, not this run's average" do
-    %w[synology/photos movies/A movies/B].each { |f| manifest.assign_folder(f, 'S1', size_bytes: GB) }
-    # last run: each movie verified in 0.5s
-    %w[movies/A movies/B].each do |f|
+    %w[synology/photos documents/A documents/B].each { |f| manifest.assign_folder(f, 'S1', size_bytes: GB) }
+    # last run: each folder verified in 0.5s
+    %w[documents/A documents/B].each do |f|
       manifest.record_sync(folder_path: f, drive_serial: 'S1', started_at: '2026-09-14T08:00:00Z',
                            finished_at: '2026-09-14T08:00:00.500Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: GB)
     end
     # a transfer is never used as a folder's verify time
-    manifest.record_sync(folder_path: 'movies/B', drive_serial: 'S1', started_at: '2026-09-14T09:00:00Z',
+    manifest.record_sync(folder_path: 'documents/B', drive_serial: 'S1', started_at: '2026-09-14T09:00:00Z',
                          finished_at: '2026-09-14T09:10:00Z', exit_status: 0, bytes_transferred: GB, total_size_bytes: GB)
     # this run so far: one slow share folder, 30s
     manifest.record_sync(folder_path: 'synology/photos', drive_serial: 'S1', started_at: '2026-09-15T08:00:00Z',
@@ -51,12 +51,12 @@ RSpec.describe EasySync::Jbod::SyncEta do
   end
 
   it 'says it is waiting for a first real transfer when only verifies have finished so far this run' do
-    manifest.assign_folder('Movies/Y', 'S1', size_bytes: 50 * GB)
-    manifest.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
+    manifest.assign_folder('Letters/Y', 'S1', size_bytes: 50 * GB)
+    manifest.record_sync(folder_path: 'Letters/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
                          finished_at: '2020-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
-    manifest.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
+    manifest.record_sync(folder_path: 'Letters/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
                          finished_at: '2026-09-15T08:00:06Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 50 * GB)
-    manifest.assign_folder('Movies/Z', 'S1', size_bytes: 0)
+    manifest.assign_folder('Letters/Z', 'S1', size_bytes: 0)
 
     e = described_class.for(manifest, started)
     expect(e).to have_attributes(status: :waiting_for_first_transfer, never_synced_count: 1, never_synced_bytes: 0)

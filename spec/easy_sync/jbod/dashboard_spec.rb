@@ -58,7 +58,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
 
     it 'turns red and leads with the number not backed up when a drive has no room' do
       manifest.replace_source_inventory([{ folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: '' },
-                                         { folder_path: 'movies/X', size_bytes: 2 * TB, state: 'unplaced', detail: '' }])
+                                         { folder_path: 'documents/X', size_bytes: 2 * TB, state: 'unplaced', detail: '' }])
       v = verdict(dashboard.render)
       expect(v).to include('verdict critical', '1 of 2 folders are not backed up', '1 folder')
     end
@@ -98,25 +98,25 @@ RSpec.describe EasySync::Jbod::Dashboard do
     end
 
     it 'lists only the folders the latest sync copied or failed on, and each run in the activity feed' do
-      sync('tv/Unchanged', bytes: 0)
-      sync('tv/New Episode', bytes: 2 * GB)
-      sync('tv/Broken', bytes: nil, exit_status: 23)
+      sync('projects/Unchanged', bytes: 0)
+      sync('projects/New Project', bytes: 2 * GB)
+      sync('projects/Broken', bytes: nil, exit_status: 23)
       html = dashboard.render
 
-      expect(latest(html)).to include('tv/New Episode', 'copied', 'tv/Broken', 'failed (exit 23)', '1 other folder was already up to date')
-      expect(latest(html)).not_to include('tv/Unchanged')
+      expect(latest(html)).to include('projects/New Project', 'copied', 'projects/Broken', 'failed (exit 23)', '1 other folder was already up to date')
+      expect(latest(html)).not_to include('projects/Unchanged')
       expect(activity(html)).to include('Sync: 3 folders checked, 1 copied (2.0 GB), 1 failed in 5m 0s',
                                         'Sync: 1 folder checked, 1 copied (10 B) in 30m 0s')
       expect(html).to include('The last sync had 1 failure')
     end
 
     it 'says so when the latest run changed nothing' do
-      sync('tv/Unchanged', bytes: 0)
+      sync('projects/Unchanged', bytes: 0)
       expect(latest(dashboard.render)).to include('Nothing changed: 1 folder checked, already up to date.')
     end
 
     it 'marks the newest run as in progress while its sync still holds the lock' do
-      sync('tv/Unchanged', bytes: 0)
+      sync('projects/Unchanged', bytes: 0)
       running = EasySync::Jbod::RunLock::Status.new(pid: 1, kind: 'sync', started_at: Time.utc(2026, 9, 13, 11, 39, 59))
       html = dashboard.render(running: running)
       expect(activity(html)).to include('Sync in progress: 1 folder checked so far')
@@ -124,32 +124,32 @@ RSpec.describe EasySync::Jbod::Dashboard do
     end
 
     it 'shows a bulk move as one expandable entry, with drive names in place of serials' do
-      %w[A B C].each { |f| manifest.assign_folder("movies/#{f}", 'SN-backup-06-8tb', at: '2026-09-13T06:00:00Z') }
+      %w[A B C].each { |f| manifest.assign_folder("documents/#{f}", 'SN-backup-06-8tb', at: '2026-09-13T06:00:00Z') }
       %w[A B C].each do |f|
-        manifest.reassign_folder("movies/#{f}", 'SN-backup-07-8tb', note: 'moved off SN-backup-06-8tb: drive overcommitted',
+        manifest.reassign_folder("documents/#{f}", 'SN-backup-07-8tb', note: 'moved off SN-backup-06-8tb: drive overcommitted',
                                                                    at: '2026-09-13T06:46:10Z')
       end
       feed = activity(dashboard.render)
 
       expect(feed).to include('3 folders moved to backup-07-8tb', 'moved off backup-06-8tb: drive overcommitted',
-                              '<li>movies/A</li>', '3 folders placed on backup-06-8tb', 'Today')
+                              '<li>documents/A</li>', '3 folders placed on backup-06-8tb', 'Today')
       expect(feed).not_to include('SN-backup-06-8tb')
     end
 
     it 'groups a batch spread over several drives, whatever free space each note mentions' do
-      manifest.assign_folder('tv/A', 'SN-backup-01-3tb', note: 'new folder, most free space (1.4 TB)', at: '2026-09-13T00:48:10Z')
-      manifest.assign_folder('tv/B', 'SN-backup-02-6tb', note: 'new folder, most free space (1.3 TB)', at: '2026-09-13T00:48:40Z')
-      expect(activity(dashboard.render)).to include('2 folders placed on 2 drives', 'new folder, most free space<', 'tv/A → backup-01-3tb')
+      manifest.assign_folder('projects/A', 'SN-backup-01-3tb', note: 'new folder, most free space (1.4 TB)', at: '2026-09-13T00:48:10Z')
+      manifest.assign_folder('projects/B', 'SN-backup-02-6tb', note: 'new folder, most free space (1.3 TB)', at: '2026-09-13T00:48:40Z')
+      expect(activity(dashboard.render)).to include('2 folders placed on 2 drives', 'new folder, most free space<', 'projects/A → backup-01-3tb')
     end
 
     it 'shows a removal once, as its deletion from the drive' do
-      manifest.assign_folder('tv/Gone', 'SN-backup-01-3tb')
-      manifest.remove_folder('tv/Gone', note: 'deleted from backup-01-3tb: missing on NAS since 2026-09-01T04:56:05Z')
+      manifest.assign_folder('projects/Gone', 'SN-backup-01-3tb')
+      manifest.remove_folder('projects/Gone', note: 'deleted from backup-01-3tb: missing on NAS since 2026-09-01T04:56:05Z')
       manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
-                          "VALUES ('tv/Gone', '', 'folder', 'SN-backup-01-3tb', '2026-09-01T04:56:05Z', '2026-09-13T11:00:00Z')")
+                          "VALUES ('projects/Gone', '', 'folder', 'SN-backup-01-3tb', '2026-09-01T04:56:05Z', '2026-09-13T11:00:00Z')")
       feed = activity(dashboard.render)
       expect(feed.scan('deleted from backup-01-3tb').size).to eq(1)
-      expect(feed).to match(/tv\/Gone \(whole folder\) deleted from backup-01-3tb[\s\S]*?missing on the NAS since 2026-09-0\d/)
+      expect(feed).to match(/projects\/Gone \(whole folder\) deleted from backup-01-3tb[\s\S]*?missing on the NAS since 2026-09-0\d/)
     end
 
     it 'says an old copy removed after a move was not missing from the NAS' do
@@ -163,12 +163,12 @@ RSpec.describe EasySync::Jbod::Dashboard do
     end
 
     it 'groups deletions made together on one drive, and counts folders and files' do
-      [['tv/Old', '', 'folder'], ['tv/A', '.DS_Store', 'file'], ['tv/B', '.DS_Store', 'file']].each do |folder, rel, kind|
+      [['projects/Old', '', 'folder'], ['projects/A', '.DS_Store', 'file'], ['projects/B', '.DS_Store', 'file']].each do |folder, rel, kind|
         manifest.db.execute('INSERT INTO deletions (folder_path, relative_path, kind, drive_serial, first_missing_at, deleted_at) ' \
                             'VALUES (?, ?, ?, ?, ?, ?)', [folder, rel, kind, 'SN-backup-01-3tb', '2026-09-01T00:00:00Z', '2026-09-13T11:03:20Z'])
       end
       feed = activity(dashboard.render)
-      expect(feed).to include('1 folder and 2 files deleted from backup-01-3tb', 'tv/Old (whole folder)', 'tv/A/.DS_Store')
+      expect(feed).to include('1 folder and 2 files deleted from backup-01-3tb', 'projects/Old (whole folder)', 'projects/A/.DS_Store')
       expect(feed.scan('deleted from backup-01-3tb').size).to eq(1)
     end
   end
@@ -266,31 +266,31 @@ RSpec.describe EasySync::Jbod::Dashboard do
   end
 
   it 'groups folders by share, collapses big shares, and surfaces problem rows at the top' do
-    60.times { |i| manifest.assign_folder("movies/Film #{i}", 'SN-backup-05-8tb', size_bytes: TB / 100) }
-    manifest.assign_folder('tv/Show A', 'SN-backup-05-8tb', size_bytes: TB / 10)
-    manifest.mark_folder_status('movies/Film 7', 'drive_full')
+    60.times { |i| manifest.assign_folder("documents/Doc #{i}", 'SN-backup-05-8tb', size_bytes: TB / 100) }
+    manifest.assign_folder('projects/Project A', 'SN-backup-05-8tb', size_bytes: TB / 10)
+    manifest.mark_folder_status('documents/Doc 7', 'drive_full')
     html = dashboard.render(mounted: [mounted(drives['backup-05-8tb'], free: 1 * TB)])
 
-    expect(html).to match(/<details class="share attention" open>[\s\S]*?Needs attention[\s\S]*?movies\/Film 7[\s\S]*?drive full/)
+    expect(html).to match(/<details class="share attention" open>[\s\S]*?Needs attention[\s\S]*?documents\/Doc 7[\s\S]*?drive full/)
     expect(html).to include('1 folder not in a good state')        # the 59 never-synced films are pending work, not problems
     expect(html).to include('60 folders · 614.4 GB · 59 not yet synced', '1 of 62 folders backed up, 60 waiting for their first copy')
-    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">movies<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
+    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">documents<\/span>\s*<span class="share-meta">60 folders · 614\.4 GB/)
     expect(html).to include('1 needs attention')
     # every share starts collapsed; only Needs attention starts open
     expect(html).not_to include('<details class="share" open>')
     expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">Photos/)
-    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">tv/)
+    expect(html).to match(/<details class="share">\s*<summary>\s*<span class="share-name">projects/)
     # drive tile shows per-share totals rather than sixty list items
-    expect(html).to match(/<ul class="shares">[\s\S]*?movies · 60 folders<\/span><span>614\.4 GB[\s\S]*?tv · 1 folder<\/span><span>102\.4 GB/)
+    expect(html).to match(/<ul class="shares">[\s\S]*?documents · 60 folders<\/span><span>614\.4 GB[\s\S]*?projects · 1 folder<\/span><span>102\.4 GB/)
     expect(html).to include('Drive details and 61 folders')
   end
 
   it 'shows how much of the NAS is not backed up, from the inventory' do
-    manifest.assign_folder('movies/A', 'SN-backup-05-8tb', size_bytes: 10 * GB)
+    manifest.assign_folder('documents/A', 'SN-backup-05-8tb', size_bytes: 10 * GB)
     manifest.replace_source_inventory([
-      { folder_path: 'movies/A', size_bytes: 10 * GB, state: 'placed', detail: 'on backup-05-8tb' },
-      { folder_path: 'movies/B', size_bytes: 30 * GB, state: 'unplaced', detail: 'no drive has room' },
-      { folder_path: 'movies/C', size_bytes: 20 * GB, state: 'unplaced', detail: 'no drive has room' },
+      { folder_path: 'documents/A', size_bytes: 10 * GB, state: 'placed', detail: 'on backup-05-8tb' },
+      { folder_path: 'documents/B', size_bytes: 30 * GB, state: 'unplaced', detail: 'no drive has room' },
+      { folder_path: 'documents/C', size_bytes: 20 * GB, state: 'unplaced', detail: 'no drive has room' },
       { folder_path: 'Photos', size_bytes: 6 * TB, state: 'placed', detail: 'on backup-04-8tb' },
       { folder_path: 'synology', size_bytes: 2 * TB, state: 'unplaced', detail: 'no drive has room' }
     ])
@@ -302,7 +302,7 @@ RSpec.describe EasySync::Jbod::Dashboard do
     expect(html).to include('3 of 5 folders are not backed up')
     expect(html).to include('<strong>3 folders (2.0 TB) on the NAS are not backed up</strong>')
     expect(html).to include('1 of 3 folders on the NAS placed · 10.0 GB of 60.0 GB')
-    expect(html).to match(/<span class="share-name">Not backed up<\/span>[\s\S]*?movies\/B[\s\S]*?30\.0 GB[\s\S]*?no drive has room/)
+    expect(html).to match(/<span class="share-name">Not backed up<\/span>[\s\S]*?documents\/B[\s\S]*?30\.0 GB[\s\S]*?no drive has room/)
   end
 
   it 'escapes HTML in names' do

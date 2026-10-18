@@ -10,7 +10,7 @@ RSpec.describe EasySync::Jbod::Tripwire do
   end
 
   it 'lets a quiet run through' do
-    decision = tripwire.decide({ 'movies/A' => check(replaced: 1), 'movies/B' => check })
+    decision = tripwire.decide({ 'documents/A' => check(replaced: 1), 'documents/B' => check })
     expect(decision.trips).to be_empty
     expect(decision).not_to be_tripped
     expect(decision.run_changed).to eq(1)
@@ -24,7 +24,7 @@ RSpec.describe EasySync::Jbod::Tripwire do
   end
 
   it 'needs the minimum count too: a 3-file folder with one file replaced does not trip' do
-    expect(tripwire.decide({ 'tv/Tiny' => check(replaced: 1, source_files: 3) }).trips).to be_empty
+    expect(tripwire.decide({ 'projects/Tiny' => check(replaced: 1, source_files: 3) }).trips).to be_empty
   end
 
   it 'needs the ratio too: 60 files changed in a 10,000-file share is routine' do
@@ -41,7 +41,7 @@ RSpec.describe EasySync::Jbod::Tripwire do
   end
 
   it 'trips the whole run when 1,000 single-file folders each change one file, though none trips alone' do
-    checks = (1..1_000).to_h { |i| ["movies/M#{i}", check(replaced: 1, source_files: 1)] }
+    checks = (1..1_000).to_h { |i| ["documents/M#{i}", check(replaced: 1, source_files: 1)] }
     decision = tripwire.decide(checks)
     expect(decision.run_tripped).to be(true)
     expect(decision.run_changed).to eq(1_000)
@@ -56,7 +56,7 @@ RSpec.describe EasySync::Jbod::Tripwire do
 
   describe 'accepting changes' do
     it 'accepts every trip with true, and still reports them' do
-      checks = (1..600).to_h { |i| ["movies/M#{i}", check(replaced: 1, source_files: 1)] }
+      checks = (1..600).to_h { |i| ["documents/M#{i}", check(replaced: 1, source_files: 1)] }
       decision = tripwire.decide(checks, accept: true)
       expect(decision.run_tripped).to be(false)
       expect(decision).not_to be_tripped

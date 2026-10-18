@@ -161,21 +161,21 @@ RSpec.describe EasySync::CLI do
 
       it 'moves every folder of a share when given the share name, copying only loose files for its root unit' do
         m = manifest
-        m.assign_folder('tv', 'S1', scope: 'root')
-        m.assign_folder('tv/Show A', 'S1')
-        m.assign_folder('tv/Show B', 'S2')   # already there: left alone
+        m.assign_folder('projects', 'S1', scope: 'root')
+        m.assign_folder('projects/Project A', 'S1')
+        m.assign_folder('projects/Project B', 'S2')   # already there: left alone
         m.close
-        write_file(File.join(old_vol, 'tv', 'notes.txt'))
-        write_file(File.join(old_vol, 'tv', 'Show A', 'ep1.mkv'))
+        write_file(File.join(old_vol, 'projects', 'notes.txt'))
+        write_file(File.join(old_vol, 'projects', 'Project A', 'page1.pdf'))
         fake_shell.on('rsync', output: rsync_stats)
 
-        expect(cli('reassign', 'tv', 'backup-02-6tb', '--copy').run).to eq(0)
+        expect(cli('reassign', 'projects', 'backup-02-6tb', '--copy').run).to eq(0)
         calls = fake_shell.calls_to('rsync')
-        expect(calls.map { |c| c.last }).to eq(["#{new_vol}/tv/", "#{new_vol}/tv/Show A/"])
+        expect(calls.map { |c| c.last }).to eq(["#{new_vol}/projects/", "#{new_vol}/projects/Project A/"])
         expect(calls.first).to include('--exclude=/*/')
         expect(calls.last).not_to include('--exclude=/*/')
-        expect(manifest.folders.select { |f| f.share == 'tv' }.map(&:drive_serial).uniq).to eq(['S2'])
-        expect(out.string).to include('2 folders of tv are now on backup-02-6tb')
+        expect(manifest.folders.select { |f| f.share == 'projects' }.map(&:drive_serial).uniq).to eq(['S2'])
+        expect(out.string).to include('2 folders of projects are now on backup-02-6tb')
       end
 
       it 'leaves the manifest as it was when the copy fails' do
@@ -198,7 +198,7 @@ RSpec.describe EasySync::CLI do
     context 'capacity check' do
       before do
         m = manifest
-        m.assign_folder('Movies', 'S1', size_bytes: 5 * TB)
+        m.assign_folder('Letters', 'S1', size_bytes: 5 * TB)
         m.close
       end
 
@@ -211,28 +211,28 @@ RSpec.describe EasySync::CLI do
       end
 
       it 'refuses a drive that does not have room' do
-        mount_target(free_tb: 4)   # Movies is 5 TB
-        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(1)
-        expect(err.string).to include('Movies', 'does not fit on backup-02-6tb', 'Use --force')
-        expect(manifest.folder('Movies').drive_serial).to eq('S1')
+        mount_target(free_tb: 4)   # Letters is 5 TB
+        expect(cli('reassign', 'Letters', 'backup-02-6tb').run).to eq(1)
+        expect(err.string).to include('Letters', 'does not fit on backup-02-6tb', 'Use --force')
+        expect(manifest.folder('Letters').drive_serial).to eq('S1')
       end
 
       it '--force reassigns anyway' do
         mount_target(free_tb: 4)
-        expect(cli('reassign', 'Movies', 'backup-02-6tb', '--force').run).to eq(0)
-        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+        expect(cli('reassign', 'Letters', 'backup-02-6tb', '--force').run).to eq(0)
+        expect(manifest.folder('Letters').drive_serial).to eq('S2')
       end
 
       it 'allows a drive that has room' do
         mount_target(free_tb: 6)
-        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(0)
-        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+        expect(cli('reassign', 'Letters', 'backup-02-6tb').run).to eq(0)
+        expect(manifest.folder('Letters').drive_serial).to eq('S2')
       end
 
       it "proceeds without checking when the target isn't mounted, but says so" do
-        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(0)
+        expect(cli('reassign', 'Letters', 'backup-02-6tb').run).to eq(0)
         expect(out.string).to include("backup-02-6tb is not mounted; couldn't check whether it has room")
-        expect(manifest.folder('Movies').drive_serial).to eq('S2')
+        expect(manifest.folder('Letters').drive_serial).to eq('S2')
       end
 
       it 'ignores what is already promised to the target drive when checking, not just live free space' do
@@ -241,7 +241,7 @@ RSpec.describe EasySync::CLI do
         # 3 TB is really available, not enough for a second 5 TB folder.
         manifest.assign_folder('Shows', 'S2', size_bytes: 3 * TB)
         mount_target(free_tb: 6)
-        expect(cli('reassign', 'Movies', 'backup-02-6tb').run).to eq(1)
+        expect(cli('reassign', 'Letters', 'backup-02-6tb').run).to eq(1)
         expect(err.string).to include('does not fit on backup-02-6tb')
       end
     end
@@ -441,10 +441,10 @@ RSpec.describe EasySync::CLI do
 
     it "shows this run's progress for a scrubbing drive, counting only files verified since the run started" do
       m = manifest
-      m.reconcile_checksums('S1', 'Photos', { 'a.mkv' => [1, 1], 'b.mkv' => [1, 1] })
-      # a.mkv was baselined by an earlier scrub, long before this run - it
+      m.reconcile_checksums('S1', 'Photos', { 'a.pdf' => [1, 1], 'b.pdf' => [1, 1] })
+      # a.pdf was baselined by an earlier scrub, long before this run - it
       # must not count as "already checked" just because it has a digest.
-      m.checksum_hashed('S1', 'Photos', 'a.mkv', outcome: :baseline, digest: 'old', at: '2020-01-01T00:00:00Z')
+      m.checksum_hashed('S1', 'Photos', 'a.pdf', outcome: :baseline, digest: 'old', at: '2020-01-01T00:00:00Z')
       m.close
       lock_path = File.join(temp_dir, 'home', '.easy_sync', 'jbod.lock')
       FileUtils.mkdir_p(File.dirname(lock_path))
@@ -452,7 +452,7 @@ RSpec.describe EasySync::CLI do
       started = Time.utc(2026, 9, 22, 0, 0, 0)
       File.utime(started, started, lock_path)
       m2 = manifest
-      m2.checksum_hashed('S1', 'Photos', 'b.mkv', outcome: :baseline, digest: 'new', at: (started + 5).utc.iso8601)
+      m2.checksum_hashed('S1', 'Photos', 'b.pdf', outcome: :baseline, digest: 'new', at: (started + 5).utc.iso8601)
       m2.close
 
       expect(cli('status').run).to eq(0)
@@ -547,34 +547,34 @@ RSpec.describe EasySync::CLI do
 
       it 'combines the observed transfer rate and verify time into one estimate' do
         m = manifest
-        m.assign_folder('Movies/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
-        m.assign_folder('Movies/B', 'S1', size_bytes: 50 * GB)
-        m.record_sync(folder_path: 'Movies/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
+        m.assign_folder('Letters/A', 'S1', size_bytes: 100 * GB)   # never synced, remains
+        m.assign_folder('Letters/B', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Letters/B', drive_serial: 'S1', started_at: '2026-01-01T00:00:00Z',
                       finished_at: '2026-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
         # synced before this run, not yet re-touched -> remains as "to re-verify"
-        m.assign_folder('Movies/C', 'S1', size_bytes: 200 * GB)
+        m.assign_folder('Letters/C', 'S1', size_bytes: 200 * GB)
         # a real transfer this run: 20 GB in 20s = 1 GB/s
-        m.record_sync(folder_path: 'Movies/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
+        m.record_sync(folder_path: 'Letters/C', drive_serial: 'S1', started_at: '2026-09-15T08:00:10Z',
                       finished_at: '2026-09-15T08:00:30Z', exit_status: 0, bytes_transferred: 20 * GB, total_size_bytes: 200 * GB)
-        m.assign_folder('Movies/D', 'S1', size_bytes: 10 * GB)
+        m.assign_folder('Letters/D', 'S1', size_bytes: 10 * GB)
         # a verify-only run this run: 2s, nothing transferred
-        m.record_sync(folder_path: 'Movies/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
+        m.record_sync(folder_path: 'Letters/D', drive_serial: 'S1', started_at: '2026-09-15T08:00:31Z',
                       finished_at: '2026-09-15T08:00:33Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 10 * GB)
         m.close
 
         expect(cli('status', clock: double('clock', now: started + 40)).run).to eq(0)
-        # remaining never-synced: Photos (from the outer before) + Movies/A = 2, at 1 GB/s that's 100s
-        # remaining to re-verify: Movies/B = 1, at the observed 2s each
+        # remaining never-synced: Photos (from the outer before) + Letters/A = 2, at 1 GB/s that's 100s
+        # remaining to re-verify: Letters/B = 1, at the observed 2s each
         expect(out.string).to include('About 1m 42s remaining (2 folders never synced, 1 to re-verify) - ' \
                                       'rough estimate, NAS/network speed varies.')
       end
 
       it 'says it is waiting for a first real transfer when only verifies have finished so far this run' do
         m = manifest
-        m.assign_folder('Movies/Y', 'S1', size_bytes: 50 * GB)
-        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
+        m.assign_folder('Letters/Y', 'S1', size_bytes: 50 * GB)
+        m.record_sync(folder_path: 'Letters/Y', drive_serial: 'S1', started_at: '2020-01-01T00:00:00Z',
                       finished_at: '2020-01-01T00:00:01Z', exit_status: 0, bytes_transferred: 50 * GB, total_size_bytes: 50 * GB)
-        m.record_sync(folder_path: 'Movies/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
+        m.record_sync(folder_path: 'Letters/Y', drive_serial: 'S1', started_at: '2026-09-15T08:00:05Z',
                       finished_at: '2026-09-15T08:00:06Z', exit_status: 0, bytes_transferred: 0, total_size_bytes: 50 * GB)
         m.close
 
@@ -724,8 +724,8 @@ RSpec.describe EasySync::CLI do
       m.register_drive(serial_number: 'NEW', friendly_name: 'backup-08-12tb', capacity_bytes: 12 * TB)
       m.register_drive(serial_number: 'GONE', friendly_name: 'backup-00', capacity_bytes: 1 * TB)
       m.retire_drive('GONE')
-      m.assign_folder('movies/A', 'OLD')
-      m.assign_folder('movies/B', 'OLD')
+      m.assign_folder('documents/A', 'OLD')
+      m.assign_folder('documents/B', 'OLD')
       m.assign_folder('photos', 'NEW')
       m.close
     end
@@ -733,7 +733,7 @@ RSpec.describe EasySync::CLI do
     it 'with --to: moves every folder to the new drive and retires the old one' do
       expect(cli('replace-drive', 'backup-04-8tb', '--to', 'backup-08-12tb').run).to eq(0)
       m = manifest
-      expect(m.folders_on('NEW').map(&:folder_path)).to eq(['movies/A', 'movies/B', 'photos'])
+      expect(m.folders_on('NEW').map(&:folder_path)).to eq(['documents/A', 'documents/B', 'photos'])
       expect(m.drive('OLD')).to be_retired
       expect(m.drives.map(&:friendly_name)).to eq(['backup-08-12tb'])
       expect(out.string).to include('Retired backup-04-8tb', '2 folders now recorded on backup-08-12tb', 'copy them there from the NAS')
@@ -743,7 +743,7 @@ RSpec.describe EasySync::CLI do
     it 'without --to: forgets the folders so the next sync places them afresh' do
       expect(cli('replace-drive', 'backup-04-8tb').run).to eq(0)
       m = manifest
-      expect(m.folder('movies/A')).to be_nil
+      expect(m.folder('documents/A')).to be_nil
       expect(m.folder('photos').drive_serial).to eq('NEW')
       expect(m.drive('OLD')).to be_retired
       expect(out.string).to include('2 folders forgotten', 'place them afresh')
@@ -803,40 +803,40 @@ RSpec.describe EasySync::CLI do
       expect(out.string).to include('Retired: backup-04-8tb (20', 'backup-00 (20')   # newest retirement first
       expect(out.string).to match(/unchecked[^\n]*\n\nTotal: [^\n]*\n\n {2}Retired: /)   # blank lines set the total and retired groups apart
       out.truncate(0)
-      cli('history', 'movies/A').run
+      cli('history', 'documents/A').run
       expect(out.string).to include('reassigned', '-> backup-08-12tb', 'backup-04-8tb replaced by backup-08-12tb')
     end
   end
 
   describe 'restore' do
     let(:vol) { make_dirs(mount_root, 'backup-04-8tb').first }
-    let(:tv) { make_dirs(temp_dir, 'nas-tv').first }
+    let(:projects) { make_dirs(temp_dir, 'nas-projects').first }
 
     before do
       write_file(File.join(vol, EasySync::Jbod::MARKER_FILE), '{"serial_number":"S1","friendly_name":"backup-04-8tb"}')
       fake_shell.on('df', output: df_output(vol, capacity_kb: 8_000_000, used_kb: 1_000))
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      File.write(config_path, cfg.merge(sources: [{ path: tv }]).to_yaml)
+      File.write(config_path, cfg.merge(sources: [{ path: projects }]).to_yaml)
       m = manifest
       m.register_drive(serial_number: 'S1', friendly_name: 'backup-04-8tb', capacity_bytes: 8 * TB)
-      m.assign_folder('nas-tv/Breaking Bad', 'S1')
+      m.assign_folder('nas-projects/Website', 'S1')
       m.close
-      write_file(File.join(vol, 'nas-tv', 'Breaking Bad', 'S01E01.mp4'), 'x' * 100)
+      write_file(File.join(vol, 'nas-projects', 'Website', 'page1.pdf'), 'x' * 100)
     end
 
     it 'rsyncs a folder back onto its NAS share, with --partial and no --delete' do
       fake_shell.on('rsync', output: rsync_stats)
-      expect(cli('restore', 'nas-tv/Breaking Bad').run).to eq(0)
+      expect(cli('restore', 'nas-projects/Website').run).to eq(0)
       call = fake_shell.calls_to('rsync').first
       expect(call).to include('-a', '--partial')
       expect(call).not_to include('--delete')
-      expect(call.last(2)).to eq(["#{File.join(vol, 'nas-tv/Breaking Bad')}/", "#{File.join(tv, 'Breaking Bad')}/"])
+      expect(call.last(2)).to eq(["#{File.join(vol, 'nas-projects/Website')}/", "#{File.join(projects, 'Website')}/"])
       expect(out.string).to include('Restored 1, skipped 0, failed 0')
     end
 
     it 'expands a share name to every folder placed under it' do
       fake_shell.on('rsync', output: rsync_stats)
-      expect(cli('restore', 'nas-tv').run).to eq(0)
+      expect(cli('restore', 'nas-projects').run).to eq(0)
       expect(fake_shell.calls_to('rsync').size).to eq(1)
     end
 
@@ -846,15 +846,15 @@ RSpec.describe EasySync::CLI do
     end
 
     it 'errors on a name matching nothing placed' do
-      expect(cli('restore', 'movies').run).to eq(1)
-      expect(err.string).to include('movies matches no placed folder or share')
+      expect(cli('restore', 'documents').run).to eq(1)
+      expect(err.string).to include('documents matches no placed folder or share')
     end
 
     it '--all restores every folder in the manifest' do
       m = manifest
-      m.assign_folder('nas-tv/Better Call Saul', 'S1')
+      m.assign_folder('nas-projects/Website Redesign', 'S1')
       m.close
-      write_file(File.join(vol, 'nas-tv', 'Better Call Saul', 'S01E01.mp4'))
+      write_file(File.join(vol, 'nas-projects', 'Website Redesign', 'page1.pdf'))
       fake_shell.on('rsync', output: rsync_stats)
       expect(cli('restore', '--all').run).to eq(0)
       expect(fake_shell.calls_to('rsync').size).to eq(2)
@@ -867,9 +867,9 @@ RSpec.describe EasySync::CLI do
       File.write(lock_path, Process.pid.to_s)
       fake_shell.on('rsync', output: rsync_stats)
 
-      expect(cli('restore', 'nas-tv', '--dry-run').run).to eq(0)
+      expect(cli('restore', 'nas-projects', '--dry-run').run).to eq(0)
       expect(out.string).to include('Would restore 1')
-      expect(cli('restore', 'nas-tv').run).to eq(1)
+      expect(cli('restore', 'nas-projects').run).to eq(1)
       expect(err.string).to include('already running')
     end
   end
@@ -924,7 +924,7 @@ RSpec.describe EasySync::CLI do
 
     it 'scrubs the stalest mounted drive when given no arguments, baselining every tracked file' do
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
-      write_file(File.join(vol, 'pro', 'a.mkv'), 'hello')
+      write_file(File.join(vol, 'pro', 'a.pdf'), 'hello')
       m = manifest
       m.assign_folder('pro', 'S1')
       m.close
@@ -940,8 +940,8 @@ RSpec.describe EasySync::CLI do
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       vol2 = make_dirs(mount_root, 'backup-02-3tb').first
       register_and_mount(serial: 'S2', name: 'backup-02-3tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'), 'hello')
-      write_file(File.join(vol2, 'pro2', 'b.mkv'), 'world')
+      write_file(File.join(vol, 'pro', 'a.pdf'), 'hello')
+      write_file(File.join(vol2, 'pro2', 'b.pdf'), 'world')
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('pro2', 'S2')
@@ -960,7 +960,7 @@ RSpec.describe EasySync::CLI do
 
     it 'exits non-zero when a file ends the run corrupt, unreadable or unresolved' do
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
-      path = write_file(File.join(vol, 'pro', 'a.mkv'), 'hello world, a longer string')
+      path = write_file(File.join(vol, 'pro', 'a.pdf'), 'hello world, a longer string')
       m = manifest
       m.assign_folder('pro', 'S1')
       m.close
@@ -989,8 +989,8 @@ RSpec.describe EasySync::CLI do
       vol2 = make_dirs(mount_root, 'backup-02-6tb').first
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
-      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
+      write_file(File.join(vol2, 'stuff', 'b.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('stuff', 'S2')
@@ -1005,15 +1005,15 @@ RSpec.describe EasySync::CLI do
       vol2 = make_dirs(mount_root, 'backup-02-6tb').first
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
-      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
+      write_file(File.join(vol2, 'stuff', 'b.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('stuff', 'S2')
       # backup-01-3tb was already scrubbed recently; backup-02-6tb never has,
       # so it must be picked even though it's alphabetically second.
-      m.reconcile_checksums('S1', 'pro', { 'a.mkv' => [1, 1] })
-      m.checksum_hashed('S1', 'pro', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
+      m.reconcile_checksums('S1', 'pro', { 'a.pdf' => [1, 1] })
+      m.checksum_hashed('S1', 'pro', 'a.pdf', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
       m.close
 
       expect(cli('scrub').run).to eq(0)
@@ -1025,13 +1025,13 @@ RSpec.describe EasySync::CLI do
       vol2 = make_dirs(mount_root, 'backup-02-6tb').first
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
-      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
+      write_file(File.join(vol2, 'stuff', 'b.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('stuff', 'S2')
-      m.reconcile_checksums('S1', 'pro', { 'a.mkv' => [1, 1] })
-      m.checksum_hashed('S1', 'pro', 'a.mkv', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
+      m.reconcile_checksums('S1', 'pro', { 'a.pdf' => [1, 1] })
+      m.checksum_hashed('S1', 'pro', 'a.pdf', outcome: :baseline, digest: 'x', at: '2026-09-13T00:00:00Z')
       m.close
 
       cli('scrub', '--all', '--jobs', '1').run
@@ -1043,8 +1043,8 @@ RSpec.describe EasySync::CLI do
       vol2 = make_dirs(mount_root, 'backup-02-6tb').first
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
-      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
+      write_file(File.join(vol2, 'stuff', 'b.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('stuff', 'S2')
@@ -1076,7 +1076,7 @@ RSpec.describe EasySync::CLI do
 
     it 'says the scrub stopped early, not that it finished, when the drive disappears mid-run' do
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.close
@@ -1089,7 +1089,7 @@ RSpec.describe EasySync::CLI do
 
     it 'does not hash or write anything in --dry-run' do
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.close
@@ -1117,8 +1117,8 @@ RSpec.describe EasySync::CLI do
       vol2 = make_dirs(mount_root, 'backup-02-6tb').first
       register_and_mount(serial: 'S1', name: 'backup-01-3tb', vol: vol)
       register_and_mount(serial: 'S2', name: 'backup-02-6tb', vol: vol2)
-      write_file(File.join(vol, 'pro', 'a.mkv'))
-      write_file(File.join(vol2, 'stuff', 'b.mkv'))
+      write_file(File.join(vol, 'pro', 'a.pdf'))
+      write_file(File.join(vol2, 'stuff', 'b.pdf'))
       m = manifest
       m.assign_folder('pro', 'S1')
       m.assign_folder('stuff', 'S2')
@@ -1298,28 +1298,28 @@ RSpec.describe EasySync::CLI do
   end
 
   describe 'add-source / remove-source / sources' do
-    let(:tv) { make_dirs(File.join(temp_dir, 'shares'), 'tv').first }
+    let(:projects) { make_dirs(File.join(temp_dir, 'shares'), 'projects').first }
 
-    before { make_dirs(tv, 'Show A', 'Show B') }
+    before { make_dirs(projects, 'Project A', 'Project B') }
 
     it 'adds a share and lists it' do
-      expect(cli('add-source', tv).run).to eq(0)
-      expect(out.string).to include("Added #{tv}. Config:")
-      expect(EasySync::Config.load(config_path).first.source_entries.last).to eq({ path: tv })
+      expect(cli('add-source', projects).run).to eq(0)
+      expect(out.string).to include("Added #{projects}. Config:")
+      expect(EasySync::Config.load(config_path).first.source_entries.last).to eq({ path: projects })
       out.truncate(0); out.rewind
       cli('sources').run
-      expect(out.string).to include(tv, 'mounted')
+      expect(out.string).to include(projects, 'mounted')
     end
 
     it 'refuses an unmounted or duplicate share, and removes one without touching drives' do
       expect(cli('add-source', File.join(temp_dir, 'nope')).run).to eq(1)
       expect(err.string).to include('not mounted')
-      cli('add-source', tv).run
-      expect(cli('add-source', tv).run).to eq(1)
+      cli('add-source', projects).run
+      expect(cli('add-source', projects).run).to eq(1)
       expect(err.string).to include('already a source')
-      expect(cli('remove-source', tv).run).to eq(0)
-      expect(out.string).to include("Removed #{tv}. Nothing on the drives was touched")
-      expect(EasySync::Config.load(config_path).first.source_entries.map { |e| e[:path] }).not_to include(tv)
+      expect(cli('remove-source', projects).run).to eq(0)
+      expect(out.string).to include("Removed #{projects}. Nothing on the drives was touched")
+      expect(EasySync::Config.load(config_path).first.source_entries.map { |e| e[:path] }).not_to include(projects)
     end
   end
 
@@ -1381,11 +1381,11 @@ RSpec.describe EasySync::CLI do
       it 'passes nothing by default, true on its own, and folder names when given' do
         cli('sync').run
         cli('sync', '--accept-changes').run
-        cli('sync', '--accept-changes', 'music/Jazz/', 'tv/Show').run
+        cli('sync', '--accept-changes', 'music/Jazz/', 'projects/Project').run
         expect(EasySync::Jbod::Runner).to have_received(:new).with(anything, hash_including(accept_changes: nil)).ordered
         expect(EasySync::Jbod::Runner).to have_received(:new).with(anything, hash_including(accept_changes: true)).ordered
         expect(EasySync::Jbod::Runner).to have_received(:new)
-          .with(anything, hash_including(accept_changes: ['music/Jazz', 'tv/Show'])).ordered
+          .with(anything, hash_including(accept_changes: ['music/Jazz', 'projects/Project'])).ordered
       end
 
       it 'refuses folder names without --accept-changes' do
@@ -1712,21 +1712,21 @@ RSpec.describe EasySync::CLI do
 
     it 'judges only the named share(s) when given, leaving the rest unmeasured' do
       pro = make_dirs(temp_dir, 'pro').first
-      movies = make_dirs(temp_dir, 'movies').first
+      documents = make_dirs(temp_dir, 'documents').first
       make_dirs(pro, 'Course 1')
-      make_dirs(movies, 'Film 1')
+      make_dirs(documents, 'Doc 1')
       cfg = YAML.safe_load_file(config_path, permitted_classes: [Symbol], symbolize_names: true)
-      File.write(config_path, cfg.merge(sources: [{ path: pro }, { path: movies }]).to_yaml)
+      File.write(config_path, cfg.merge(sources: [{ path: pro }, { path: documents }]).to_yaml)
       fake_shell.on('du', output: ->(argv) { argv[2..].map { |p| "1024\t#{p}\n" }.join })
 
       expect(cli('plan', 'pro', '--largest-drive', '8tb').run).to eq(0)
       expect(out.string).to include(pro)
-      expect(out.string).not_to include(movies)
+      expect(out.string).not_to include(documents)
 
       out.truncate(0)
       out.rewind
-      expect(cli('plan', movies, '--largest-drive', '8tb').run).to eq(0)
-      expect(out.string).to include(movies)
+      expect(cli('plan', documents, '--largest-drive', '8tb').run).to eq(0)
+      expect(out.string).to include(documents)
       expect(out.string).not_to include(pro)
     end
 
