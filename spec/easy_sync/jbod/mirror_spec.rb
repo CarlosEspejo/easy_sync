@@ -93,13 +93,13 @@ RSpec.describe EasySync::Jbod::Mirror do
 
   it 'collects what the probe would delete (real rsync 3.5 dry-run output)' do
     fake_shell.on('rsync', output: <<~OUT)
-      *deleting   Old Movie (1999)/
-      *deleting   Old Movie (1999)/movie.mkv
-      *deleting   ep2.mkv
+      *deleting   Old Report (1999)/
+      *deleting   Old Report (1999)/scan.pdf
+      *deleting   page2.pdf
     OUT
     check = described_class.new(shell: fake_shell).check(source, '/dest')
-    expect(check.missing).to eq([['Old Movie (1999)', 'dir'], ['Old Movie (1999)/movie.mkv', 'file'], ['ep2.mkv', 'file']])
-    expect(check.missing_files).to eq(['Old Movie (1999)/movie.mkv', 'ep2.mkv'])
+    expect(check.missing).to eq([['Old Report (1999)', 'dir'], ['Old Report (1999)/scan.pdf', 'file'], ['page2.pdf', 'file']])
+    expect(check.missing_files).to eq(['Old Report (1999)/scan.pdf', 'page2.pdf'])
     expect(check.source_files).to eq(0)
   end
 
@@ -111,7 +111,7 @@ RSpec.describe EasySync::Jbod::Mirror do
   it 'creates the destination parent so each folder lands under its share directory' do
     fake_shell.on('rsync', output: rsync_stats)
     fake_shell.on(->(argv) { argv[1] == '-an' }, output: '')
-    dest = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'tv', 'Show A')
+    dest = File.join(temp_dir, 'Volumes', 'backup-04-8tb', 'projects', 'Project A')
     described_class.new(shell: fake_shell).sync(source, dest)
     expect(Dir).to exist(File.dirname(dest))
     expect(Dir).not_to exist(dest)
@@ -132,7 +132,7 @@ RSpec.describe EasySync::Jbod::Mirror do
 
   it 'flags a full destination drive distinctly from other rsync failures' do
     fake_shell.on('rsync', status: 11, output: <<~OUT)
-      rsync: [receiver] write failed on "/Volumes/backup-04-8tb/movies/Metropolis (1927)/movie.mkv": No space left on device (28)
+      rsync: [receiver] write failed on "/Volumes/backup-04-8tb/documents/Tax Returns/scan.pdf": No space left on device (28)
       rsync error: error in file IO (code 11) at receiver.c(392) [receiver=3.5.0]
     OUT
     result = described_class.new(shell: fake_shell).sync(source, '/dest')
@@ -154,16 +154,16 @@ RSpec.describe EasySync::Jbod::Mirror do
         captured = File.read(list_arg.delete_prefix('--files-from='))
         rsync_stats
       })
-      result = described_class.new(shell: fake_shell).refetch('/nas/movies/Metropolis (1927)', '/Volumes/backup-04-8tb/movies/Metropolis (1927)',
-                                                               ['movie.mkv', 'subs/en.srt'])
+      result = described_class.new(shell: fake_shell).refetch('/nas/documents/Tax Returns', '/Volumes/backup-04-8tb/documents/Tax Returns',
+                                                               ['scan.pdf', 'notes/en.txt'])
       expect(result).to be_success
-      expect(captured).to eq("movie.mkv\x00subs/en.srt")
+      expect(captured).to eq("scan.pdf\x00notes/en.txt")
 
       call = fake_shell.calls.last
       expect(call[0, 4]).to eq(['rsync', '-a', '-I', '--stats'])
       expect(call).to include('--from0')
       expect(call).not_to include('--partial')
-      expect(call.last(2)).to eq(['/nas/movies/Metropolis (1927)/', '/Volumes/backup-04-8tb/movies/Metropolis (1927)/'])
+      expect(call.last(2)).to eq(['/nas/documents/Tax Returns/', '/Volumes/backup-04-8tb/documents/Tax Returns/'])
     end
 
     it 'cleans up its temp file after the call' do

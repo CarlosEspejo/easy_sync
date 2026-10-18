@@ -12,7 +12,7 @@ module EasySync
     # a verify of its own from an earlier run, which is used instead: a
     # share's folders run together, so the first few verifies of a run can
     # be one slow share's (many small files over SMB) and say nothing about
-    # thousands of single-file movie folders still to come). The two behave nothing
+    # thousands of small single-file folders still to come). The two behave nothing
     # alike - an unchanged folder verifies in under a second, a first-time
     # folder moves real bytes over the network - so averaging them together
     # would be meaningless; this keeps them separate instead. Shared by

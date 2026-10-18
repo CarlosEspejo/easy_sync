@@ -479,8 +479,8 @@ module EasySync
 
       def h(text) = ERB::Util.html_escape(text.to_s)
 
-      # Groups folders by share (the first path segment): "tv" groups every
-      # "tv/<show>" plus the share's own root-files unit, or a share placed
+      # Groups folders by share (the first path segment): "photos" groups every
+      # "photos/<album>" plus the share's own root-files unit, or a share placed
       # whole by an earlier build. Returns [[share, [folders...]], ...] in share order.
       # +inventory+ adds shares that have nothing placed yet (nothing fit), so
       # they still get a summary line.

@@ -36,7 +36,7 @@ module EasySync
         end
       end
 
-      # +targets+ are folder_paths ("tv/Breaking Bad") or share names ("tv"),
+      # +targets+ are folder_paths ("photos/2019 Japan Trip") or share names ("photos"),
       # expanded to every folder currently in the manifest under that share
       # (including the share's root-files unit, which is keyed by its name).
       # Raises if a name matches nothing placed.

@@ -27,8 +27,8 @@ Quick start
 
     gem install easy_sync
 
-    easy_sync add-source /Volumes/tv                    # once per NAS share, mounted on the Mac
-    easy_sync add-source /Volumes/movies
+    easy_sync add-source /Volumes/photos                # once per NAS share, mounted on the Mac
+    easy_sync add-source /Volumes/documents
     easy_sync register-drive /Volumes/backup-01-3tb     # once per drive, while mounted
     easy_sync plan                   # measures each share, checks every folder fits a drive
     easy_sync sync --dry-run         # what would be placed and copied, nothing written
@@ -49,8 +49,8 @@ by hand:
 ```yaml
 :sources:                               # each NAS share, as mounted on the Mac
 - :path: "/Volumes/photos"
-- :path: "/Volumes/tv"
-- :path: "/Volumes/movies"
+- :path: "/Volumes/photos"
+- :path: "/Volumes/documents"
 :mount_root: "/Volumes"                 # where the backup drives appear
 :manifest_path: "~/.easy_sync/manifest.sqlite3"
 :dashboard_path: "~/.easy_sync/dashboard.html"
@@ -126,10 +126,10 @@ Sources and placement
 ---------------------
 
 Each top-level folder of a share is placed on its own and lands at
-`/Volumes/<drive>/tv/<Show Name>`. Loose files at the top of a share (not in
+`/Volumes/<drive>/photos/<Album Name>`. Loose files at the top of a share (not in
 any folder) are backed up too, together, as one more unit that lands in
-`/Volumes/<drive>/tv/` beside the folders; the dashboard lists it as
-`tv (loose files)`. There is no setting to choose: this is what mergerfs and
+`/Volumes/<drive>/photos/` beside the folders; the dashboard lists it as
+`photos (loose files)`. There is no setting to choose: this is what mergerfs and
 unRAID do, and it means a share can be any size while every drive stays
 readable on its own in Finder.
 
@@ -139,7 +139,7 @@ has room and only spills onto another when it must. Otherwise, or for a
 share's first folder, it goes to the mounted drive with the most free space.
 Either way it has to fit while leaving `reserve` (2 GB by default) untouched
 for APFS metadata, the drive's `.easy_sync/` copies and rsync's temporary
-files. A folder with no real files on the NAS (a show folder left holding only
+files. A folder with no real files on the NAS (an album folder left holding only
 a `.DS_Store`) is not placed; the run says so.
 
 Once placed, a folder never moves on its own: there is no automatic
@@ -151,8 +151,8 @@ it copies drive-to-drive (much faster than the NAS), and the next sync only
 confirms the copy. The old copy is removed later, after the grace period (see
 "Deletions have a grace period" below).
 
-`easy_sync plan` measures every share (seconds for thousands of single-file
-movie folders, minutes for a share with hundreds of thousands of files) and
+`easy_sync plan` measures every share (seconds for thousands of small
+single-file folders, minutes for a share with hundreds of thousands of files) and
 warns about any single folder that is bigger than the largest drive, which
 could not be placed anywhere. Pass `--largest-drive 8tb` before any drive is
 registered, and name one or more shares (by folder name or full path, e.g.
@@ -331,7 +331,7 @@ from the NAS.
 Afterwards, in all three cases:
 
     easy_sync status                 # the retired drive is listed at the end
-    easy_sync history "tv/Show Name" # still shows the drive it used to live on
+    easy_sync history "photos/Album Name" # still shows the drive it used to live on
 
 A retired drive is never placed on or written to again, even if it turns up
 mounted.
@@ -346,10 +346,10 @@ deletes anything** — it only adds and updates files on the NAS, so restoring
 onto a share that already has some files on it (a partial wipe, a share you
 rebuilt by hand) is safe.
 
-    easy_sync restore "tv/Breaking Bad"   # one folder
-    easy_sync restore tv                  # every folder placed under the tv share
-    easy_sync restore --all               # everything in the manifest
-    easy_sync restore tv --dry-run        # show what rsync would do first
+    easy_sync restore "photos/2019 Japan Trip"   # one folder
+    easy_sync restore photos                     # every folder placed under the photos share
+    easy_sync restore --all                      # everything in the manifest
+    easy_sync restore photos --dry-run           # show what rsync would do first
 
 Because folders for one share can be spread across several drives (unlike
 the single Drobo volume this replaced), a restore plugs in and pulls from
@@ -370,15 +370,15 @@ The tripwire
 A mirror copies damage too: if ransomware rewrites or renames files on the NAS,
 the next sync would overwrite the good copies on the drives, and an offsite
 backup of the drives would then upload the damage from them. The tripwire stops a sync before
-it copies anything when far more existing files would change than a media
-library changes normally:
+it copies anything when far more existing files would change than a library
+changes normally:
 
 - **One folder** is held back (not copied) when at least
   `tripwire_folder_files` of its files would be replaced or are gone from the
   NAS, **and** those are at least `tripwire_folder_ratio` of its files.
 - **The whole run** stops (nothing copied, nothing purged) when the changes
   add up to `tripwire_run_files` across all folders, which catches damage
-  spread across thousands of single-file movie folders.
+  spread across thousands of small single-file folders.
 
 New files never count. A rename (`photo.jpg` -> `photo.jpg.locked`) counts
 once, as the file gone from the NAS. A file an earlier run already found

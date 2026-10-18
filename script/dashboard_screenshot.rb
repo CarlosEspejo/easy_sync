@@ -34,17 +34,16 @@ DRIVES = [
   ['backup-08-2tb', 2, 'unknown', nil, nil, false, 0.64, nil]
 ].freeze
 
-# Public-domain films and generic names; nothing from a real library.
-MOVIES = ['Metropolis', 'Nosferatu', 'The General', 'Sherlock Jr.', 'Safety Last!', 'The Kid', 'Modern Times',
-          'Night of the Living Dead', 'His Girl Friday', 'Charade', 'Detour', 'The Little Shop of Horrors',
-          'Carnival of Souls', 'Plan 9', 'The Phantom of the Opera'].freeze
+# Generic names; nothing from a real library.
+DOCUMENTS = ['Tax Returns', 'Insurance', 'Medical', 'Mortgage', 'Receipts', 'Resumes', 'School', 'Manuals',
+             'Letters', 'Recipes', 'Warranties', 'Car', 'Pets', 'Travel', 'Contracts'].freeze
 
 # [folder_path, relative weight, drive, scope]; weights are scaled so each
 # drive ends up as full as DRIVES says.
 def demo_folders
   folders = []
-  MOVIES.each_with_index { |t, i| folders << ["movies/#{t} (#{1920 + i * 3})", 8 + i % 5, 'backup-01-8tb'] }
-  (1..40).each { |i| folders << [format('tv/Show %02d', i), 60 + i * 7, i <= 22 ? 'backup-03-8tb' : 'backup-04-8tb'] }
+  DOCUMENTS.each_with_index { |t, i| folders << ["documents/#{t}", 8 + i % 5, 'backup-01-8tb'] }
+  (1..40).each { |i| folders << [format('projects/Project %02d', i), 60 + i * 7, i <= 22 ? 'backup-03-8tb' : 'backup-04-8tb'] }
   (2012..2025).each { |y| folders << ["photos/#{y}", 40 + (y - 2012) * 9, 'backup-02-6tb'] }
   ['Home Videos', 'Scans', 'Music', 'Projects'].each_with_index do |n, i|
     folders << ["archive/#{n}", 300 + i * 150, 'backup-06-8tb']
@@ -122,8 +121,8 @@ def render(dir)
   end
 
   inventory = folders.map { |(path, size, drive)| { folder_path: path, size_bytes: size, state: 'placed', detail: "on #{drive}" } }
-  inventory << { folder_path: 'tv/Show 41', size_bytes: 2600 * GB, state: 'unplaced', detail: 'no drive has room' }
-  inventory << { folder_path: 'tv/Show 42', size_bytes: 1900 * GB, state: 'unplaced', detail: 'no drive has room' }
+  inventory << { folder_path: 'projects/Project 41', size_bytes: 2600 * GB, state: 'unplaced', detail: 'no drive has room' }
+  inventory << { folder_path: 'projects/Project 42', size_bytes: 1900 * GB, state: 'unplaced', detail: 'no drive has room' }
   m.replace_source_inventory(inventory, at: iso(run_start + 60))
 
   scrub_days = DRIVES.to_h { |d| [d[0], d[7]] }
